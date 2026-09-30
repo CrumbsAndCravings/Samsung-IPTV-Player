@@ -85,6 +85,10 @@ export class Html5Player implements Player {
     return [];
   }
 
+  currentTracks(): Track[] {
+    return [];
+  }
+
   selectTrack(): void {
     // Desktop Chrome has no audio track switching.
   }

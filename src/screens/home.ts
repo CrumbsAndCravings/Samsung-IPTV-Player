@@ -16,6 +16,7 @@ import { itemKey, posterEl } from "../ui/poster";
 import { Backdrop } from "../ui/backdrop";
 import { DetailsScreen } from "./details";
 import { SetupChecksScreen } from "./setup";
+import { SubtitleSetupScreen } from "./subtitle-setup";
 
 const TABS = ["Home", "Movies", "Series", "Search"];
 const ACCOUNT = TABS.length; // nav cursor index of the account button
@@ -447,6 +448,7 @@ export class HomeScreen implements Screen {
       message: "Your IPTV login is saved on this TV only.",
       buttons: [
         { label: "Keep watching" },
+        { label: "Online subtitles", action: () => this.app.push(new SubtitleSetupScreen(this.app)) },
         { label: "Setup checks", action: () => this.app.push(new SetupChecksScreen(this.app)) },
         { label: "Sign out", action: () => this.app.signOut() },
       ],

@@ -43,6 +43,8 @@ export interface Player {
   currentMs(): number;
   durationMs(): number;
   tracks(): Track[];
+  // The tracks playing now (one video, one audio, and the text track if any).
+  currentTracks(): Track[];
   selectTrack(kind: "AUDIO" | "TEXT", index: number): void;
   setSubtitlesHidden(hidden: boolean): void;
   suspend(): void;

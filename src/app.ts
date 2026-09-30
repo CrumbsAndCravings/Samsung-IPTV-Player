@@ -32,6 +32,13 @@ export class App {
   // Sets the login used by every screen, and what the logs must hide.
   useCreds(creds: Creds | null): void {
     this.api = creds ? new XtreamApi(creds) : null;
+    this.refreshSecrets();
+  }
+
+  // What logs and on-screen reports must hide; call again after the OpenSubtitles
+  // details change.
+  refreshSecrets(): void {
+    const creds = this.api ? this.api.creds : null;
     const os = readOsFields();
     const secrets = creds ? credsSecrets(creds.server, creds.username, creds.password) : [];
     secrets.push({ value: os.apiKey, label: "<api key>" }, { value: os.username, label: "<os user>" }, { value: os.password, label: "<os password>" });

@@ -1,27 +1,41 @@
 // The player (plan 7.5; the Roku app's PlayerScreen): Samsung's AVPlay underneath our
 // own controls. Back and the title on top; play/pause, the bar and the times at the
-// bottom; then Episodes, Next episode and Restart. Left/Right preview a jump before it
-// happens. Progress is saved for Continue Watching, episodes roll into the next one
-// with Up Next, and a failure is retried once before the error screen explains it.
+// bottom; then Audio & subtitles, Episodes, Next episode and Restart. Left/Right preview
+// a jump before it happens. Progress is saved for Continue Watching, episodes roll into
+// the next one with Up Next, and a failure is retried once before the error screen
+// explains it.
+//
+// Subtitles (plan 7.5 and 7.6): AVPlay never draws them, so ARAN+ does. A file's own
+// tracks arrive cue by cue through onSubtitle; online ones are fetched from OpenSubtitles
+// once and timed against the player's position, so nudging them costs no download.
 
 import type { App, Screen } from "../app";
 import { FileFacts, learnResult, playCheck, PlayCheck } from "../core/compat";
 import type { Item } from "../core/items";
 import { log, logError } from "../core/log";
+import type { FindRequest } from "../core/opensubtitles";
 import { barFraction } from "../core/playback";
 import { progressPut, progressRemove } from "../core/progress";
 import { redact } from "../core/redact";
 import { COMMIT_AFTER_MS, SeekPreview, TICK_MS } from "../core/seek";
+import { cleanCueText, CueTrack, parseSubtitles } from "../core/srt";
+import { loadOsAccount, loadPrefs, savePref } from "../core/storage";
+import { activeSubtitle, audioPlan, freshOnline, NUDGE_MS, OnlineStatus, SubtitleSource, subtitleMenu, subtitlePlan, tracksNote } from "../core/subtitles";
+import { audioOptions, fromAvplay, optionIndex, subtitleOptions, TrackOption } from "../core/tracks";
 import { describeCodecs, episodeCode, formatClock, streamUrl } from "../core/utils";
 import { currentOf, dueForSave, entryFor, finishedChange, hasNext, resumeFrom, saveAction, Watching } from "../core/watch";
+import { knownHash, movieHash } from "../data/moviehash";
+import { OsClient } from "../data/opensubtitles";
 import type { Key } from "../platform/keys";
 import { errorLabel, PlayerEvents } from "../platform/player";
 import { getPlayer } from "../platform/players";
 import { append, clear, h, setText, toggle } from "../ui/dom";
+import { SubtitleSetupScreen } from "./subtitle-setup";
 
 type Row = "top" | "bar" | "buttons";
-type ButtonAction = "episodes" | "next" | "restart";
+type ButtonAction = "tracks" | "episodes" | "next" | "restart";
 type Mode = "playing" | "error" | "upnext";
+type Panel = "" | "tracks" | "episodes";
 
 const BAR_X = 342;
 const BAR_W = 1344;
@@ -30,6 +44,9 @@ const NEVER_STARTED_MS = 25000; // opened without an error but no progress (The 
 const RETRY_AFTER_MS = 1500; // lets the provider free the one connection first
 const UP_NEXT_SECS = 8;
 const PANEL_ROWS = 9;
+const TRACK_ROWS = 7;
+const AUTO_SUBTITLES_AFTER_MS = 2500; // Roku's autoSubTimer
+const SUBTITLE_TICK_MS = 100;
 
 const PLAY_ICON = '<svg viewBox="0 0 24 24" width="36" height="36"><path d="M7 4.5v15l12.5-7.5z" fill="currentColor"/></svg>';
 const PAUSE_ICON = '<svg viewBox="0 0 24 24" width="36" height="36"><rect x="5.5" y="4" width="4.5" height="16" rx="1.2" fill="currentColor"/><rect x="14" y="4" width="4.5" height="16" rx="1.2" fill="currentColor"/></svg>';
@@ -76,6 +93,11 @@ export class PlayerScreen implements Screen {
   private errorHint: HTMLElement;
   private panelEl: HTMLElement;
   private panelList: HTMLElement;
+  private subtitleEl: HTMLElement;
+  private tracksEl: HTMLElement;
+  private audioList: HTMLElement;
+  private subsList: HTMLElement;
+  private tracksNoteEl: HTMLElement;
 
   private mode: Mode = "playing";
   private streamToken = 0;
@@ -100,8 +122,25 @@ export class PlayerScreen implements Screen {
   private buttons: { label: string; action: ButtonAction }[] = [];
   private buttonEls: HTMLElement[] = [];
   private buttonIndex = 0;
-  private panelOpen = false;
+  private panel: Panel = "";
   private cursor = 0;
+
+  // Audio & subtitles
+  private column = 1; // 0 audio, 1 subtitles
+  private audioCursor = 0;
+  private subCursor = 0;
+  private audioOpts: TrackOption[] = [];
+  private embeddedOpts: TrackOption[] = subtitleOptions([]);
+  private subMenu: TrackOption[] = [];
+  private currentAudio = "";
+  private chosenAudio = ""; // picked for this video, put back after a retry
+  private tracksApplied = false;
+  private source: SubtitleSource = { kind: "off" };
+  private online: OnlineStatus = freshOnline(false);
+  private cues: CueTrack | null = null;
+  private osToken = 0;
+  private hash = "";
+  private timeAt = 0; // when positionMs last arrived
 
   private preview = new SeekPreview();
   private holdTimer = 0;
@@ -111,6 +150,9 @@ export class PlayerScreen implements Screen {
   private retryTimer = 0;
   private countdownTimer = 0;
   private noteTimer = 0;
+  private subtitleTimer = 0;
+  private subtitleTick = 0;
+  private autoTimer = 0;
   private secondsLeft = 0;
   // Samsung asks apps to suspend AVPlay while hidden (the Home button) and restore it
   // when they come back.
@@ -176,7 +218,19 @@ export class PlayerScreen implements Screen {
     this.errorEl = h("div", { class: "player-error" }, [this.errorTitle, this.errorDetail, this.errorHint]);
     this.panelList = h("div", { class: "player-panel-list" });
     this.panelEl = h("div", { class: "player-panel" }, [h("div", { class: "player-panel-title", text: "Episodes" }), this.panelList]);
-    this.el = h("div", { class: "screen player" }, [this.coverEl, this.controlsEl, this.spinnerEl, this.upNextEl, this.errorEl, this.panelEl]);
+    this.subtitleEl = h("div", { class: "player-subtitle" });
+    this.audioList = h("div", { class: "tracks-list tracks-audio" });
+    this.subsList = h("div", { class: "tracks-list tracks-subs" });
+    this.tracksNoteEl = h("div", { class: "tracks-note" });
+    this.tracksEl = h("div", { class: "player-panel player-tracks" }, [
+      h("div", { class: "player-panel-title", text: "Audio & subtitles" }),
+      h("div", { class: "tracks-heading tracks-heading-audio", text: "AUDIO" }),
+      this.audioList,
+      h("div", { class: "tracks-heading tracks-heading-subs", text: "SUBTITLES" }),
+      this.subsList,
+      this.tracksNoteEl,
+    ]);
+    this.el = h("div", { class: "screen player" }, [this.coverEl, this.subtitleEl, this.controlsEl, this.spinnerEl, this.upNextEl, this.errorEl, this.panelEl, this.tracksEl]);
   }
 
   private get item(): Item {
@@ -208,6 +262,7 @@ export class PlayerScreen implements Screen {
     this.seekBroken = false;
     this.pendingSeekSecs = 0;
     setText(this.noteEl, "");
+    this.resetSubtitles();
 
     const item = this.item;
     const w = this.watching;
@@ -220,7 +275,31 @@ export class PlayerScreen implements Screen {
       this.showUnplayable(this.check);
       return;
     }
-    this.loadStream();
+    this.hashThenLoad();
+  }
+
+  // Online subtitles "timed for this file" need the file's moviehash, read from its
+  // first and last 64 KB. The provider allows one connection, so that happens before
+  // the video opens (a moment's wait, once per title), and only when OpenSubtitles is
+  // set up and subtitles weren't turned off.
+  private hashThenLoad(): void {
+    const api = this.app.api;
+    const key = factsOf(this.item).key;
+    this.hash = knownHash(key);
+    const wanted = this.online.configured && loadPrefs().subtitles !== "off";
+    if (this.hash || !wanted || !api) {
+      this.loadStream();
+      return;
+    }
+    const token = ++this.streamToken;
+    const item = this.item;
+    this.show(this.spinnerEl, true);
+    movieHash(key, streamUrl(api.creds, item.kind === "episode" ? "series" : "movie", item.itemId, (item.ext || "mp4").toLowerCase())).then((hash) => {
+      if (token !== this.streamToken || this.closing) return;
+      log("moviehash", hash ? "ready" : "unavailable");
+      this.hash = hash;
+      this.loadStream();
+    });
   }
 
   private loadStream(): void {
@@ -275,12 +354,14 @@ export class PlayerScreen implements Screen {
       onBuffering: (phase) => mine() && this.show(this.spinnerEl, phase !== "end" || !this.started),
       onEnded: () => mine() && this.onEnded(),
       onError: (name) => mine() && this.handleError(name),
+      onSubtitle: (text, durationMs) => mine() && this.onEmbeddedCue(text, durationMs),
       onEvent: (type, data) => log("avplay event", type, data),
     };
   }
 
   private onTime(ms: number): void {
     this.positionMs = ms;
+    this.timeAt = Date.now();
     if (this.firstTimeMs < 0 && ms > 0) {
       this.firstTimeMs = ms;
       this.show(this.coverEl, false);
@@ -303,6 +384,7 @@ export class PlayerScreen implements Screen {
     const total = this.player.durationMs();
     if (total > 0) this.durationMs = total;
     learnResult(factsOf(this.item), true, "");
+    this.applyTracks();
     if (this.pendingSeekSecs > 0) {
       const target = this.pendingSeekSecs;
       this.pendingSeekSecs = 0;
@@ -353,6 +435,7 @@ export class PlayerScreen implements Screen {
     window.clearTimeout(this.stallTimer);
     if (!this.started) learnResult(factsOf(this.item), false, label);
     this.stopStream();
+    this.clearSubtitle();
     if (this.attempt === 0) {
       this.attempt = 1;
       if (this.started) this.startSecs = Math.floor(this.positionMs / 1000);
@@ -406,7 +489,7 @@ export class PlayerScreen implements Screen {
   // --- Controls ---------------------------------------------------------------------
 
   private buildButtons(): void {
-    this.buttons = [];
+    this.buttons = [{ label: "Audio & subtitles", action: "tracks" }];
     if (this.watching.kind === "episode") {
       this.buttons.push({ label: "Episodes", action: "episodes" });
       if (hasNext(this.watching, this.index)) this.buttons.push({ label: "Next episode", action: "next" });
@@ -426,6 +509,7 @@ export class PlayerScreen implements Screen {
     this.controlsVisible = true;
     this.row = row;
     this.show(this.controlsEl, true);
+    toggle(this.subtitleEl, "is-lifted", true);
     this.renderControls();
     this.restartHideTimer();
   }
@@ -433,6 +517,7 @@ export class PlayerScreen implements Screen {
   private hideControls(): void {
     this.controlsVisible = false;
     this.show(this.controlsEl, false);
+    toggle(this.subtitleEl, "is-lifted", false);
     window.clearTimeout(this.hideTimer);
   }
 
@@ -440,7 +525,7 @@ export class PlayerScreen implements Screen {
     window.clearTimeout(this.hideTimer);
     if (this.paused) return;
     this.hideTimer = window.setTimeout(() => {
-      if (this.preview.active || this.panelOpen || this.paused) return;
+      if (this.preview.active || this.panel || this.paused) return;
       this.hideControls();
     }, HIDE_AFTER_MS);
   }
@@ -565,6 +650,7 @@ export class PlayerScreen implements Screen {
     this.cancelSeek();
     this.lastSavedSecs = Math.floor(targetSecs);
     this.positionMs = targetSecs * 1000;
+    this.timeAt = Date.now();
     this.renderBar();
     this.restartHideTimer();
     this.player.seek(targetSecs * 1000).catch((err: Error) => {
@@ -579,7 +665,8 @@ export class PlayerScreen implements Screen {
   private runButton(): void {
     const button = this.buttons[this.buttonIndex];
     if (!button) return;
-    if (button.action === "episodes") this.openPanel();
+    if (button.action === "tracks") this.openTracks();
+    else if (button.action === "episodes") this.openEpisodes();
     else if (button.action === "next") this.goToEpisode(this.index + 1);
     else if (button.action === "restart") {
       this.applySeek(0);
@@ -599,37 +686,47 @@ export class PlayerScreen implements Screen {
     this.startItem(0);
   }
 
-  private openPanel(): void {
+  private openEpisodes(): void {
     this.cancelSeek();
     this.cursor = this.index;
     this.hideControls();
-    this.panelOpen = true;
+    this.panel = "episodes";
     this.show(this.panelEl, true);
     this.renderPanel();
   }
 
   private closePanel(backToControls: boolean): void {
-    this.panelOpen = false;
+    this.panel = "";
     this.show(this.panelEl, false);
+    this.show(this.tracksEl, false);
+    toggle(this.subtitleEl, "is-above", false);
     if (backToControls) this.showControls("buttons");
   }
 
   private renderPanel(): void {
-    const queue = this.watching.queue || [];
-    clear(this.panelList);
-    let first = this.cursor - Math.floor(PANEL_ROWS / 2);
-    first = Math.max(0, Math.min(first, queue.length - PANEL_ROWS));
-    for (let i = first; i < Math.min(queue.length, first + PANEL_ROWS); i++) {
-      const ep = queue[i];
-      const row = h("div", { class: "panel-row" + (i === this.cursor ? " is-focused" : "") + (i === this.index ? " is-active" : "") }, [
+    const labels = (this.watching.queue || []).map((ep) => episodeCode(ep.seasonNo, ep.episodeNo) + "   " + ep.title);
+    this.renderOptions(this.panelList, labels, this.index, this.cursor, true, PANEL_ROWS);
+  }
+
+  // A window of options around the cursor; the active one gets a dot (Roku's renderOptions).
+  private renderOptions(list: HTMLElement, labels: string[], active: number, cursor: number, focused: boolean, rows: number): void {
+    clear(list);
+    if (labels.length === 0) {
+      list.appendChild(h("div", { class: "panel-empty", text: "Default" }));
+      return;
+    }
+    let first = cursor - Math.floor(rows / 2);
+    first = Math.max(0, Math.min(first, labels.length - rows));
+    for (let i = first; i < Math.min(labels.length, first + rows); i++) {
+      const row = h("div", { class: "panel-row" + (focused && i === cursor ? " is-focused" : "") + (i === active ? " is-active" : "") }, [
         h("span", { class: "panel-dot" }),
-        h("span", { class: "panel-label", text: episodeCode(ep.seasonNo, ep.episodeNo) + "   " + ep.title }),
+        h("span", { class: "panel-label", text: labels[i] }),
       ]);
-      this.panelList.appendChild(row);
+      list.appendChild(row);
     }
   }
 
-  private onPanelKey(key: Key): void {
+  private onEpisodesKey(key: Key): void {
     const count = (this.watching.queue || []).length;
     if (key === "back") this.closePanel(true);
     else if (key === "up" && this.cursor > 0) {
@@ -652,6 +749,7 @@ export class PlayerScreen implements Screen {
     this.mode = "upnext";
     this.hideControls();
     this.closePanel(false);
+    this.clearSubtitle();
     this.show(this.coverEl, true);
     setText(this.upNextTitle, episodeCode(next.seasonNo, next.episodeNo) + "  " + next.title);
     this.secondsLeft = UP_NEXT_SECS;
@@ -685,6 +783,7 @@ export class PlayerScreen implements Screen {
   private close(): void {
     if (this.closing) return;
     this.closing = true;
+    this.osToken++;
     this.clearTimers();
     this.stopStream();
     this.app.pop();
@@ -697,12 +796,17 @@ export class PlayerScreen implements Screen {
     window.clearTimeout(this.retryTimer);
     window.clearTimeout(this.noteTimer);
     window.clearInterval(this.countdownTimer);
+    window.clearTimeout(this.subtitleTimer);
+    window.clearInterval(this.subtitleTick);
+    this.subtitleTick = 0;
+    window.clearTimeout(this.autoTimer);
   }
 
   // --- Keys -------------------------------------------------------------------------
 
   onKey(key: Key): void {
-    if (this.panelOpen) return this.onPanelKey(key);
+    if (this.panel === "episodes") return this.onEpisodesKey(key);
+    if (this.panel === "tracks") return this.onTracksKey(key);
     if (this.mode === "error") {
       if (key === "ok") {
         if (this.check && this.check.verdict === "blocked") this.tryAnyway = true;
@@ -789,7 +893,12 @@ export class PlayerScreen implements Screen {
 
   onShow(): void {
     document.body.classList.add("playing");
-    if (this.booted) return;
+    if (this.booted) {
+      // Back from the online subtitles setup: pick up the account, panel still open.
+      this.online.configured = loadOsAccount() !== null;
+      this.refreshTracks();
+      return;
+    }
     this.booted = true;
     document.addEventListener("visibilitychange", this.onVisibility);
     this.startItem(this.startSecs);
@@ -804,5 +913,264 @@ export class PlayerScreen implements Screen {
     this.clearTimers();
     this.stopStream();
     document.removeEventListener("visibilitychange", this.onVisibility);
+  }
+
+  // --- Audio & subtitles ------------------------------------------------------------
+
+  private resetSubtitles(): void {
+    this.osToken++;
+    this.online = freshOnline(loadOsAccount() !== null);
+    this.cues = null;
+    this.source = { kind: "off" };
+    this.hash = "";
+    this.audioOpts = [];
+    this.embeddedOpts = subtitleOptions([]);
+    this.currentAudio = "";
+    this.chosenAudio = "";
+    this.tracksApplied = false;
+    window.clearTimeout(this.autoTimer);
+    this.stopTick();
+    this.clearSubtitle();
+  }
+
+  // Once the stream plays: read its tracks, then apply the choices remembered from
+  // earlier videos (Roku's onTracksChanged), or after a retry, put back what was on.
+  private applyTracks(): void {
+    const tracks = this.player.tracks();
+    this.audioOpts = audioOptions(fromAvplay(tracks, "AUDIO"));
+    this.embeddedOpts = subtitleOptions(fromAvplay(tracks, "TEXT"));
+    const playing = this.player.currentTracks().filter((t) => t.kind === "AUDIO")[0];
+    this.currentAudio = playing ? String(playing.index) : this.audioOpts.length > 0 ? this.audioOpts[0].id : "";
+    if (this.tracksApplied) {
+      if (this.chosenAudio && this.chosenAudio !== this.currentAudio) this.selectAudio(this.chosenAudio);
+      if (this.source.kind === "embedded") this.showEmbedded(this.source.id);
+      else if (this.source.kind === "online") this.showOnline();
+      else this.subtitlesOff();
+    } else {
+      this.tracksApplied = true;
+      const prefs = loadPrefs();
+      const audio = audioPlan(prefs.audio || "", this.audioOpts);
+      if (audio && audio !== this.currentAudio) this.selectAudio(audio);
+      const plan = subtitlePlan(prefs.subtitles || "", this.embeddedOpts, this.online.configured);
+      if (plan.kind === "embedded") this.showEmbedded(plan.id);
+      else {
+        this.subtitlesOff();
+        if (plan.kind === "online") this.autoTimer = window.setTimeout(() => this.startOnlineSearch(true), AUTO_SUBTITLES_AFTER_MS);
+      }
+    }
+    log("tracks: audio", this.audioOpts.length, "text", this.embeddedOpts.length - 1, "subtitles", this.source.kind);
+    this.refreshTracks();
+  }
+
+  private selectAudio(id: string): void {
+    try {
+      this.player.selectTrack("AUDIO", Number(id));
+      this.currentAudio = id;
+    } catch (err) {
+      logError("audio switch failed:", err);
+      this.note("Couldn't switch the audio.");
+    }
+  }
+
+  private showEmbedded(id: string): void {
+    this.stopTick();
+    this.clearSubtitle();
+    try {
+      this.player.selectTrack("TEXT", Number(id));
+      this.player.setSubtitlesHidden(false);
+      this.source = { kind: "embedded", id };
+    } catch (err) {
+      logError("subtitle switch failed:", err);
+      this.note("Couldn't switch the subtitles.");
+    }
+  }
+
+  private subtitlesOff(): void {
+    this.stopTick();
+    this.clearSubtitle();
+    this.player.setSubtitlesHidden(true);
+    this.source = { kind: "off" };
+  }
+
+  private showOnline(): void {
+    if (!this.cues) return;
+    this.clearSubtitle();
+    this.player.setSubtitlesHidden(true); // the file's own track would talk over it
+    this.source = { kind: "online", fileId: this.online.loadedFileId };
+    this.stopTick();
+    this.subtitleTick = window.setInterval(() => this.drawOnlineCue(), SUBTITLE_TICK_MS);
+  }
+
+  private stopTick(): void {
+    window.clearInterval(this.subtitleTick);
+    this.subtitleTick = 0;
+  }
+
+  private clearSubtitle(): void {
+    window.clearTimeout(this.subtitleTimer);
+    setText(this.subtitleEl, "");
+  }
+
+  // A cue from the file's own track; AVPlay says how long it stays.
+  private onEmbeddedCue(text: string, durationMs: number): void {
+    if (this.source.kind !== "embedded") return;
+    setText(this.subtitleEl, cleanCueText(text));
+    window.clearTimeout(this.subtitleTimer);
+    if (durationMs > 0) this.subtitleTimer = window.setTimeout(() => setText(this.subtitleEl, ""), durationMs);
+  }
+
+  // The player reports its position every so often; in between, count on from there.
+  private drawOnlineCue(): void {
+    if (!this.cues || !this.started) {
+      setText(this.subtitleEl, "");
+      return;
+    }
+    let ms = this.positionMs;
+    if (!this.paused && this.timeAt > 0) ms += Math.min(Date.now() - this.timeAt, 1000);
+    setText(this.subtitleEl, this.cues.textAt(ms, this.online.delayMs));
+  }
+
+  private startOnlineSearch(auto: boolean): void {
+    const account = loadOsAccount();
+    if (!account || this.failed || this.closing) return;
+    const token = ++this.osToken;
+    const item = this.item;
+    const w = this.watching;
+    const req: FindRequest =
+      w.kind === "movie"
+        ? { kind: "movie", title: item.title, tmdbId: item.tmdbId, season: 0, episode: 0, hash: this.hash }
+        : { kind: "episode", title: w.seriesName || "", tmdbId: w.tmdbId || "", season: item.seasonNo, episode: item.episodeNo, hash: this.hash };
+    this.online.state = "searching";
+    this.online.message = "";
+    this.refreshTracks();
+    new OsClient(account).find(req).then((result) => {
+      if (token !== this.osToken) return;
+      if (!result.ok) {
+        this.online.state = "error";
+        this.online.message = result.error;
+      } else if (result.candidates.length === 0) this.online.state = "none";
+      else {
+        this.online.state = "results";
+        this.online.candidates = result.candidates;
+        if (auto) this.downloadSubtitle(result.candidates[0].fileId);
+      }
+      log("subtitle search:", this.online.state, result.candidates.length, "found", this.hash ? "with hash" : "without hash");
+      this.refreshTracks();
+    });
+  }
+
+  private downloadSubtitle(fileId: string): void {
+    const account = loadOsAccount();
+    if (!account || !fileId) return;
+    const token = ++this.osToken;
+    this.online.state = "downloading";
+    this.refreshTracks();
+    new OsClient(account).download(fileId).then((result) => {
+      if (token !== this.osToken) return;
+      const cues = result.ok ? parseSubtitles(result.text) : [];
+      if (!result.ok || cues.length === 0) {
+        this.online.state = "error";
+        this.online.message = result.ok ? "The subtitle file was empty or unreadable." : result.error;
+        this.refreshTracks();
+        return;
+      }
+      this.online.state = "results";
+      this.online.remaining = result.remaining;
+      this.online.loadedFileId = fileId;
+      this.online.delayMs = 0;
+      this.cues = new CueTrack(cues);
+      // Later videos without English subtitles of their own fetch the best match.
+      savePref("subtitles", "online");
+      this.showOnline();
+      log("online subtitles:", cues.length, "cues");
+      this.refreshTracks();
+    });
+  }
+
+  private openTracks(): void {
+    this.cancelSeek();
+    this.hideControls();
+    this.panel = "tracks";
+    this.show(this.tracksEl, true);
+    toggle(this.subtitleEl, "is-above", true);
+    this.subMenu = subtitleMenu(this.embeddedOpts, this.online);
+    this.column = 1;
+    this.audioCursor = Math.max(0, optionIndex(this.audioOpts, "id", this.currentAudio));
+    this.subCursor = Math.max(0, activeSubtitle(this.subMenu, this.source));
+    this.renderTracks();
+  }
+
+  private refreshTracks(): void {
+    if (this.panel !== "tracks") return;
+    this.subMenu = subtitleMenu(this.embeddedOpts, this.online);
+    this.subCursor = Math.min(this.subCursor, this.subMenu.length - 1);
+    this.renderTracks();
+  }
+
+  private renderTracks(): void {
+    const audioActive = optionIndex(this.audioOpts, "id", this.currentAudio);
+    this.renderOptions(this.audioList, this.audioOpts.map((o) => o.label), audioActive, this.audioCursor, this.column === 0, TRACK_ROWS);
+    this.renderOptions(this.subsList, this.subMenu.map((o) => o.label), activeSubtitle(this.subMenu, this.source), this.subCursor, this.column === 1, TRACK_ROWS);
+    setText(this.tracksNoteEl, tracksNote(this.online, this.embeddedOpts.length - 1));
+  }
+
+  private chooseTrack(): void {
+    if (this.column === 0) {
+      const option = this.audioOpts[this.audioCursor];
+      if (!option) return;
+      this.chosenAudio = option.id;
+      this.selectAudio(option.id);
+      if (option.language) savePref("audio", option.language);
+      this.renderTracks();
+      return;
+    }
+    const option = this.subMenu[this.subCursor];
+    if (!option) return;
+    const id = option.id;
+    if (id === "os:busy") return;
+    if (id === "os:setup") return this.openSetup();
+    if (id === "os:search") this.startOnlineSearch(false);
+    else if (id === "os:earlier" || id === "os:later") {
+      this.online.delayMs += id === "os:later" ? NUDGE_MS : -NUDGE_MS;
+      if (this.source.kind !== "online") this.showOnline();
+    } else if (id.indexOf("os:file:") === 0) {
+      const fileId = id.slice(8);
+      if (fileId === this.online.loadedFileId && this.cues) {
+        this.showOnline();
+        savePref("subtitles", "online");
+      } else this.downloadSubtitle(fileId);
+    } else if (id === "") {
+      this.subtitlesOff();
+      savePref("subtitles", "off");
+    } else {
+      this.showEmbedded(id);
+      if (option.language) savePref("subtitles", option.language);
+    }
+    this.refreshTracks();
+  }
+
+  // No OpenSubtitles account yet: pause and open the setup, then come back here.
+  private openSetup(): void {
+    if (this.started && !this.paused) {
+      this.player.pause();
+      this.paused = true;
+      this.saveProgress();
+    }
+    this.app.push(new SubtitleSetupScreen(this.app));
+  }
+
+  private onTracksKey(key: Key): void {
+    if (key === "back") return this.closePanel(true);
+    if (key === "ok") return this.chooseTrack();
+    if (key === "left" && this.audioOpts.length > 0) this.column = 0;
+    else if (key === "right") this.column = 1;
+    else if (key === "up") {
+      if (this.column === 0 && this.audioCursor > 0) this.audioCursor--;
+      if (this.column === 1 && this.subCursor > 0) this.subCursor--;
+    } else if (key === "down") {
+      if (this.column === 0 && this.audioCursor < this.audioOpts.length - 1) this.audioCursor++;
+      if (this.column === 1 && this.subCursor < this.subMenu.length - 1) this.subCursor++;
+    } else return;
+    this.renderTracks();
   }
 }

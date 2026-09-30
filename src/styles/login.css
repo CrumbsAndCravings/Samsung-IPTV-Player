@@ -122,3 +122,32 @@
   line-height: 1.35;
   color: var(--text-dim);
 }
+
+/* Online subtitles setup reuses the sign-in layout. */
+.login-status.is-good {
+  color: var(--text-dim);
+}
+.setup-buttons .pill {
+  margin-right: 18px;
+}
+.login-field.is-masked input.login-input {
+  opacity: 0;
+}
+.login-field.is-masked.is-editing input.login-input {
+  opacity: 1;
+}
+.login-field.is-masked.is-editing .setup-mask {
+  display: none;
+}
+.setup-mask {
+  line-height: 45px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.setup-mask.is-placeholder {
+  color: #6b5f96;
+}
+.login-field.is-focused .setup-mask.is-placeholder {
+  color: #7a6ea8;
+}

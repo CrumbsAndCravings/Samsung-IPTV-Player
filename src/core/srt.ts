@@ -30,6 +30,16 @@ function cleanLine(line: string): string {
     .trim();
 }
 
+// Text from AVPlay's embedded tracks can carry the same tags as a file.
+export function cleanCueText(raw: string): string {
+  return raw
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map(cleanLine)
+    .filter((line) => line !== "")
+    .join("\n");
+}
+
 export function parseSubtitles(raw: string): Cue[] {
   const text = raw.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
   const cues: { cue: Cue; i: number }[] = [];

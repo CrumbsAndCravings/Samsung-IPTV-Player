@@ -8,6 +8,7 @@ import { createReadStream, existsSync, statSync } from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { handleMockOs } from "../dev/mock-opensubtitles.mjs";
 import { handleMock } from "../dev/mock-xtream.mjs";
 import { copyStatic, dist, esbuildOptions } from "./build.mjs";
 
@@ -51,7 +52,7 @@ export async function startDevServer({ port = Number(process.env.PORT || 8080), 
   if (watch) await ctx.watch();
   else await ctx.dispose();
   const server = http.createServer((req, res) => {
-    if (!handleMock(req, res)) serveApp(req, res);
+    if (!handleMock(req, res) && !handleMockOs(req, res)) serveApp(req, res);
   });
   await new Promise((resolve) => server.listen(port, resolve));
   return server;

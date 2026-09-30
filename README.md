@@ -2,7 +2,7 @@
 
 ARAN+ is a cosy, Netflix-style IPTV player for movies and series from an Xtream Codes provider. This repo is the Samsung Tizen version, built for a Samsung Q60 series 65" TV and laid out for 1920x1080. The Roku app ([CrumbsAndCravings/roku-iptv-player](https://github.com/CrumbsAndCravings/roku-iptv-player)) is the working reference for every feature, and its [`docs/samsung-plan.md`](https://github.com/CrumbsAndCravings/roku-iptv-player/blob/main/docs/samsung-plan.md) is the build plan this repo follows.
 
-## Status: M3 (the player)
+## Status: M4 (audio and subtitles)
 
 | | Scope | State |
 |---|---|---|
@@ -10,7 +10,7 @@ ARAN+ is a cosy, Netflix-style IPTV player for movies and series from an Xtream 
 | **M1** | `core/` ports with tests, storage, mock server, desktop harness | Done: every applicable Roku check is ported and passes, plus new subtitle-file and playability modules |
 | **M2** | Login, Home, Details, account menu | Done: browsing works on the TV |
 | **M3** | Player: controls, jump preview, resume, Up Next, errors | Built and tested in the desktop harness; waiting on a TV test |
-| M4 | Audio and subtitle tracks, OpenSubtitles | |
+| **M4** | Audio and subtitle tracks, OpenSubtitles | Built and tested in the desktop harness with a fake OpenSubtitles; waiting on a TV test |
 | M5 | Search, motion polish, performance pass | |
 
 What the app does now:
@@ -20,13 +20,16 @@ What the app does now:
 - **The hero** at the top shows the focused title's backdrop, year, runtime, genre, rating and plot; movie details arrive after you rest on a poster for a moment.
 - **Details** for movies (Play, or Resume and Play from start) and series (seasons, with Specials first, and the episode list with stills, runtimes and synopses).
 - **"Won't play"** marks titles this TV can't play (AVI, for now), with "Try anyway".
-- **Account menu** (the round button at the right of the tabs): Keep watching, Setup checks, Sign out.
-- **The player.** Back and the title at the top; play/pause, the bar and the times at the bottom; Episodes, Next episode and Restart underneath. The controls show when you press a key and hide after 5 seconds of playing.
+- **Account menu** (the round button at the right of the tabs): Keep watching, Online subtitles, Setup checks, Sign out.
+- **The player.** Back and the title at the top; play/pause, the bar and the times at the bottom; Audio & subtitles, Episodes, Next episode and Restart underneath. The controls show when you press a key and hide after 5 seconds of playing.
 - **Jump preview.** Press or hold **Left/Right** (or Rewind/Fast forward) and the bar shows where you'll land before you get there; the longer you hold, the bigger the steps. The jump happens a moment after you let go, **OK** jumps straight away and **Back** cancels.
 - **Resume and Continue Watching.** Progress is saved every 15 seconds and when you leave. Resuming starts 5 seconds early. A movie drops out of Continue Watching when you finish it; a series moves on to the next episode.
 - **Up Next** counts down 8 seconds at the end of an episode, then plays the next one (specials come after the last season). **OK** plays it now, **Back** stops.
 - **Errors explain themselves.** A stream that fails is tried once more; if it fails again you see Samsung's reason, the file's format, whether this TV normally plays files like it, and the stream address with your login hidden. Files this TV can't play (AVI) say so before they try.
-- Search comes in M5, audio and subtitle tracks in M4.
+- **Audio & subtitles** (in the player's buttons): the file's own audio and subtitle tracks, then English subtitles from OpenSubtitles. ARAN+ draws the subtitles itself, lifted above the controls when they show. Your choice is remembered for the next video.
+- **Online subtitles.** Connect OpenSubtitles once (account menu, **Online subtitles**: API key, and your username and password for about 20 downloads a day). Then "Find English subtitles online" lists the best matches, with "matches this file" first when one was made for your exact video. The file is fetched once, so **Show subtitles 1s earlier / later** costs no download.
+- **Automatic subtitles.** Once you've picked an online subtitle, later videos without English subtitles of their own get the best match by themselves a few seconds after they start.
+- Search comes in M5.
 
 Remote: **Up** from the first row (or **Left** from a row's first poster) reaches the tabs. **Back** jumps to the first row, then the tabs, then asks to exit. On Details, **Down** reaches the seasons and episodes. In the player, **OK** pauses, **Up** reaches Back, **Down** reaches the buttons, **Back** hides the controls and then leaves, and **Stop** leaves at once.
 

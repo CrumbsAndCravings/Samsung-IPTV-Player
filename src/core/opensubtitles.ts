@@ -1,5 +1,5 @@
 // OpenSubtitles helpers with no network, ported from the Roku app's SubtitleTask.brs.
-// The rest (search, ranking, download, moviehash) arrives in M4.
+// The calls themselves are in data/opensubtitles.ts.
 
 import { field, fieldStr, firstText, isArr, Json, toInt, toStr } from "./utils";
 
@@ -121,4 +121,45 @@ export function subtitleLabel(candidate: OsCandidate): string {
   if (candidate.sdh) label += " · SDH";
   if (candidate.machine) label += " · auto-translated";
   return label;
+}
+
+// What to search for: a movie by its TMDB id, or an episode by its series' TMDB id,
+// season and number; by title when there's no id. `hash` is the file's moviehash, or "".
+export interface FindRequest {
+  kind: "movie" | "episode";
+  title: string; // the movie's title or the series' name, as the provider has it
+  tmdbId: string; // the movie's, or the series' for an episode
+  season: number;
+  episode: number;
+  hash: string;
+}
+
+// The /subtitles queries to try in order: by TMDB id first, then by title when the id
+// finds nothing (Roku's osFind).
+export function findQueries(req: FindRequest): string[] {
+  const base: { [key: string]: string | number } = { languages: "en" };
+  if (req.hash) base.moviehash = req.hash;
+  const byTitle = (): { [key: string]: string | number } => {
+    const cleaned = cleanTitleForSearch(req.title);
+    const params: { [key: string]: string | number } = { ...base, query: cleaned.query };
+    if (req.kind === "movie" && cleaned.year) params.year = cleaned.year;
+    return params;
+  };
+  const shape = (params: { [key: string]: string | number }) => {
+    if (req.kind === "episode") {
+      params.type = "episode";
+      params.season_number = req.season;
+      params.episode_number = req.episode;
+    } else params.type = "movie";
+    return osQuery(params);
+  };
+  const queries: string[] = [];
+  if (req.tmdbId) {
+    const params: { [key: string]: string | number } = { ...base };
+    if (req.kind === "episode") params.parent_tmdb_id = req.tmdbId;
+    else params.tmdb_id = req.tmdbId;
+    queries.push(shape(params));
+  }
+  if (cleanTitleForSearch(req.title).query) queries.push(shape(byTitle()));
+  return queries;
 }

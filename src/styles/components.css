@@ -226,3 +226,16 @@
 .dialog-buttons .pill:last-child {
   margin-right: 0;
 }
+.dialog-list {
+  top: 225px;
+}
+.dialog-buttons.is-vertical .pill {
+  display: block;
+  box-sizing: border-box;
+  width: 480px;
+  margin: 0 auto 15px;
+  text-align: center;
+}
+.dialog-buttons.is-vertical .pill:last-child {
+  margin: 0 auto;
+}

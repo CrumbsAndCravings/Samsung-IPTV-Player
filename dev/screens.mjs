@@ -105,6 +105,10 @@ try {
     await page.waitForTimeout(1200);
 
     await page.keyboard.press("ArrowDown");
+    await page.keyboard.press("Enter"); // Audio & subtitles
+    await shot("player-tracks");
+    await page.keyboard.press("Backspace");
+    await page.keyboard.press("ArrowRight");
     await page.keyboard.press("Enter"); // Episodes
     await shot("player-episodes");
     await page.keyboard.press("Backspace");
@@ -154,6 +158,48 @@ try {
   for (let i = 0; i < 5; i++) await page.keyboard.press("ArrowRight");
   await page.keyboard.press("Enter");
   await shot("account-menu");
+
+  // Online subtitles, with the fake OpenSubtitles (key, username and password "demo").
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await page.waitForSelector(".subtitle-setup");
+  await page.waitForTimeout(300);
+  await type("demo");
+  await type("demo");
+  await type("demo");
+  await page.keyboard.press("Enter"); // Save and check
+  await page.waitForTimeout(1200);
+  await shot("subtitle-setup");
+
+  if (hasVideo) {
+    // Play an episode, search online and pick the best match.
+    await page.keyboard.press("Backspace");
+    await page.waitForTimeout(400);
+    await page.keyboard.press("ArrowLeft");
+    await page.keyboard.press("ArrowLeft");
+    await page.keyboard.press("ArrowLeft");
+    await page.keyboard.press("Enter"); // Series
+    await page.waitForTimeout(2000);
+    await page.keyboard.press("ArrowDown");
+    await page.keyboard.press("Enter");
+    await page.waitForSelector(".screen.details");
+    await page.waitForTimeout(1500);
+    await page.keyboard.press("Enter"); // Play
+    await page.waitForSelector(".player-controls.is-visible", { timeout: 15000 });
+    await page.waitForTimeout(500);
+    await page.keyboard.press("ArrowDown");
+    await page.keyboard.press("Enter"); // Audio & subtitles
+    await page.keyboard.press("ArrowDown");
+    await page.keyboard.press("Enter"); // Find English subtitles online
+    await page.waitForTimeout(1200);
+    await page.keyboard.press("Enter"); // the best match
+    await page.waitForTimeout(1500);
+    await shot("player-subtitles-panel");
+    await page.keyboard.press("Backspace");
+    await page.keyboard.press("Backspace");
+    await page.waitForTimeout(2000);
+    await shot("player-subtitles");
+  }
 } finally {
   await browser.close();
   server.close();

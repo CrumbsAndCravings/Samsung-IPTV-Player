@@ -148,6 +148,15 @@ export class AvPlayer implements Player {
     }
   }
 
+  currentTracks(): Track[] {
+    try {
+      return (this.av.getCurrentStreamInfo() || []).map(toTrack);
+    } catch (err) {
+      log("getCurrentStreamInfo failed:", err);
+      return [];
+    }
+  }
+
   selectTrack(kind: "AUDIO" | "TEXT", index: number): void {
     this.av.setSelectTrack(kind, index);
   }
