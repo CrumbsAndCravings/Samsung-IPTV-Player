@@ -7,7 +7,7 @@ ARAN+ is a cosy, Netflix-style IPTV player for movies and series from an Xtream 
 | | Scope | State |
 |---|---|---|
 | **M0** | Repo, config.xml, hello-world screen with fonts and palette, packaging and install scripts, the TV checks | Done on the TV; a few checks still open, see [docs/m0-findings.md](docs/m0-findings.md) |
-| M1 | `core/` ports with tests, storage, mock server, desktop harness | Started: utils, Xtream parsing, storage |
+| **M1** | `core/` ports with tests, storage, mock server, desktop harness | Done: every applicable Roku check is ported and passes, plus new subtitle-file and playability modules |
 | M2 | Login, Home, Details, account menu | |
 | M3 | Player: controls, jump preview, resume, Up Next, errors | |
 | M4 | Audio and subtitle tracks, OpenSubtitles | |
@@ -60,13 +60,16 @@ M0 is done when the ARAN+ tile opens on the TV and shows the engine version, the
 
 ```sh
 npm install
-npm run dev        # desktop harness on http://localhost:8080 (use a 1920x1080 window)
+npm run dev        # desktop harness and fake IPTV server on http://localhost:8080
 npm test           # unit tests (vitest)
 npm run check      # typecheck, lint, tests, bundle, and an ES2018 syntax check of the bundle
+npm run screens    # screenshots of each screen from the harness, in out/screens
 npm run images     # regenerate icon.png and the glows (needs Pillow)
 ```
 
-In the desktop harness the arrow keys, Enter, and Escape (as Back) stand in for the remote, and the player falls back to HTML5 video, which plays MP4 only. The TV-only APIs (`tizen`, `webapis`) are absent there, so the TV fields stay blank.
+In the desktop harness the arrow keys, Enter, and Escape (as Back) stand in for the remote, and the player falls back to HTML5 video (MP4 and WebM only). The TV-only APIs (`tizen`, `webapis`) are absent there, so the TV fields stay blank.
+
+The harness includes a fake Xtream server (`dev/mock-xtream.mjs`): sign in with server `localhost:8080`, username `demo`, password `demo`. It has a few hundred made-up movies and series with generated artwork, and it reproduces the real provider's quirks (numbers as strings, `info: []`, episodes as a plain array, title prefixes, adult categories). Streams play `dev/media/sample.mp4` if you put one there. No real account is ever needed to develop.
 
 Every push runs the same checks on GitHub Actions and uploads the unsigned build as an artifact.
 
@@ -85,8 +88,13 @@ config.xml  index.html  icon.png     Tizen package files
 src/
   main.ts                            boot, keys, background/foreground handling
   core/                              pure logic, unit tested (ports of the Roku app)
-    utils.ts xtream.ts storage.ts    Utils.brs, XtreamParse.brs, Registry.brs
-    opensubtitles.ts                 the parts of SubtitleTask.brs needed so far
+    utils.ts items.ts xtream.ts      Utils.brs and XtreamParse.brs: helpers, items, rows, details
+    storage.ts progress.ts           Registry.brs and Progress.brs (Continue Watching)
+    tracks.ts playback.ts            Tracks.brs and Playback.brs (track labels, seeking)
+    search.ts                        SearchIndex.brs
+    opensubtitles.ts oshash.ts       Subtitles.brs: queries, ranking, moviehash without BigInt
+    srt.ts                           new: SRT/WebVTT parsing and cue lookup with a delay
+    compat.ts                        new: will it play on this TV (M0 results plus what it learns)
     device.ts redact.ts log.ts       engine and model year, secret hiding, on-screen log
   platform/                          Tizen and browser APIs
     http.ts keys.ts tizen.ts         XHR with timeouts, remote keys, device info
@@ -96,7 +104,9 @@ src/
   styles/                            design tokens, base styles, screen styles
 assets/fonts  assets/images          Fredoka and Nunito (SIL OFL), generated glows
 tests/                               vitest
+dev/                                 fake Xtream server, screenshot script
 tools/                               build, dev server, Tizen CLI wrapper, image generator
+docs/m0-findings.md                  what the TV told us in M0, and the decisions it changed
 ```
 
 ### Keep secrets out of git

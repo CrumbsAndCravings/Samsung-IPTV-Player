@@ -19,7 +19,8 @@
     "install:tv": "node tools/tizen.mjs install",
     "run:tv": "node tools/tizen.mjs run",
     "debug:tv": "node tools/tizen.mjs debug",
-    "images": "python3 tools/make_images.py"
+    "images": "python3 tools/make_images.py",
+    "screens": "node dev/screens.mjs"
   },
   "dependencies": {
     "qrcode-generator": "^2.0.4"
@@ -30,6 +31,7 @@
     "esbuild": "^0.28.2",
     "eslint": "^10.11.0",
     "globals": "^17.12.0",
+    "playwright-core": "^1.63.0",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.71.0",
     "vitest": "^5.0.3"

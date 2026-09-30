@@ -1,7 +1,7 @@
 // Turns Xtream Codes API responses into plain data. Ported from the Roku app's
 // XtreamParse.brs; no network or DOM here, so tests can feed in sample responses.
-// (Rows and the search index arrive with the rest of the ports in M1.)
 
+import { Item, makeItem, Row } from "./items";
 import {
   clockToSeconds,
   field,
@@ -16,6 +16,11 @@ import {
   toInt,
   yearOf,
 } from "./utils";
+
+// TMDB sizes for a 1920x1080 screen (Roku used w185 posters and w780 backdrops at 720p).
+export const POSTER_SIZE = "w342";
+export const BACKDROP_SIZE = "w1280";
+export const STILL_SIZE = "w300";
 
 export type AuthResult = { ok: true } | { ok: false; error: string };
 
@@ -105,7 +110,7 @@ export function parseVodInfo(data: Json): VodInfo {
     starring: firstText([info.cast, info.actors]),
     directedBy: fieldStr(info, "director"),
     durationSecs: duration,
-    backdrop: sizedImage(firstUrl(info.backdrop_path), "w780"),
+    backdrop: sizedImage(firstUrl(info.backdrop_path), BACKDROP_SIZE),
     poster: firstText([info.movie_image, info.cover_big]),
     ext: fieldStr(movie, "container_extension"),
     tmdbId: firstText([info.tmdb_id, info.tmdb]),
@@ -225,7 +230,7 @@ export function parseSeriesInfo(data: Json): { info: SeriesInfo; seasons: Season
       score: fieldStr(info, "rating"),
       starring: fieldStr(info, "cast"),
       directedBy: fieldStr(info, "director"),
-      backdrop: sizedImage(firstUrl(info.backdrop_path), "w780"),
+      backdrop: sizedImage(firstUrl(info.backdrop_path), BACKDROP_SIZE),
       poster: fieldStr(info, "cover"),
       tmdbId: firstText([info.tmdb_id, info.tmdb]),
     },
@@ -245,7 +250,7 @@ function parseEpisode(ep: JsonObject, seasonNo: number, seriesName: string): Epi
     id: fieldStr(ep, "id"),
     title,
     description: fieldStr(info, "plot"),
-    still: sizedImage(fieldStr(info, "movie_image"), "w300"),
+    still: sizedImage(fieldStr(info, "movie_image"), STILL_SIZE),
     ext: fieldStr(ep, "container_extension"),
     seasonNo,
     episodeNo: number,
@@ -277,9 +282,79 @@ export function parseList(data: Json, kind: "movie" | "series"): ListItem[] {
       kind,
       id,
       name: fieldStr(raw, "name"),
-      poster: sizedImage(fieldStr(raw, kind === "series" ? "cover" : "stream_icon"), "w185"),
+      poster: sizedImage(fieldStr(raw, kind === "series" ? "cover" : "stream_icon"), POSTER_SIZE),
       ext: fieldStr(raw, "container_extension").toLowerCase(),
     });
   }
   return items;
+}
+
+// One home-screen row: the newest `limit` titles from get_vod_streams or get_series
+// (by "added" for movies, "last_modified" for series), without adult titles.
+export function buildRow(data: Json, kind: "movie" | "series", title: string, limit: number): Row {
+  const sortField = kind === "series" ? "last_modified" : "added";
+  const list: { raw: JsonObject; key: number; i: number }[] = [];
+  if (isArr(data)) {
+    data.forEach((raw, i) => {
+      if (isObj(raw) && !isAdultItem(raw)) list.push({ raw, key: toInt(raw[sortField]), i });
+    });
+  }
+  list.sort((a, b) => b.key - a.key || a.i - b.i);
+  const items = list.slice(0, limit).map((entry) => (kind === "series" ? seriesItem(entry.raw) : movieItem(entry.raw)));
+  return { title, items };
+}
+
+function movieItem(raw: JsonObject): Item {
+  return makeItem({
+    kind: "movie",
+    title: fieldStr(raw, "name"),
+    poster: sizedImage(fieldStr(raw, "stream_icon"), POSTER_SIZE),
+    itemId: fieldStr(raw, "stream_id"),
+    ext: fieldStr(raw, "container_extension"),
+    tmdbId: firstText([raw.tmdb, raw.tmdb_id]),
+    score: fieldStr(raw, "rating"),
+    year: yearOf(firstText([raw.year, raw.releaseDate])),
+    description: fieldStr(raw, "plot"),
+    genre: fieldStr(raw, "genre"),
+  });
+}
+
+function seriesItem(raw: JsonObject): Item {
+  return makeItem({
+    kind: "series",
+    title: fieldStr(raw, "name"),
+    poster: sizedImage(fieldStr(raw, "cover"), POSTER_SIZE),
+    itemId: fieldStr(raw, "series_id"),
+    seriesId: fieldStr(raw, "series_id"),
+    tmdbId: firstText([raw.tmdb, raw.tmdb_id]),
+    backdrop: sizedImage(firstUrl(raw.backdrop_path), BACKDROP_SIZE),
+    description: fieldStr(raw, "plot"),
+    year: yearOf(firstText([raw.releaseDate, raw.release_date, raw.year])),
+    genre: fieldStr(raw, "genre"),
+    score: fieldStr(raw, "rating"),
+    starring: fieldStr(raw, "cast"),
+    directedBy: fieldStr(raw, "director"),
+    hasInfo: true,
+  });
+}
+
+// An episode as an item, for the episode list and the player.
+export function episodeItem(ep: Episode, seriesId: string): Item {
+  return makeItem({
+    kind: "episode",
+    itemId: ep.id,
+    seriesId,
+    title: ep.title,
+    description: ep.description,
+    poster: ep.still,
+    ext: ep.ext,
+    seasonNo: ep.seasonNo,
+    episodeNo: ep.episodeNo,
+    durationSecs: ep.durationSecs,
+    width: ep.width,
+    videoCodec: ep.videoCodec,
+    videoProfile: ep.videoProfile,
+    audioCodec: ep.audioCodec,
+    hasInfo: true,
+  });
 }

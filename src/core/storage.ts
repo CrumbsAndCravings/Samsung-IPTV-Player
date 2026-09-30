@@ -87,6 +87,21 @@ export function clearAccount(): void {
   regDelete("opensubtitles", "account");
 }
 
+// Player preferences, e.g. { audio: "hin", subtitles: "eng" } (language codes, "off"
+// or "online").
+export function loadPrefs(): { [key: string]: string } {
+  const prefs = readJson("prefs", "player");
+  const out: { [key: string]: string } = {};
+  if (isObj(prefs)) for (const key of Object.keys(prefs)) out[key] = fieldStr(prefs, key);
+  return out;
+}
+
+export function savePref(key: string, value: string): void {
+  const prefs = loadPrefs();
+  prefs[key] = value;
+  writeJson("prefs", "player", prefs);
+}
+
 // OpenSubtitles account. Stays on the TV.
 export interface OsAccount {
   apiKey: string;

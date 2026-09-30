@@ -45,7 +45,7 @@ describe("VOD info", () => {
     expect(vod.description).toBe("Heist.");
     expect(vod.year).toBe("2019");
     expect(vod.durationSecs).toBe(5400);
-    expect(vod.backdrop).toBe("https://image.tmdb.org/t/p/w780/h.jpg");
+    expect(vod.backdrop).toBe("https://image.tmdb.org/t/p/w1280/h.jpg");
     expect(vod.ext).toBe("mkv");
     expect(vod.videoCodec).toBe("h264");
     expect(vod.tmdbId).toBe("603");
@@ -83,7 +83,7 @@ describe("series info", () => {
   it("reads the show", () => {
     expect(info.info.name).toBe("Breaking Bad");
     expect(info.info.tmdbId).toBe("1396");
-    expect(info.info.backdrop).toBe("https://image.tmdb.org/t/p/w780/s.jpg");
+    expect(info.info.backdrop).toBe("https://image.tmdb.org/t/p/w1280/s.jpg");
   });
   it("orders seasons and names them", () => {
     expect(info.seasons.length).toBe(3);
@@ -134,7 +134,7 @@ describe("lists", () => {
       ],
       "movie",
     );
-    expect(items).toEqual([{ kind: "movie", id: "1", name: "One", poster: "https://image.tmdb.org/t/p/w185/a.jpg", ext: "mkv" }]);
+    expect(items).toEqual([{ kind: "movie", id: "1", name: "One", poster: "https://image.tmdb.org/t/p/w342/a.jpg", ext: "mkv" }]);
     expect(parseList([{ name: "Show", series_id: 7, cover: "" }], "series")[0].id).toBe("7");
     expect(parseList({}, "movie")).toEqual([]);
   });
