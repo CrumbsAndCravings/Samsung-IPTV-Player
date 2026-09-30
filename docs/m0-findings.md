@@ -40,21 +40,22 @@ The user agent has no `Chrome/` token: `... (KHTML, like Gecko) 69.0.3497.106/5.
 |---|---|
 | That '70s Show S1:E2, MKV, HEVC Main 10, AAC | Played; 15.5 s to start |
 | Lost in Paradise (2026), MKV, HEVC Main, AAC | Played; 5.3 s to start; two English text tracks |
-| Cheetahs Up Close, MP4, H.264 High, AAC 5.1 | Played; 3.7 s to start; seek reported failed (see below) |
+| Cheetahs Up Close, MP4, H.264 High, AAC 5.1 | Played; 3.7 s to start; seeking works (a 30 s jump lands; 0.1.0's "seek failed" was its own check giving up too early) |
 | Harry Potter and the Order of the Phoenix, AVI, MPEG-4 ASP, MP3 | Failed three times: `PLAYER_ERROR_NOT_SUPPORTED_FORMAT` while preparing |
 | They Will Kill You, MKV (0.1.1) | Played |
-| Man of Steel, AVI (0.1.1) | Failed |
-| DTS audio | Not tried yet |
+| Man of Steel, AVI (0.1.1) | Failed: `PLAYER_ERROR_NOT_SUPPORTED_FORMAT` |
+| A third AVI (0.1.1) | Failed: `PLAYER_ERROR_NOT_SUPPORTED_FORMAT` |
+| The Sweeney, AVI (0.1.1) | No error, but seeking failed; most likely it played (to confirm) |
+| DTS audio | None found: no DTS among the 27 titles whose codecs the provider reported |
 
-HEVC, the reason for moving to Samsung, works. AVI doesn't: both AVIs tried failed, while every MKV and MP4 played.
+HEVC, the reason for moving to Samsung, works. Most AVIs don't: three of four failed as soon as they opened, while every MKV and MP4 played. The one that seems to play couldn't seek, which fits AVI over HTTP: jumping needs the index at the end of the file. The "More AVI files" list had no codec details, so what sets The Sweeney apart is unknown.
 
 **Embedded subtitles work.** With 0.1.1, Lost in Paradise's English text track showed on screen once selected: AVPlay hands the text to `onsubtitlechange` and ARAN+ draws it. That '70s Show has no text track (`T: none`), so it needs online subtitles (M4).
 
 ## Still open
 
-- **The error name for Man of Steel**, to confirm it matches Harry Potter's.
-- **Seeking.** 0.1.0 checked the position 1.5 s after a seek, which is too soon for a progressive file. 0.1.1 waits up to 10 s and logs where it landed.
-- **DTS audio.**
+- **Whether The Sweeney really played,** and its codecs. The Details screen (M2) fetches codecs for every movie, so AVI results can be matched to them as they come in.
+- **DTS audio,** whenever a DTS title turns up.
 - **Slow start of the Main 10 file** (15.5 s). Worth timing again.
 
 ## Decisions for later milestones
@@ -63,5 +64,6 @@ HEVC, the reason for moving to Samsung, works. AVI doesn't: both AVIs tried fail
 - **One stream at a time.** Never open a second connection to a stream while one is playing. Compute the moviehash (M4) before starting playback, not during. Don't pre-load the next episode. After stopping a stream, expect the provider to take a moment to free the slot; retry once after a short wait.
 - **OpenSubtitles headers:** send `Api-Key` and `X-User-Agent: ARANplus v<version>`. Don't count on `User-Agent`.
 - **Search index (M5):** load series with the single call. Load movies per category in the background, three at a time, from the first search of a session; it takes over a minute, so the "Still indexing your library" note matters. Consider keeping the index between sessions.
-- **Playability check (M2 and M3):** mark AVI "Won't play" on this TV, with "OK to try anyway" as on Roku. It is 1.6 % of the movies. Remember other failures per title rather than per codec combination, so one bad file doesn't mark a whole format.
+- **Playability check (M2 and M3):** warn before AVI ("AVI files often don't play on this TV") with "OK to try anyway", rather than a flat "Won't play", because some AVIs do play. Remember each title's result (played or failed, with the provider's codecs) and use it next time. AVI is 1.6 % of the movies.
+- **Seeking can fail on a file that plays** (AVI). The player (M3) must keep playing, say jumping isn't available for this file, and stop offering jump previews for it.
 - **Provider throttling (likely, not confirmed):** after the setup screen loaded all movies category by category (well over a hundred requests in about a minute), the provider stopped answering for a while, and sign-in timed out until it recovered. Keep request bursts small (at most three at once, with pauses between batches) and cache what is already loaded.
