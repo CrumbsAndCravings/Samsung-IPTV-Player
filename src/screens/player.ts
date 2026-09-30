@@ -893,6 +893,7 @@ export class PlayerScreen implements Screen {
 
   onShow(): void {
     document.body.classList.add("playing");
+    if (this.app.library) this.app.library.hold(true);
     if (this.booted) {
       // Back from the online subtitles setup: pick up the account, panel still open.
       this.online.configured = loadOsAccount() !== null;
@@ -906,6 +907,7 @@ export class PlayerScreen implements Screen {
 
   onHide(): void {
     document.body.classList.remove("playing");
+    if (this.app.library) this.app.library.hold(false);
   }
 
   destroy(): void {

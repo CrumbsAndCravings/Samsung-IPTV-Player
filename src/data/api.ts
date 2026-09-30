@@ -22,6 +22,9 @@ export class XtreamApi {
   private lastStart = 0;
   private timer = 0;
   private cache: { [key: string]: Promise<unknown> } = {};
+  // Every whole category that arrives is handed here too, so Search can index what
+  // Home already loaded instead of asking for it again.
+  onList: ((kind: "movie" | "series", categoryId: string, data: unknown) => void) | null = null;
 
   constructor(readonly creds: Creds) {}
 
@@ -64,8 +67,8 @@ export class XtreamApi {
     return this.cache[key] as Promise<T>;
   }
 
-  private json(action: string, params?: { [key: string]: string }): Promise<unknown> {
-    return this.fetch(apiUrl(this.creds, action, params)).then((res) => {
+  private json(action: string, params?: { [key: string]: string }, timeoutMs?: number): Promise<unknown> {
+    return this.fetch(apiUrl(this.creds, action, params), timeoutMs).then((res) => {
       if (!res.ok) {
         log("api", action, "failed:", res.error);
         throw new ApiError(res.error);
@@ -83,8 +86,18 @@ export class XtreamApi {
   row(kind: "movie" | "series", categoryId: string, title: string, limit = 40): Promise<Row> {
     const action = kind === "series" ? "get_series" : "get_vod_streams";
     return this.cached("row:" + kind + ":" + categoryId, () =>
-      this.json(action, { category_id: categoryId }).then((data) => buildRow(data, kind, title, limit)),
+      this.json(action, { category_id: categoryId }).then((data) => {
+        if (this.onList) this.onList(kind, categoryId, data);
+        return buildRow(data, kind, title, limit);
+      }),
     );
+  }
+
+  // A whole category, or the whole library when `categoryId` is "", uncached (for the
+  // search index, which keeps only what it needs).
+  list(kind: "movie" | "series", categoryId: string, timeoutMs: number): Promise<unknown> {
+    const action = kind === "series" ? "get_series" : "get_vod_streams";
+    return this.json(action, categoryId ? { category_id: categoryId } : undefined, timeoutMs);
   }
 
   vodInfo(id: string): Promise<VodInfo> {

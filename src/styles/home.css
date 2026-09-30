@@ -68,11 +68,13 @@
   height: 522px;
   overflow: hidden;
 }
+/* The rows and each row's posters slide as layers the GPU moves, not repaints. */
 .rows-track {
   position: absolute;
   left: 72px;
   top: 36px;
   transition: transform 300ms var(--ease-out);
+  will-change: transform;
 }
 .row {
   position: absolute;
@@ -94,6 +96,7 @@
   position: relative;
   height: 306px;
   transition: transform 250ms var(--ease-out);
+  will-change: transform;
 }
 
 .home-status {

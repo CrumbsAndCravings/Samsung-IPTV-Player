@@ -16,6 +16,7 @@ import { itemKey, posterEl } from "../ui/poster";
 import { Backdrop } from "../ui/backdrop";
 import { DetailsScreen } from "./details";
 import { SetupChecksScreen } from "./setup";
+import { SearchScreen } from "./search";
 import { SubtitleSetupScreen } from "./subtitle-setup";
 
 const TABS = ["Home", "Movies", "Series", "Search"];
@@ -427,11 +428,7 @@ export class HomeScreen implements Screen {
       return;
     }
     if (TABS[this.navCursor] === "Search") {
-      this.app.dialog({
-        title: "Search is on its way",
-        message: "Searching your whole library arrives in a later update. For now, browse Movies and Series.",
-        buttons: [{ label: "OK" }],
-      });
+      this.app.push(new SearchScreen(this.app));
       return;
     }
     if (this.failed) {

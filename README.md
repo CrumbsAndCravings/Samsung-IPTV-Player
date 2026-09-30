@@ -2,7 +2,7 @@
 
 ARAN+ is a cosy, Netflix-style IPTV player for movies and series from an Xtream Codes provider. This repo is the Samsung Tizen version, built for a Samsung Q60 series 65" TV and laid out for 1920x1080. The Roku app ([CrumbsAndCravings/roku-iptv-player](https://github.com/CrumbsAndCravings/roku-iptv-player)) is the working reference for every feature, and its [`docs/samsung-plan.md`](https://github.com/CrumbsAndCravings/roku-iptv-player/blob/main/docs/samsung-plan.md) is the build plan this repo follows.
 
-## Status: M4 (audio and subtitles)
+## Status: M5 (search and polish)
 
 | | Scope | State |
 |---|---|---|
@@ -11,7 +11,7 @@ ARAN+ is a cosy, Netflix-style IPTV player for movies and series from an Xtream 
 | **M2** | Login, Home, Details, account menu | Done: browsing works on the TV |
 | **M3** | Player: controls, jump preview, resume, Up Next, errors | Built and tested in the desktop harness; waiting on a TV test |
 | **M4** | Audio and subtitle tracks, OpenSubtitles | Built and tested in the desktop harness with a fake OpenSubtitles; waiting on a TV test |
-| M5 | Search, motion polish, performance pass | |
+| **M5** | Search, motion polish, performance pass | Built and measured in the desktop harness with the CPU slowed 6x; waiting on a TV test |
 
 What the app does now:
 
@@ -29,7 +29,7 @@ What the app does now:
 - **Audio & subtitles** (in the player's buttons): the file's own audio and subtitle tracks, then English subtitles from OpenSubtitles. ARAN+ draws the subtitles itself, lifted above the controls when they show. Your choice is remembered for the next video.
 - **Online subtitles.** Connect OpenSubtitles once (account menu, **Online subtitles**: API key, and your username and password for about 20 downloads a day). Then "Find English subtitles online" lists the best matches, with "matches this file" first when one was made for your exact video. The file is fetched once, so **Show subtitles 1s earlier / later** costs no download.
 - **Automatic subtitles.** Once you've picked an online subtitle, later videos without English subtitles of their own get the best match by themselves a few seconds after they start.
-- Search comes in M5.
+- **Search** (the Search tab): a keyboard on the left, a Movies row and a Series row on the right that update as you type. The first search of a session loads your whole library in the background (series in one go, movies one category at a time, gently, and paused while a video plays); results fill in as it arrives and the line under the keyboard says how far it has got. A USB keyboard plugged into the TV types too.
 
 Remote: **Up** from the first row (or **Left** from a row's first poster) reaches the tabs. **Back** jumps to the first row, then the tabs, then asks to exit. On Details, **Down** reaches the seasons and episodes. In the player, **OK** pauses, **Up** reaches Back, **Down** reaches the buttons, **Back** hides the controls and then leaves, and **Stop** leaves at once.
 
@@ -105,7 +105,8 @@ src/
     utils.ts items.ts xtream.ts      Utils.brs and XtreamParse.brs: helpers, items, rows, details
     storage.ts progress.ts           Registry.brs and Progress.brs (Continue Watching)
     tracks.ts playback.ts            Tracks.brs and Playback.brs (track labels, seeking)
-    search.ts                        SearchIndex.brs
+    search.ts                        SearchIndex.brs (each kind capped separately, so short queries find series)
+    subtitles.ts watch.ts seek.ts    the player's subtitle menu, progress rules and jump preview
     opensubtitles.ts oshash.ts       Subtitles.brs: queries, ranking, moviehash without BigInt
     srt.ts                           new: SRT/WebVTT parsing and cue lookup with a delay
     compat.ts                        new: will it play on this TV (M0 results plus what it learns)
@@ -116,15 +117,21 @@ src/
   ui/                                dom helper, key routing (focus rules), posters, backdrop, dialogs
   app.ts                             the screen stack and shared dialogs
   data/api.ts                        Xtream calls: session cache, at most three at once
-  screens/                           sign in, Home, Details, Setup checks
+  data/library.ts                    the search index, loaded in the background
+  data/opensubtitles.ts moviehash.ts OpenSubtitles calls and the file fingerprint
+  screens/                           sign in, Home, Search, Details, player, Online subtitles, Setup checks
   probe/                             the M0 setup checks
   styles/                            design tokens, base styles, screen styles
 assets/fonts  assets/images          Fredoka and Nunito (SIL OFL), generated glows
 tests/                               vitest
-dev/                                 fake Xtream server, screenshot script
+dev/                                 fake Xtream server, fake OpenSubtitles, screenshot script
 tools/                               build, dev server, Tizen CLI wrapper, image generator
 docs/m0-findings.md                  what the TV told us in M0, and the decisions it changed
 ```
+
+### Performance
+
+Only the rows and posters near the focus are in the page, and anything that moves (the rows, each row's posters, the backdrop's cross-fade) sits on its own layer, so moving is the GPU's work rather than a repaint. Animations use transform and opacity only. In the harness with the CPU slowed 6x (Chrome DevTools throttling, roughly the TV's speed) and JPEG artwork like the provider's, scrolling a row and moving between rows stay at 60 fps for more than 95 % of frames, and a key press reaches the screen within about 30 ms. Searching 28,500 titles takes about 2 ms on a desktop, so a few tens of milliseconds on the TV.
 
 ### Keep secrets out of git
 

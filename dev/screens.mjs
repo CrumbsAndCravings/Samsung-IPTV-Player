@@ -61,6 +61,24 @@ try {
   await page.keyboard.press("Backspace"); // Back: to the nav bar
   await page.keyboard.press("ArrowRight");
   await shot("home-nav");
+
+  // Search: the library loads in the background; type with a computer keyboard here.
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("Enter");
+  await page.waitForSelector(".screen.search");
+  await page.waitForTimeout(300);
+  await shot("search");
+  await page.keyboard.type("silver");
+  await page.waitForTimeout(2500);
+  for (let i = 0; i < 6; i++) await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowDown");
+  await shot("search-results");
+  await page.keyboard.press("Backspace"); // results -> keyboard
+  await page.keyboard.press("Backspace"); // back to Home
+  await page.waitForTimeout(300);
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowLeft");
   await page.keyboard.press("Enter"); // Movies
   await page.waitForTimeout(2500);
   await shot("movies");

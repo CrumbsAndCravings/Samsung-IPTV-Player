@@ -16,6 +16,8 @@
   object-fit: cover;
   opacity: 0;
   transition: opacity 500ms ease-out;
+  /* Kept on its own layer, so each cross-fade doesn't repaint a 1410 px picture. */
+  will-change: opacity;
 }
 /* Fades the picture into the background on the left and at the bottom. */
 .backdrop-shade {

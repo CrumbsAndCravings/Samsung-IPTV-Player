@@ -1,0 +1,132 @@
+/* Search: the keyboard on the left, a Movies row and a Series row on the right. */
+
+.search-heading {
+  position: absolute;
+  left: 348px;
+  top: 39px;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 48px;
+  line-height: 63px;
+}
+
+.search-query {
+  position: absolute;
+  left: 72px;
+  top: 150px;
+  width: 569px;
+  height: 78px;
+  box-sizing: border-box;
+  padding: 0 33px;
+  border-radius: 999px;
+  background: var(--pill);
+  line-height: 78px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.search-query-text {
+  font-weight: 800;
+  font-size: 34px;
+  color: var(--text);
+  white-space: pre;
+}
+.search-caret {
+  display: inline-block;
+  width: 3px;
+  height: 40px;
+  margin-left: 3px;
+  vertical-align: middle;
+  background: var(--pink);
+  animation: caret-blink 1s steps(1) infinite;
+}
+.search-hint {
+  display: none;
+  margin-left: 12px;
+  font-size: 30px;
+  color: #8579b0;
+}
+.search-query.is-empty .search-hint {
+  display: inline;
+}
+@keyframes caret-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+.keyboard {
+  position: absolute;
+  left: 72px;
+  top: 258px;
+  width: 569px;
+  height: 582px;
+}
+.key {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 84px;
+  height: 72px;
+  line-height: 72px;
+  border-radius: 15px;
+  background: var(--surface-2);
+  color: var(--pill-text);
+  text-align: center;
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 34px;
+  transition: transform 120ms var(--ease-out), background-color 120ms linear, color 120ms linear;
+}
+.key-wide {
+  width: 181px;
+  font-size: 27px;
+}
+.key.is-focused {
+  background: var(--focus);
+  color: var(--on-focus);
+  transform: scale(1.08);
+}
+
+.search-status {
+  position: absolute;
+  left: 72px;
+  top: 900px;
+  width: 569px;
+  font-size: 24px;
+  line-height: 1.35;
+  color: #8579b0;
+}
+
+.search-results {
+  position: absolute;
+  left: 705px;
+  top: 138px;
+  width: 1215px;
+  height: 760px;
+  overflow: hidden;
+}
+.search-row {
+  left: 15px;
+  top: 12px;
+}
+.search-message {
+  position: absolute;
+  left: 720px;
+  top: 225px;
+  width: 1100px;
+  font-size: 33px;
+  line-height: 1.35;
+  color: var(--text-dim);
+}
+.search-focus-title {
+  position: absolute;
+  left: 720px;
+  top: 915px;
+  width: 1128px;
+  font-weight: 800;
+  font-size: 30px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

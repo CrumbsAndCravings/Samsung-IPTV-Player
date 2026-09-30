@@ -49,3 +49,32 @@ describe("search index", () => {
     expect(indexSearch(index, "bat", 2)[0].items.length).toBe(2);
   });
 });
+
+describe("the whole-library answer", () => {
+  it("keeps only titles from categories the app shows", () => {
+    const index = newSearchIndex();
+    indexAdd(
+      index,
+      [
+        { series_id: "1", name: "Kept Show", category_id: "10" },
+        { series_id: "2", name: "Hidden Show", category_id: "99" },
+      ],
+      "series",
+      { "10": true },
+    );
+    expect(index.names).toEqual([" kept show"]);
+  });
+});
+
+describe("short queries on a big library", () => {
+  it("still find series when thousands of movies match first", () => {
+    const index = newSearchIndex();
+    const movies = [];
+    for (let i = 0; i < 2500; i++) movies.push({ stream_id: i, name: "Summer " + i });
+    indexAdd(index, movies, "movie");
+    indexAdd(index, [{ series_id: 1, name: "Summer Heights" }], "series");
+    const rows = indexSearch(index, "s", 40);
+    expect(rows.map((r) => r.title)).toEqual(["Movies", "Series"]);
+    expect(rows[1].items[0].title).toBe("Summer Heights");
+  });
+});
