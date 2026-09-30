@@ -45,6 +45,14 @@ export function describeTracks(tracks: Track[]): string {
   return parts.join(" · ");
 }
 
+// AVPlay reports failures as a generic WebAPIException name (TypeMismatchError,
+// UnknownError…) with the real reason, PLAYER_ERROR_*, in the message.
+export function errorLabel(name: string, detail: string): string {
+  const code = /PLAYER_ERROR_[A-Z_]+/.exec(detail);
+  if (code) return code[0];
+  return detail ? name + ": " + detail : name;
+}
+
 function stripTags(text: string): string {
   return text.replace(/<[^>]*>/g, "").replace(/\{\\[^}]*\}/g, "");
 }
@@ -182,7 +190,7 @@ export class PlayTest implements KeyTarget {
     // Errors after real playback (and the "ended" that can follow them) don't undo it.
     if (!this.played) {
       this.result.outcome = "failed";
-      this.result.error = name;
+      this.result.error = errorLabel(name, detail);
     }
     setText(this.noteEl, "Error: " + name + (detail ? " (" + detail + ")" : "") + (this.played ? "" : " · OK to try again"));
     this.player.close();

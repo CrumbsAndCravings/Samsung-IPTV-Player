@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { ListItem } from "../src/core/xtream";
 import { matchTitles } from "../src/probe/library";
 import { PlayResult, ProbeState, reportLines, reportText } from "../src/probe/report";
+import { errorLabel } from "../src/probe/playtest";
 import { infoQueue, Sample, slotsFor } from "../src/probe/samples";
 
 function sample(ext: string, video: string, audio: string): Sample {
@@ -85,5 +86,15 @@ describe("report", () => {
     const text = reportText({ ...empty, plays: [play("played", ["hevc-mkv"])] }, "0.1.0");
     expect(text.split("\n")[0]).toBe("ARAN+ 0.1.0 setup report");
     expect(text).toContain("play hevc-mkv: played 2100ms seek ok | Title | mkv/hevc/Main 10/eac3 w3840 | V: HEVC 3840x2160");
+  });
+});
+
+describe("player error labels", () => {
+  it("keeps AVPlay's PLAYER_ERROR code rather than the exception name", () => {
+    expect(errorLabel("TypeMismatchError", "PLAYER_ERROR_NOT_SUPPORTED_FORMAT")).toBe("PLAYER_ERROR_NOT_SUPPORTED_FORMAT");
+    expect(errorLabel("PLAYER_ERROR_CONNECTION_FAILED", "")).toBe("PLAYER_ERROR_CONNECTION_FAILED");
+    expect(errorLabel("MEDIA_ERR_SRC_NOT_SUPPORTED", "The browser couldn't open this video.")).toBe(
+      "MEDIA_ERR_SRC_NOT_SUPPORTED: The browser couldn't open this video.",
+    );
   });
 });
