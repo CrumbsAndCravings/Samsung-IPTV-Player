@@ -17,6 +17,7 @@ describe("playability on this TV", () => {
     expect(playCheck(file("m:3", "AVI", "mpeg4", "mp3"))).toEqual({
       verdict: "blocked",
       reason: "This is an AVI file. AVI files don't play on this TV. Your provider may have another version of this title.",
+      label: "AVI file",
     });
   });
 
@@ -25,6 +26,7 @@ describe("playability on this TV", () => {
     expect(playCheck(file("m:4", "avi", "mpeg4", "mp3"))).toEqual({
       verdict: "blocked",
       reason: "This video didn't play on this TV last time (PLAYER_ERROR_NOT_SUPPORTED_FORMAT).",
+      label: "didn't play last time",
     });
     learnResult(file("m:5", "avi"), true, "");
     expect(playCheck(file("m:5", "avi")).verdict).toBe("ok");
@@ -37,6 +39,7 @@ describe("playability on this TV", () => {
     expect(playCheck(file("m:7", "mkv", "vc1", "dts"))).toEqual({
       verdict: "blocked",
       reason: "Files like this (MKV, VC-1 video, DTS audio) haven't played on this TV.",
+      label: "files like this haven't played",
     });
     learnResult(file("m:9", "mkv", "vc1", "dts"), true, "");
     expect(playCheck(file("m:7", "mkv", "vc1", "dts")).verdict).toBe("ok");

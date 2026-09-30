@@ -1,0 +1,228 @@
+/* Shared pieces: backdrop, nav bar, posters, dialogs. Sizes are the Roku app's x1.5. */
+
+.backdrop {
+  position: absolute;
+  left: 510px;
+  top: 0;
+  width: 1410px;
+  height: 810px;
+}
+.backdrop-img {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1410px;
+  height: 794px;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 500ms ease-out;
+}
+/* Fades the picture into the background on the left and at the bottom. */
+.backdrop-shade {
+  position: absolute;
+  left: -2px;
+  right: -2px;
+  top: 0;
+  height: 810px;
+  background: linear-gradient(to right, #151028 0, rgba(21, 16, 40, 0.85) 180px, rgba(21, 16, 40, 0) 660px),
+    linear-gradient(to bottom, rgba(21, 16, 40, 0) 400px, rgba(21, 16, 40, 0.8) 640px, #151028 800px);
+}
+.top-shade {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1920px;
+  height: 210px;
+  background: linear-gradient(rgba(21, 16, 40, 0.9), rgba(21, 16, 40, 0));
+}
+
+.logo-small {
+  font-size: 48px;
+}
+
+/* Nav bar: tab labels over one highlight that glides between them. */
+.nav {
+  position: absolute;
+  left: 348px;
+  top: 36px;
+  height: 60px;
+  white-space: nowrap;
+}
+.nav-tab {
+  position: relative;
+  display: inline-block;
+  height: 60px;
+  line-height: 60px;
+  padding: 0 30px;
+  margin-right: 6px;
+  border-radius: 999px;
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 28px;
+  color: #a195cc;
+  transition: color 150ms linear;
+}
+.nav-tab.is-current {
+  color: var(--text);
+}
+.nav-tab.is-focused {
+  color: var(--on-focus);
+}
+.nav-highlight {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 60px;
+  width: 0;
+  border-radius: 999px;
+  background: var(--pill);
+  transition: transform 220ms var(--ease-out), width 220ms var(--ease-out), background-color 150ms linear, opacity 150ms linear;
+}
+.nav-highlight.is-active {
+  background: var(--focus);
+}
+.nav-highlight.is-hidden {
+  opacity: 0;
+}
+.nav-account {
+  position: absolute;
+  left: 1788px;
+  top: 36px;
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  background: var(--pill);
+  color: var(--lavender);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 150ms var(--ease-out), background-color 150ms linear, color 150ms linear;
+}
+.nav-account.is-focused {
+  background: var(--focus);
+  color: var(--on-focus);
+  transform: scale(1.08);
+}
+
+/* Posters */
+.poster {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 180px;
+}
+.poster-frame {
+  position: relative;
+  width: 180px;
+  height: 270px;
+  transition: transform 150ms var(--ease-out);
+}
+.poster-card {
+  position: relative;
+  width: 180px;
+  height: 270px;
+  border-radius: 15px;
+  overflow: hidden;
+  background: var(--surface-2);
+}
+.poster-fallback {
+  position: absolute;
+  left: 15px;
+  top: 15px;
+  width: 150px;
+  height: 240px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  font-size: 22px;
+  line-height: 1.25;
+  color: var(--text-faint);
+  overflow: hidden;
+}
+.poster-img {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 180px;
+  height: 270px;
+  object-fit: cover;
+}
+.poster-ring {
+  position: absolute;
+  left: -8px;
+  top: -8px;
+  width: 196px;
+  height: 286px;
+  box-sizing: border-box;
+  border: 4px solid var(--focus);
+  border-radius: 21px;
+  opacity: 0;
+  transition: opacity 150ms linear;
+}
+.poster.is-focused .poster-frame {
+  transform: scale(1.08);
+}
+.poster.is-focused .poster-ring {
+  opacity: 1;
+}
+.poster.is-blocked .poster-img {
+  opacity: 0.35;
+}
+.poster-caption {
+  margin-top: 18px;
+  text-align: center;
+  font-weight: 800;
+  font-size: 21px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.poster.is-blocked .poster-caption {
+  color: var(--butter);
+}
+.poster-progress {
+  position: absolute;
+  left: 15px;
+  bottom: 18px;
+  width: 150px;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(21, 16, 40, 0.8);
+}
+.poster-fill {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--pink);
+}
+.poster.is-placeholder .poster-card {
+  animation: pulse 1.4s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* Dialogs */
+.dialog-wide {
+  left: 510px;
+  width: 900px;
+  top: 330px;
+}
+.dialog-message {
+  color: var(--text-dim);
+  font-size: 28px;
+  margin: -12px 0 33px;
+}
+.dialog-buttons {
+  white-space: nowrap;
+}
+.dialog-buttons .pill:last-child {
+  margin-right: 0;
+}

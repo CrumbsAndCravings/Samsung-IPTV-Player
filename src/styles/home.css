@@ -1,0 +1,107 @@
+/* Home, Movies and Series. */
+
+.home-logo {
+  position: absolute;
+  left: 72px;
+  top: 42px;
+  font-size: 48px;
+}
+
+.hero {
+  position: absolute;
+  left: 72px;
+  top: 168px;
+  width: 900px;
+}
+.hero-enter {
+  animation: hero-in 350ms var(--ease-out) both;
+}
+@keyframes hero-in {
+  from {
+    opacity: 0;
+    transform: translateY(21px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.hero-title {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 60px;
+  line-height: 1.12;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.hero-meta {
+  margin-top: 12px;
+  font-weight: 800;
+  font-size: 27px;
+  color: var(--text-dim);
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hero-meta.is-warning {
+  color: var(--butter);
+}
+.hero-plot {
+  margin-top: 18px;
+  width: 780px;
+  font-size: 28px;
+  line-height: 1.35;
+  color: #ddd4f7;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+
+.rows-viewport {
+  position: absolute;
+  left: 0;
+  top: 558px;
+  width: 1920px;
+  height: 522px;
+  overflow: hidden;
+}
+.rows-track {
+  position: absolute;
+  left: 72px;
+  top: 36px;
+  transition: transform 300ms var(--ease-out);
+}
+.row {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1848px;
+  height: 354px;
+}
+.row-title {
+  height: 48px;
+  margin-bottom: 12px;
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 32px;
+  color: #eee8ff;
+  white-space: nowrap;
+}
+.row-strip {
+  position: relative;
+  height: 306px;
+  transition: transform 250ms var(--ease-out);
+}
+
+.home-status {
+  position: absolute;
+  left: 0;
+  top: 705px;
+  width: 1920px;
+  text-align: center;
+  font-size: 30px;
+  color: var(--text-dim);
+}

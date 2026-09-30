@@ -1,0 +1,124 @@
+/* Sign in. */
+
+.login-logo {
+  position: absolute;
+  left: 144px;
+  top: 120px;
+  font-size: 48px;
+}
+.login-heading {
+  position: absolute;
+  left: 144px;
+  top: 210px;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 66px;
+}
+.login-intro {
+  position: absolute;
+  left: 144px;
+  top: 306px;
+  width: 840px;
+  font-size: 31px;
+  line-height: 1.35;
+  color: var(--text-dim);
+}
+.login-fields {
+  position: absolute;
+  left: 144px;
+  top: 435px;
+  width: 840px;
+}
+.login-field {
+  position: relative;
+  height: 96px;
+  margin-bottom: 21px;
+  border-radius: 24px;
+  background: var(--surface-2);
+  box-shadow: 0 0 0 4px transparent;
+  transition: background-color 150ms linear, box-shadow 150ms linear;
+}
+.login-caption {
+  position: absolute;
+  left: 33px;
+  top: 13px;
+  font-weight: 800;
+  font-size: 20px;
+  letter-spacing: 1px;
+  color: var(--text-faint);
+}
+.login-input {
+  position: absolute;
+  left: 33px;
+  top: 40px;
+  width: 774px;
+  height: 45px;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 33px;
+  color: var(--text);
+}
+.login-input::-webkit-input-placeholder {
+  color: #6b5f96;
+}
+.login-field.is-focused {
+  background: var(--focus);
+}
+.login-field.is-focused .login-caption {
+  color: #5a4e86;
+}
+.login-field.is-focused .login-input {
+  color: var(--on-focus);
+}
+.login-field.is-focused .login-input::-webkit-input-placeholder {
+  color: #7a6ea8;
+}
+.login-field.is-editing {
+  background: var(--pill);
+  box-shadow: 0 0 0 4px var(--pink);
+}
+.login-field.is-editing .login-caption {
+  color: var(--text-faint);
+}
+.login-field.is-editing .login-input {
+  color: var(--text);
+}
+.login-submit {
+  position: absolute;
+  left: 144px;
+  top: 810px;
+}
+.login-status {
+  position: absolute;
+  left: 144px;
+  top: 909px;
+  width: 840px;
+  font-weight: 800;
+  font-size: 28px;
+  color: var(--pink);
+}
+.login-tips {
+  position: absolute;
+  left: 1110px;
+  top: 435px;
+  width: 666px;
+  box-sizing: border-box;
+  padding: 39px 42px;
+  border-radius: var(--radius-card);
+  background: var(--surface-1);
+}
+.login-tips-heading {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 33px;
+}
+.login-tips p {
+  margin: 18px 0 0;
+  font-size: 27px;
+  line-height: 1.35;
+  color: var(--text-dim);
+}

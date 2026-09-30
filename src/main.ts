@@ -1,10 +1,14 @@
-// ARAN+ for Samsung Tizen TVs. M0: boots straight into the setup checks screen.
+// ARAN+ for Samsung Tizen TVs. Boots into Home when a login is saved, otherwise into
+// sign-in. The M0 setup checks stay reachable from the account menu.
 
 import "./styles/app.css";
+import { App } from "./app";
 import { log, logError } from "./core/log";
+import { loadCreds } from "./core/storage";
 import { registerKeys } from "./platform/keys";
 import { getPlayer } from "./platform/players";
-import { ProbeScreen } from "./probe/probe";
+import { HomeScreen } from "./screens/home";
+import { LoginScreen } from "./screens/login";
 import { startKeys } from "./ui/focus";
 
 function boot(): void {
@@ -30,9 +34,18 @@ function boot(): void {
   const avPlayer = document.getElementById("av-player");
   if (!window.webapis && avPlayer && avPlayer.parentNode) avPlayer.parentNode.removeChild(avPlayer);
 
-  const app = document.getElementById("app");
-  if (!app) return;
-  new ProbeScreen(app).mount();
+  const root = document.getElementById("app");
+  if (!root) return;
+  const app = new App(root);
+  app.onSignedIn = (creds) => {
+    app.useCreds(creds);
+    app.resetTo(new HomeScreen(app));
+  };
+  app.onSignedOut = () => app.resetTo(new LoginScreen(app));
+
+  const creds = loadCreds();
+  if (creds) app.onSignedIn(creds);
+  else app.onSignedOut();
 }
 
 boot();

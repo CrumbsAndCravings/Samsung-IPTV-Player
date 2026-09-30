@@ -6,7 +6,7 @@
 //     that have failed for several titles and never played.
 // Never blocks outright: the screens offer "OK to try anyway", as on Roku.
 
-import { readJson, writeJson } from "./storage";
+import { regRead, writeJson } from "./storage";
 import { describeCodecs, isObj } from "./utils";
 
 export type Verdict = "ok" | "warn" | "blocked";
@@ -14,6 +14,7 @@ export type Verdict = "ok" | "warn" | "blocked";
 export interface PlayCheck {
   verdict: Verdict;
   reason: string; // plain English for the details screen and the player
+  label: string; // short, for the hero line: "Won't play on this TV (AVI file)"
 }
 
 export interface FileFacts {
@@ -40,9 +41,24 @@ const BLOCKED_CONTAINERS: { [ext: string]: string } = {
 
 const MAX_LEARNED = 500;
 
+// Posters ask for every title they draw, so the parsed list is kept and only re-read
+// when the stored text changes.
+let cachedRaw: string | null = null;
+let cached: { [key: string]: Learned } = {};
+
 function learned(): { [key: string]: Learned } {
-  const saved = readJson("compat", "titles");
-  return isObj(saved) ? (saved as unknown as { [key: string]: Learned }) : {};
+  const raw = regRead("compat", "titles");
+  if (raw !== cachedRaw) {
+    cachedRaw = raw;
+    cached = {};
+    try {
+      const saved = raw === null ? null : (JSON.parse(raw) as unknown);
+      if (isObj(saved)) cached = saved as unknown as { [key: string]: Learned };
+    } catch {
+      cached = {};
+    }
+  }
+  return cached;
 }
 
 // "mkv|hevc|main 10|eac3"; "" when the provider didn't report a video codec, since a
@@ -61,8 +77,12 @@ export function playCheck(f: FileFacts): PlayCheck {
   const all = learned();
   const mine = all[f.key];
   if (mine) {
-    if (mine.ok) return { verdict: "ok", reason: "" };
-    return { verdict: "blocked", reason: "This video didn't play on this TV last time" + (mine.error ? " (" + mine.error + ")" : "") + "." };
+    if (mine.ok) return { verdict: "ok", reason: "", label: "" };
+    return {
+      verdict: "blocked",
+      reason: "This video didn't play on this TV last time" + (mine.error ? " (" + mine.error + ")" : "") + ".",
+      label: "didn't play last time",
+    };
   }
   const combo = comboOf(f);
   if (combo !== "") {
@@ -75,18 +95,22 @@ export function playCheck(f: FileFacts): PlayCheck {
     }
     if (failed >= 2 && played === 0) {
       const what = describeCodecs(f.videoCodec, f.videoProfile, f.audioCodec);
-      return { verdict: "blocked", reason: "Files like this (" + f.ext.toUpperCase() + ", " + what + ") haven't played on this TV." };
+      return {
+        verdict: "blocked",
+        reason: "Files like this (" + f.ext.toUpperCase() + ", " + what + ") haven't played on this TV.",
+        label: "files like this haven't played",
+      };
     }
   }
   const blocked = BLOCKED_CONTAINERS[f.ext.toLowerCase()];
-  if (blocked) return { verdict: "blocked", reason: blocked };
-  return { verdict: "ok", reason: "" };
+  if (blocked) return { verdict: "blocked", reason: blocked, label: f.ext.toUpperCase() + " file" };
+  return { verdict: "ok", reason: "", label: "" };
 }
 
 // Records how a real attempt went. `played` means real progress, not just opening.
 export function learnResult(f: FileFacts, played: boolean, error: string, nowSeconds = Math.floor(Date.now() / 1000)): void {
   if (!played && !isFormatError(error)) return;
-  const all = learned();
+  const all = Object.assign({}, learned());
   all[f.key] = { ok: played, error: played ? "" : error, combo: comboOf(f), at: nowSeconds };
   const keys = Object.keys(all);
   if (keys.length > MAX_LEARNED) {

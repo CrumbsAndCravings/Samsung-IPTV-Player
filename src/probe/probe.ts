@@ -89,7 +89,12 @@ export class ProbeScreen implements KeyTarget {
   private reportList: HTMLElement;
   private logList: HTMLElement | null = null;
 
-  constructor(private host: HTMLElement) {
+  // `onBack` makes Back leave the screen (opened from the account menu) instead of
+  // asking to exit the app.
+  constructor(
+    private host: HTMLElement,
+    private onBack?: () => void,
+  ) {
     this.state = this.loadState();
     const saved = readJson("probe", "slots");
     if (isObj(saved)) this.slots = saved as Slots;
@@ -176,7 +181,7 @@ export class ProbeScreen implements KeyTarget {
       h("div", { class: "probe-header" }, [
         h("div", { class: "logo" }, [h("span", { class: "logo-name", text: "ARAN" }), h("span", { class: "logo-plus", text: "+" })]),
         h("div", { class: "probe-title", text: "Setup checks" }),
-        h("div", { class: "probe-version", text: "v" + __APP_VERSION__ + " · M0" }),
+        h("div", { class: "probe-version", text: "v" + __APP_VERSION__ }),
       ]),
       this.left,
       this.right,
@@ -187,13 +192,18 @@ export class ProbeScreen implements KeyTarget {
 
   mount(): void {
     this.host.appendChild(this.el);
+    this.start();
+    setKeyTarget(this);
+  }
+
+  // Fills the screen and reads the TV's details. Called once, when first shown.
+  start(): void {
     this.renderSlots();
     this.renderPlays();
     this.renderXtream();
     this.renderOs();
     this.renderReport();
     this.focus(this.server.wrap);
-    setKeyTarget(this);
     readDevice().then((info) => {
       this.state.device = info;
       this.renderDevice(info);
@@ -340,6 +350,7 @@ export class ProbeScreen implements KeyTarget {
     }
     if (key === "back") {
       if (this.modal) this.modal.back();
+      else if (this.onBack) this.onBack();
       else this.confirmExit();
     }
   }

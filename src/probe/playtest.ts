@@ -85,6 +85,7 @@ export class PlayTest implements KeyTarget {
     private sample: Sample,
     private url: string,
     private done: (result: PlayResult) => void,
+    private startMs = 0,
   ) {
     this.result = {
       key: sample.key,
@@ -157,7 +158,16 @@ export class PlayTest implements KeyTarget {
         this.result.tracks = describeTracks(this.tracks);
         log("tracks", this.result.tracks);
         for (const t of this.tracks) if (t.kind === "TEXT") log("text track", t.index, JSON.stringify(t.detail));
+        const start = this.startMs;
+        this.startMs = 0; // a retry starts from the beginning
+        if (start > 0) return this.player.seek(start).then(
+          () => this.player.play(),
+          () => this.player.play(),
+        );
         this.player.play();
+        return undefined;
+      })
+      .then(() => {
         window.clearTimeout(this.stallTimer);
         this.stallTimer = window.setTimeout(() => {
           if (!this.played && !this.finished) {

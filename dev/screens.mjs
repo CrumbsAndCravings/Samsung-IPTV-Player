@@ -2,7 +2,6 @@
 //   npm run screens        -> out/screens/*.png
 // Signs in to the fake server (dev/mock-xtream.mjs); never uses a real account.
 // Uses Playwright's Chromium, or the browser at CHROMIUM_PATH.
-/* global document */ // used inside page.evaluate, which runs in the browser
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { chromium } from "playwright-core";
@@ -19,19 +18,6 @@ const page = await browser.newPage({ viewport: { width: 1920, height: 1080 } });
 const problems = [];
 page.on("pageerror", (err) => problems.push(err.message));
 
-async function focusedText() {
-  return page.evaluate(() => (document.querySelector(".is-focused") || {}).textContent || "");
-}
-
-async function moveTo(label, key = "ArrowDown", max = 60) {
-  for (let i = 0; i < max; i++) {
-    if ((await focusedText()).includes(label)) return;
-    await page.keyboard.press(key);
-    await page.waitForTimeout(40);
-  }
-  throw new Error("Couldn't reach " + label);
-}
-
 async function shot(name) {
   await page.waitForTimeout(400);
   await page.screenshot({ path: path.join(out, name + ".png") });
@@ -40,22 +26,69 @@ async function shot(name) {
 
 try {
   await page.goto(`http://localhost:${port}/`);
-  await page.evaluate((p) => {
-    localStorage.clear();
-    localStorage.setItem("aranplus:account:creds", JSON.stringify({ server: "http://localhost:" + p, username: "demo", password: "demo" }));
-  }, port);
+  await page.evaluate(() => localStorage.clear());
   await page.reload();
-  await shot("setup-checks");
+  await shot("login");
 
-  await moveTo("Save and test");
+  // Sign in to the fake server with the keyboard, as on the TV.
+  const type = async (text) => {
+    await page.keyboard.press("Enter");
+    await page.keyboard.type(text);
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(100);
+  };
+  await type("localhost:" + port);
+  await type("demo");
+  await type("demo");
+  await shot("login-filled");
   await page.keyboard.press("Enter");
+  await page.waitForSelector(".screen.home");
+  await page.waitForTimeout(2500);
+  await shot("home");
+
+  for (let i = 0; i < 3; i++) await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowDown");
   await page.waitForTimeout(1500);
-  await shot("setup-checks-iptv");
+  await shot("home-rows");
 
-  await moveTo("Find test videos");
+  await page.keyboard.press("Backspace"); // Back: to the first row
+  await page.keyboard.press("Backspace"); // Back: to the nav bar
+  await page.keyboard.press("ArrowRight");
+  await shot("home-nav");
+  await page.keyboard.press("Enter"); // Movies
+  await page.waitForTimeout(2500);
+  await shot("movies");
+
   await page.keyboard.press("Enter");
-  await page.waitForTimeout(8000);
-  await shot("setup-checks-samples");
+  await page.waitForSelector(".screen.details");
+  await page.waitForTimeout(1500);
+  await shot("details-movie");
+
+  await page.keyboard.press("Backspace");
+  await page.waitForTimeout(300);
+  await page.keyboard.press("ArrowUp");
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("Enter"); // Series
+  await page.waitForTimeout(2500);
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("Enter");
+  await page.waitForSelector(".screen.details");
+  await page.waitForTimeout(1500);
+  await shot("details-series");
+  await page.keyboard.press("ArrowDown");
+  await shot("details-seasons");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  await shot("details-episodes");
+
+  await page.keyboard.press("Backspace");
+  await page.keyboard.press("Backspace");
+  await page.waitForTimeout(300);
+  await page.keyboard.press("ArrowUp");
+  for (let i = 0; i < 5; i++) await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("Enter");
+  await shot("account-menu");
 } finally {
   await browser.close();
   server.close();

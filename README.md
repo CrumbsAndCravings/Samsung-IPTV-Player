@@ -2,27 +2,30 @@
 
 ARAN+ is a cosy, Netflix-style IPTV player for movies and series from an Xtream Codes provider. This repo is the Samsung Tizen version, built for a Samsung Q60 series 65" TV and laid out for 1920x1080. The Roku app ([CrumbsAndCravings/roku-iptv-player](https://github.com/CrumbsAndCravings/roku-iptv-player)) is the working reference for every feature, and its [`docs/samsung-plan.md`](https://github.com/CrumbsAndCravings/roku-iptv-player/blob/main/docs/samsung-plan.md) is the build plan this repo follows.
 
-## Status: M0 (setup checks)
+## Status: M2 (browse your library)
 
 | | Scope | State |
 |---|---|---|
-| **M0** | Repo, config.xml, hello-world screen with fonts and palette, packaging and install scripts, the TV checks | Done on the TV; a few checks still open, see [docs/m0-findings.md](docs/m0-findings.md) |
+| **M0** | Repo, config.xml, hello-world screen with fonts and palette, packaging and install scripts, the TV checks | Done on the TV, see [docs/m0-findings.md](docs/m0-findings.md) |
 | **M1** | `core/` ports with tests, storage, mock server, desktop harness | Done: every applicable Roku check is ported and passes, plus new subtitle-file and playability modules |
-| M2 | Login, Home, Details, account menu | |
+| **M2** | Login, Home, Details, account menu | Built; needs a run on the TV |
 | M3 | Player: controls, jump preview, resume, Up Next, errors | |
 | M4 | Audio and subtitle tracks, OpenSubtitles | |
 | M5 | Search, motion polish, performance pass | |
 
-Right now the app opens on a **Setup checks** screen. It answers the questions the plan says to settle before building features (section 2), on the TV itself:
+What the app does now:
 
-- **This TV:** web engine (Chromium version), Tizen version, model code, firmware, and the model year that code implies.
-- **IPTV account:** one request from the packaged app to your Xtream server (proves cross-origin requests work), your account status, and category counts.
-- **OpenSubtitles:** which headers actually leave the TV (a public echo service shows whether our `User-Agent` survives and whether `X-User-Agent` gets through), then your API key with and without `X-User-Agent`, then the login.
-- **Range requests:** the first and last 64 KB of a stream, which OpenSubtitles' file fingerprint needs.
-- **Playback:** finds an HEVC MKV, an AVI (DivX/Xvid), an H.264 MP4 and a file with DTS audio in your library and plays each with Samsung's player (AVPlay). **Find a title** lets you try a specific show, such as one the Roku couldn't play.
-- **Report:** a summary of all of the above, safe to photograph. **Show report code** turns it into a QR code you can scan with a phone and paste into a chat.
+- **Sign in** with server, username and password (a full M3U link in Server fills in the rest). The login is checked with your provider before it's saved, on this TV only.
+- **Home, Movies and Series tabs.** Home starts with Continue Watching, then your provider's first six movie and six series categories. Movies and Series list every category. Each row shows the 40 newest titles and more rows load as you scroll.
+- **The hero** at the top shows the focused title's backdrop, year, runtime, genre, rating and plot; movie details arrive after you rest on a poster for a moment.
+- **Details** for movies (Play, or Resume and Play from start) and series (seasons, with Specials first, and the episode list with stills, runtimes and synopses).
+- **"Won't play"** marks titles this TV can't play (AVI, for now), with "Try anyway".
+- **Account menu** (the round button at the right of the tabs): Keep watching, Setup checks, Sign out.
+- **Play** opens a simple test player for now. The real player, with resume, Continue Watching and Up Next, comes in M3. Search comes in M5.
 
-Logins are hidden on screen unless you're typing them, and the log, report and QR code replace your server, usernames, passwords and API key with placeholders.
+Remote: **Up** from the first row (or **Left** from a row's first poster) reaches the tabs. **Back** jumps to the first row, then the tabs, then asks to exit. On Details, **Down** reaches the seasons and episodes.
+
+The **Setup checks** screen from M0 is under the account menu. It checks the TV's engine and model, the connection to your provider and to OpenSubtitles, and plays test files, with a report that is safe to photograph or scan as a QR code (logins, server names and keys are replaced with placeholders).
 
 ## One-time setup
 
@@ -46,15 +49,17 @@ This builds the app, signs it into `out/ARANplus.wgt` with your certificate prof
 
 Other commands: `npm run package` (build and sign only), `npm run run:tv` (open the installed app), `npm run debug:tv` (open it in debug mode and forward Chrome DevTools to your computer).
 
-## M0 on the TV
+## Setup checks on the TV
 
-1. Open ARAN+. The **This TV** card shows the engine and model.
+Account menu, then **Setup checks**:
+
+1. The **This TV** card shows the engine and model.
 2. **Your IPTV account:** press OK on each box to type with the TV keyboard (a full M3U link in Server fills in the rest), press Done, then **Save and test**.
 3. **OpenSubtitles:** optional. **Save and test** checks the headers even without an account; with your API key, username and password it also checks the key and login.
 4. **Playback:** press **Find test videos**, then OK on each file. Let it play for a few seconds, try Left/Right (jump 30 s), Up (next audio track) and Down (next subtitle track), then Back to save the result. Use **Find a title** for anything else worth trying.
 5. Send the result back: a photo of the Report card, or **Show report code**, scan it with your phone's camera and paste the text into the chat.
 
-M0 is done when the ARAN+ tile opens on the TV and shows the engine version, the IPTV check works, and an HEVC MKV and an AVI both play.
+The M0 results are in [docs/m0-findings.md](docs/m0-findings.md).
 
 ## Develop
 
@@ -99,8 +104,11 @@ src/
   platform/                          Tizen and browser APIs
     http.ts keys.ts tizen.ts         XHR with timeouts, remote keys, device info
     player.ts avplay.ts html5.ts     player interface, AVPlay, desktop <video>
-  ui/                                dom helper, key routing (focus rules), spatial focus
-  probe/                             the M0 setup checks screen
+  ui/                                dom helper, key routing (focus rules), posters, backdrop, dialogs
+  app.ts                             the screen stack and shared dialogs
+  data/api.ts                        Xtream calls: session cache, at most three at once
+  screens/                           sign in, Home, Details, Setup checks
+  probe/                             the M0 setup checks
   styles/                            design tokens, base styles, screen styles
 assets/fonts  assets/images          Fredoka and Nunito (SIL OFL), generated glows
 tests/                               vitest
