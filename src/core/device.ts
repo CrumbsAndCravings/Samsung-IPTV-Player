@@ -1,10 +1,13 @@
 // Reading the TV's engine and model year from strings. Pure, so it is unit tested;
 // platform/tizen.ts gathers the raw values.
 
-// "... Chrome/63.0.3239.84 TV Safari/537.36" -> "63.0.3239.84"
+// "... Chrome/63.0.3239.84 TV Safari/537.36" -> "63.0.3239.84". Tizen 5.5 leaves out
+// the "Chrome/" name: "(KHTML, like Gecko) 69.0.3497.106/5.5 TV Safari/537.36".
 export function chromiumVersion(userAgent: string): string {
-  const match = /Chrome\/(\d+(?:\.\d+)*)/.exec(userAgent);
-  return match ? match[1] : "";
+  const named = /Chrome\/(\d+(?:\.\d+)+)/.exec(userAgent);
+  if (named) return named[1];
+  const bare = /\)\s+(\d+\.\d+\.\d+\.\d+)\/\d+(?:\.\d+)?\s+TV\b/.exec(userAgent);
+  return bare ? bare[1] : "";
 }
 
 export function chromiumMajor(userAgent: string): number {

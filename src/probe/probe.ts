@@ -1,6 +1,6 @@
 // M0 "Setup checks" screen: the hello-world screen with the ARAN+ fonts and palette,
 // plus every check from section 2 of the plan, run on the TV itself:
-//   - the web engine and model (so the plan can drop the Chromium 63 limits if newer)
+//   - the web engine and model (it turned out to be a 2020 Q60T with Chromium 69)
 //   - one XHR to the Xtream server from the packaged app
 //   - which headers reach OpenSubtitles (User-Agent vs X-User-Agent)
 //   - range requests on a stream (needed for OpenSubtitles' moviehash)
@@ -66,6 +66,7 @@ export class ProbeScreen implements KeyTarget {
 
   private state: ProbeState;
   private slots: Slots = {};
+  private moreAvi: Sample[] = [];
   private series: OpenSeries | null = null;
 
   private tvCard: HTMLElement;
@@ -92,6 +93,8 @@ export class ProbeScreen implements KeyTarget {
     this.state = this.loadState();
     const saved = readJson("probe", "slots");
     if (isObj(saved)) this.slots = saved as Slots;
+    const savedAvi = readJson("probe", "moreAvi");
+    if (isArr(savedAvi)) this.moreAvi = savedAvi as Sample[];
 
     const creds = loadCreds();
     const os = readOsFields();
@@ -534,6 +537,8 @@ export class ProbeScreen implements KeyTarget {
       .then((found) => {
         this.slots = found.slots;
         writeJson("probe", "slots", found.slots as unknown as { [key: string]: unknown });
+        this.moreAvi = found.moreAvi;
+        writeJson("probe", "moreAvi", found.moreAvi as unknown as { [key: string]: unknown }[]);
         this.state.samples = { titlesSeen: found.titlesSeen, infoChecked: found.infoChecked, withCodecs: found.withCodecs, extCounts: found.extCounts };
         const count = SLOTS.filter((s) => this.slots[s.id]).length;
         setText(this.findProgress, "Found " + count + " of " + SLOTS.length + " kinds in " + found.titlesSeen + " titles." + (found.message ? " " + found.message : ""));
@@ -581,6 +586,13 @@ export class ProbeScreen implements KeyTarget {
         this.slotList.appendChild(this.row("slot:" + slot.id, slot.label, sample.title, fileLabel(sample), this.resultFor(sample.key), sample.poster, () => this.play(sample)));
       } else {
         this.slotList.appendChild(this.row("slot:" + slot.id, slot.label, this.state.samples ? "None found" : "Press Find test videos", "", null, "", null));
+      }
+    }
+    if (this.moreAvi.length > 0) {
+      // One AVI failing may be that file; a few more tell whether AVI works at all.
+      this.slotList.appendChild(h("div", { class: "section-title", text: "More AVI files to try" }));
+      for (const sample of this.moreAvi) {
+        this.slotList.appendChild(this.row("avi:" + sample.id, "AVI", sample.title, "", this.resultFor(sample.key), sample.poster, () => this.play(sample)));
       }
     }
     const s = this.state.samples;
@@ -819,8 +831,10 @@ export class ProbeScreen implements KeyTarget {
   private clearResults(): void {
     this.state = { device: this.state.device, xtream: null, range: null, echo: null, os: null, samples: null, library: [], plays: [] };
     this.slots = {};
+    this.moreAvi = [];
     this.series = null;
     writeJson("probe", "slots", {});
+    writeJson("probe", "moreAvi", []);
     this.saveState();
     setText(this.findProgress, "");
     clear(this.searchList);

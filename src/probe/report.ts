@@ -22,6 +22,8 @@ export interface PlayResult {
   startMs: number; // from open to the first real progress; 0 if it never played
   seek: "" | "ok" | "failed";
   tracks: string;
+  subtitleCues?: number; // embedded subtitle cues AVPlay handed over
+
   player: "avplay" | "html5";
   at: number;
 }
@@ -180,6 +182,7 @@ export function reportText(state: ProbeState, version: string): string {
         (play.error ? " " + play.error : "") +
         (play.startMs ? " " + play.startMs + "ms" : "") +
         (play.seek ? " seek " + play.seek : "") +
+        (play.subtitleCues ? " cues " + play.subtitleCues : "") +
         " | " +
         play.title.slice(0, 40) +
         " | " +

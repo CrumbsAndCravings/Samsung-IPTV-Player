@@ -6,7 +6,7 @@ ARAN+ is a cosy, Netflix-style IPTV player for movies and series from an Xtream 
 
 | | Scope | State |
 |---|---|---|
-| **M0** | Repo, config.xml, hello-world screen with fonts and palette, packaging and install scripts, the TV checks | Built; needs a run on the TV |
+| **M0** | Repo, config.xml, hello-world screen with fonts and palette, packaging and install scripts, the TV checks | Done on the TV; a few checks still open, see [docs/m0-findings.md](docs/m0-findings.md) |
 | M1 | `core/` ports with tests, storage, mock server, desktop harness | Started: utils, Xtream parsing, storage |
 | M2 | Login, Home, Details, account menu | |
 | M3 | Player: controls, jump preview, resume, Up Next, errors | |
@@ -15,7 +15,7 @@ ARAN+ is a cosy, Netflix-style IPTV player for movies and series from an Xtream 
 
 Right now the app opens on a **Setup checks** screen. It answers the questions the plan says to settle before building features (section 2), on the TV itself:
 
-- **This TV:** web engine (Chromium version), Tizen version, model code, firmware, and the model year that code implies. Until this is known the app is built for Chromium 63 (the oldest likely Q60).
+- **This TV:** web engine (Chromium version), Tizen version, model code, firmware, and the model year that code implies.
 - **IPTV account:** one request from the packaged app to your Xtream server (proves cross-origin requests work), your account status, and category counts.
 - **OpenSubtitles:** which headers actually leave the TV (a public echo service shows whether our `User-Agent` survives and whether `X-User-Agent` gets through), then your API key with and without `X-User-Agent`, then the login.
 - **Range requests:** the first and last 64 KB of a stream, which OpenSubtitles' file fingerprint needs.
@@ -62,7 +62,7 @@ M0 is done when the ARAN+ tile opens on the TV and shows the engine version, the
 npm install
 npm run dev        # desktop harness on http://localhost:8080 (use a 1920x1080 window)
 npm test           # unit tests (vitest)
-npm run check      # typecheck, lint, tests, bundle, and an ES2017 syntax check of the bundle
+npm run check      # typecheck, lint, tests, bundle, and an ES2018 syntax check of the bundle
 npm run images     # regenerate icon.png and the glows (needs Pillow)
 ```
 
@@ -70,12 +70,12 @@ In the desktop harness the arrow keys, Enter, and Escape (as Back) stand in for 
 
 Every push runs the same checks on GitHub Actions and uploads the unsigned build as an artifact.
 
-### Old TVs
+### The TV's engine
 
-A 2019 Q60 runs Chromium 63, so until the TV says otherwise:
+The TV is a 2020 Q60T (`QN65Q60TAFXZC`): Tizen 5.5 with Chromium 69. So:
 
-- esbuild lowers syntax to ES2017 (`target: es2017, chrome63`), and CI checks the bundle parses as ES2017;
-- TypeScript only knows ES2017 library APIs (plus `Promise.finally`), and lint blocks newer DOM calls such as `replaceChildren`, `Array.flat` and `AbortController`;
+- esbuild lowers syntax to ES2018 (`target: es2018, chrome69`), and CI checks the bundle parses as ES2018;
+- TypeScript knows ES2018 plus `Array.flat` and `String.trimStart`, and lint blocks newer calls such as `replaceChildren`, `replaceAll`, `Object.fromEntries` and `globalThis`;
 - CSS avoids flexbox `gap`, `aspect-ratio`, `inset`, `backdrop-filter` and `clamp()`.
 
 ### Layout

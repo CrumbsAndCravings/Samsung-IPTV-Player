@@ -52,6 +52,7 @@ export interface FindResult {
   titlesSeen: number;
   infoChecked: number;
   withCodecs: number;
+  moreAvi: Sample[]; // other AVI titles to try (container known, codecs not checked)
   message: string;
 }
 
@@ -70,7 +71,7 @@ export function infoQueue(items: ListItem[]): ListItem[] {
 }
 
 export function findSamples(creds: Creds, progress: (text: string) => void, cancelled: () => boolean): Promise<FindResult> {
-  const result: FindResult = { slots: {}, extCounts: {}, categoriesScanned: 0, titlesSeen: 0, infoChecked: 0, withCodecs: 0, message: "" };
+  const result: FindResult = { slots: {}, extCounts: {}, categoriesScanned: 0, titlesSeen: 0, infoChecked: 0, withCodecs: 0, moreAvi: [], message: "" };
   const items: ListItem[] = [];
   const seen: { [id: string]: boolean } = {};
   const haveContainers = () => (result.extCounts.avi || 0) > 0 && (result.extCounts.mkv || 0) >= 15 && (result.extCounts.mp4 || 0) > 0;
@@ -136,6 +137,22 @@ export function findSamples(creds: Creds, progress: (text: string) => void, canc
       );
     })
     .then(() => {
+      const chosen = result.slots.avi ? result.slots.avi.id : "";
+      result.moreAvi = items
+        .filter((item) => item.ext === "avi" && item.id !== chosen)
+        .slice(0, 6)
+        .map((item) => ({
+          key: "m:" + item.id,
+          kind: "movie" as const,
+          id: item.id,
+          title: item.name,
+          ext: "avi",
+          poster: item.poster,
+          videoCodec: "",
+          videoProfile: "",
+          audioCodec: "",
+          width: 0,
+        }));
       if (result.infoChecked > 0 && result.withCodecs === 0) result.message = "Your provider doesn't report codecs, so only containers could be matched.";
       log("samples:", result.titlesSeen, "titles,", result.infoChecked, "checked,", result.withCodecs, "with codecs");
       return result;

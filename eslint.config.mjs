@@ -10,21 +10,19 @@ export default tseslint.config(
     files: ["src/**/*.ts", "tests/**/*.ts"],
     languageOptions: { globals: globals.browser },
     rules: {
-      // Not available on Chromium 63 (Tizen 5.0).
+      // Not available on the TV's Chromium 69 (Tizen 5.5).
       "no-restricted-properties": [
         "error",
         { property: "replaceChildren", message: "Chromium 86+. Use clear() from ui/dom." },
         { property: "replaceAll", message: "Chromium 85+. Use split/join or a global regex." },
-        { property: "flat", message: "Chromium 69+." },
-        { property: "flatMap", message: "Chromium 69+." },
         { property: "fromEntries", message: "Chromium 73+." },
         { property: "allSettled", message: "Chromium 76+." },
+        { property: "matchAll", message: "Chromium 73+." },
       ],
       "no-restricted-globals": [
         "error",
         { name: "globalThis", message: "Chromium 71+. Use window." },
-        { name: "AbortController", message: "Chromium 66+. Use XHR abort()." },
-        { name: "ResizeObserver", message: "Chromium 64+." },
+        { name: "queueMicrotask", message: "Chromium 71+." },
       ],
       "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_" }],
     },

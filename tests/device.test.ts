@@ -31,3 +31,13 @@ describe("model year", () => {
     expect(describeModelYear("QN65Q60BAFXZC")).toBe("2022 model: shipped with Tizen 6.5 (Chromium 85)");
   });
 });
+
+describe("the Q60T's user agent", () => {
+  const TIZEN_55 = "Mozilla/5.0 (SMART-TV; LINUX; Tizen 5.5) AppleWebKit/537.36 (KHTML, like Gecko) 69.0.3497.106/5.5 TV Safari/537.36";
+  it("finds Chromium 69 without a Chrome/ token", () => {
+    expect(chromiumVersion(TIZEN_55)).toBe("69.0.3497.106");
+    expect(chromiumMajor(TIZEN_55)).toBe(69);
+    expect(tizenFromUserAgent(TIZEN_55)).toBe("5.5");
+    expect(modelYear("QN65Q60TAFXZC")).toMatchObject({ year: 2020, tizen: "5.5", chromium: 69 });
+  });
+});

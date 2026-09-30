@@ -27,8 +27,8 @@ export function toTrack(info: AVPlayTrackInfo): Track {
   return {
     index: info.index,
     kind,
-    language: detail.language || detail.track_lang || "",
-    codec: detail.fourCC || "",
+    language: (detail.language || detail.track_lang || "").trim(),
+    codec: (detail.fourCC || "").trim(),
     detail,
   };
 }

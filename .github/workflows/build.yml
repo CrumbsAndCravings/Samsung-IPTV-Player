@@ -22,7 +22,7 @@ jobs:
         run: npm test
       - name: Bundle
         run: npm run build
-      - name: Bundle is ES2017 (Chromium 63)
+      - name: Bundle is ES2018 (Chromium 69)
         run: npm run check:syntax
       - uses: actions/upload-artifact@v4
         with:

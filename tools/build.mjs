@@ -17,8 +17,8 @@ export function esbuildOptions({ dev = false } = {}) {
     bundle: true,
     outdir: "dist",
     format: "iife",
-    // Oldest likely TV engine (Tizen 5.0). es2017 also lowers object spread/rest.
-    target: ["es2017", "chrome63"],
+    // The TV's engine: a 2020 Q60T runs Tizen 5.5 with Chromium 69.
+    target: ["es2018", "chrome69"],
     loader: { ".ttf": "file", ".png": "file" },
     assetNames: "assets/[name]",
     define: { __APP_VERSION__: JSON.stringify(pkg.version), __DEV__: String(dev) },

@@ -1,5 +1,5 @@
-// All network access goes through XHR: it has timeouts and abort() on every engine,
-// and Chromium 63 has no AbortController for fetch.
+// All network access goes through XHR: timeouts, abort(), progress events and
+// response headers all work the same on every Tizen engine.
 
 import { Json } from "../core/utils";
 

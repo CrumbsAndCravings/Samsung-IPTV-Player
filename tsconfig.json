@@ -1,9 +1,9 @@
 {
   "compilerOptions": {
-    // The oldest TV this might be (Tizen 5.0, 2019) runs Chromium 63, so only
-    // ES2017 library APIs (plus Promise.finally) are allowed. esbuild lowers syntax.
-    "target": "ES2017",
-    "lib": ["ES2017", "ES2018.Promise", "DOM"],
+    // The TV is a 2020 Q60T (Tizen 5.5, Chromium 69): ES2018, plus Array.flat and
+    // String.trimStart from ES2019. Object.fromEntries (Chromium 73) is not there.
+    "target": "ES2018",
+    "lib": ["ES2018", "ES2019.Array", "ES2019.String", "DOM"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "types": [],

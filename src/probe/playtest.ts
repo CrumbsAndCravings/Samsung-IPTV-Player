@@ -156,6 +156,7 @@ export class PlayTest implements KeyTarget {
         this.tracks = this.player.tracks();
         this.result.tracks = describeTracks(this.tracks);
         log("tracks", this.result.tracks);
+        for (const t of this.tracks) if (t.kind === "TEXT") log("text track", t.index, JSON.stringify(t.detail));
         this.player.play();
         window.clearTimeout(this.stallTimer);
         this.stallTimer = window.setTimeout(() => {
@@ -197,6 +198,8 @@ export class PlayTest implements KeyTarget {
   }
 
   private showSubtitle(text: string, durationMs: number): void {
+    this.result.subtitleCues = (this.result.subtitleCues || 0) + 1;
+    if (this.result.subtitleCues === 1) log("first subtitle cue:", JSON.stringify(text.slice(0, 80)), durationMs, "ms");
     setText(this.subtitleEl, stripTags(text));
     window.clearTimeout(this.subtitleTimer);
     if (durationMs > 0) this.subtitleTimer = window.setTimeout(() => setText(this.subtitleEl, ""), durationMs);
@@ -210,6 +213,7 @@ export class PlayTest implements KeyTarget {
     if (this.buffering) parts.push(this.buffering);
     if (this.played) parts.push("started in " + (this.result.startMs / 1000).toFixed(1) + " s");
     if (this.result.seek) parts.push("seek " + this.result.seek);
+    if (this.tracks.some((t) => t.kind === "TEXT")) parts.push((this.result.subtitleCues || 0) + " subtitle cues");
     setText(this.stateEl, parts.join(" · "));
     setText(this.tracksEl, this.result.tracks);
   }
@@ -219,19 +223,32 @@ export class PlayTest implements KeyTarget {
     const total = this.player.durationMs();
     let target = Math.max(0, now + deltaMs);
     if (total > 0) target = Math.min(target, total - 3000);
+    log("seek from", now, "to", target);
     this.player
       .seek(target)
-      .then(() => {
-        window.setTimeout(() => {
-          const landed = this.player.currentMs();
-          this.result.seek = Math.abs(landed - target) < 8000 ? "ok" : "failed";
-          log("seek to", target, "landed at", landed);
-        }, 1500);
-      })
+      .then(() => this.checkSeek(target, 0))
       .catch((err: Error) => {
         this.result.seek = "failed";
         logError("seek failed:", err.name, err.message);
       });
+  }
+
+  // A progressive MP4 or MKV can take several seconds to land after a seek, so keep
+  // looking for up to 10 s before calling it failed.
+  private checkSeek(target: number, tries: number): void {
+    if (this.finished) return;
+    const landed = this.player.currentMs();
+    if (Math.abs(landed - target) < 8000) {
+      this.result.seek = "ok";
+      log("seek landed at", landed, "after", tries * 500, "ms");
+      return;
+    }
+    if (tries >= 20) {
+      this.result.seek = "failed";
+      logError("seek to", target, "still at", landed, "after 10 s");
+      return;
+    }
+    window.setTimeout(() => this.checkSeek(target, tries + 1), 500);
   }
 
   private nextTrack(kind: "AUDIO" | "TEXT"): void {
