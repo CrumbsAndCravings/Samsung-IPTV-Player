@@ -5,6 +5,7 @@
 import { log, logError } from "../core/log";
 import { formatClock } from "../core/utils";
 import type { Key } from "../platform/keys";
+import { errorLabel } from "../platform/player";
 import type { Player, Track } from "../platform/player";
 import { getPlayer } from "../platform/players";
 import { h, setText, toggle } from "../ui/dom";
@@ -43,14 +44,6 @@ export function describeTracks(tracks: Track[]): string {
   if (audio.length) parts.push("A: " + audio.join(", "));
   parts.push("T: " + (text.length ? text.join(", ") : "none"));
   return parts.join(" · ");
-}
-
-// AVPlay reports failures as a generic WebAPIException name (TypeMismatchError,
-// UnknownError…) with the real reason, PLAYER_ERROR_*, in the message.
-export function errorLabel(name: string, detail: string): string {
-  const code = /PLAYER_ERROR_[A-Z_]+/.exec(detail);
-  if (code) return code[0];
-  return detail ? name + ": " + detail : name;
 }
 
 function stripTags(text: string): string {

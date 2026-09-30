@@ -7,19 +7,17 @@
 // and what happens teaches the playability check (core/compat.ts).
 
 import type { App, Screen } from "../app";
-import { FileFacts, learnResult, playCheck } from "../core/compat";
+import { FileFacts, playCheck } from "../core/compat";
 import { applyInfo, Item, metaLine } from "../core/items";
 import { log } from "../core/log";
 import { progressFind, progressFraction, ProgressEntry } from "../core/progress";
-import { episodeCode, formatClock, formatRuntime, sizedImage, streamUrl, toInt } from "../core/utils";
+import { episodeCode, formatClock, formatRuntime, sizedImage, toInt } from "../core/utils";
 import { episodeItem, POSTER_SIZE, Season } from "../core/xtream";
+import type { Watching } from "../core/watch";
 import type { Key } from "../platform/keys";
-import { PlayTest } from "../probe/playtest";
-import type { PlayResult } from "../probe/report";
-import type { Sample } from "../probe/samples";
 import { Backdrop } from "../ui/backdrop";
 import { append, clear, h, setText, toggle } from "../ui/dom";
-import { setKeyTarget } from "../ui/focus";
+import { PlayerScreen } from "./player";
 
 type Zone = "buttons" | "seasons" | "episodes";
 type ButtonAction = "play" | "restart" | "resume" | "playFirst" | "resumeEpisode" | "episodes";
@@ -354,7 +352,7 @@ export class DetailsScreen implements Screen {
         this.play(this.item, 0);
         break;
       case "resume":
-        this.play(this.item, entry ? toInt(entry.pos) * 1000 : 0);
+        this.play(this.item, entry ? toInt(entry.pos) : 0);
         break;
       case "playFirst": {
         const first = this.playOrder()[0];
@@ -363,7 +361,7 @@ export class DetailsScreen implements Screen {
       }
       case "resumeEpisode": {
         const ep = this.playOrder().filter((e) => entry && e.itemId === entry.id)[0] || this.playOrder()[0];
-        if (ep) this.play(ep, entry && entry.id === ep.itemId ? toInt(entry.pos) * 1000 : 0);
+        if (ep) this.play(ep, entry && entry.id === ep.itemId ? toInt(entry.pos) : 0);
         break;
       }
       case "episodes":
@@ -377,48 +375,46 @@ export class DetailsScreen implements Screen {
     }
   }
 
-  // --- Playing (a stand-in until the M3 player) -------------------------------------
+  // --- Playing ----------------------------------------------------------------------
 
-  private play(target: Item, startMs: number): void {
+  // Files this TV can't play ask first; "Try anyway" goes ahead regardless.
+  private play(target: Item, startSecs: number): void {
     const check = playCheck(factsOf(target));
-    const go = () => this.launch(target, startMs);
     if (check.verdict === "blocked") {
       this.app.dialog({
         title: "This may not play",
         message: check.reason,
-        buttons: [{ label: "Try anyway", action: go }, { label: "Back" }],
+        buttons: [{ label: "Try anyway", action: () => this.launch(target, startSecs, true) }, { label: "Back" }],
         focus: 1,
       });
       return;
     }
-    go();
+    this.launch(target, startSecs, false);
   }
 
-  private launch(target: Item, startMs: number): void {
-    const api = this.app.api;
-    if (!api) return;
-    const ext = (target.ext || "mp4").toLowerCase();
-    const sample: Sample = {
-      key: factsOf(target).key,
-      kind: target.kind === "episode" ? "episode" : "movie",
-      id: target.itemId,
-      title: target.kind === "episode" ? this.item.title + " " + episodeCode(target.seasonNo, target.episodeNo) + " " + target.title : target.title,
-      ext,
-      poster: target.poster,
-      videoCodec: target.videoCodec,
-      videoProfile: target.videoProfile,
-      audioCodec: target.audioCodec,
-      width: target.width,
+  private launch(target: Item, startSecs: number, tryAnyway: boolean): void {
+    if (!this.app.api) return;
+    if (target.kind !== "episode") {
+      this.app.push(new PlayerScreen(this.app, { kind: "movie", movie: target }, 0, startSecs, tryAnyway));
+      return;
+    }
+    // A series plays on through its episodes in order, specials last.
+    const queue = this.playOrder();
+    const index = Math.max(0, queue.findIndex((ep) => ep.itemId === target.itemId));
+    const watching: Watching = {
+      kind: "episode",
+      seriesId: this.item.itemId,
+      seriesName: this.item.title,
+      poster: this.item.poster,
+      backdrop: this.item.backdrop,
+      tmdbId: this.item.tmdbId,
+      queue,
     };
-    const url = streamUrl(api.creds, target.kind === "episode" ? "series" : "movie", target.itemId, ext);
-    const test = new PlayTest(this.app.root, sample, url, (result: PlayResult) => this.afterPlay(target, result), startMs);
-    setKeyTarget(test);
-    test.start();
+    this.app.push(new PlayerScreen(this.app, watching, index, startSecs, tryAnyway));
   }
 
-  private afterPlay(target: Item, result: PlayResult): void {
-    learnResult(factsOf(target), result.outcome === "played", result.error);
-    setKeyTarget(this);
+  // After playing: what the player learned about this TV, and where we got to.
+  private refreshAfterPlay(): void {
     if (this.item.kind === "series") {
       this.seriesCompat();
       for (const key of Object.keys(this.episodeEls)) {
@@ -426,8 +422,11 @@ export class DetailsScreen implements Screen {
         if (el.parentNode) el.parentNode.removeChild(el);
       }
       this.episodeEls = {};
-      this.renderEpisodes();
-    } else this.movieCompat();
+      this.seriesProgress(false);
+    } else {
+      this.movieCompat();
+      this.movieButtons();
+    }
   }
 
   // --- Keys -------------------------------------------------------------------------
@@ -502,7 +501,7 @@ export class DetailsScreen implements Screen {
       case "ok":
       case "play": {
         const ep = this.episodes[this.episodeIndex];
-        if (ep) this.play(ep, this.entry && this.entry.id === ep.itemId ? toInt(this.entry.pos) * 1000 : 0);
+        if (ep) this.play(ep, this.entry && this.entry.id === ep.itemId ? toInt(this.entry.pos) : 0);
         break;
       }
       case "back":
@@ -516,8 +515,7 @@ export class DetailsScreen implements Screen {
   // --- Screen -----------------------------------------------------------------------
 
   onShow(): void {
-    if (this.item.kind === "movie") this.movieButtons();
-    else if (this.seasons.length > 0) this.seriesProgress(false);
+    if (this.item.kind === "movie" || this.seasons.length > 0) this.refreshAfterPlay();
     this.enterZone(this.zone);
   }
 

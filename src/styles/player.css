@@ -1,0 +1,431 @@
+/* The player: our controls over AVPlay's video plane (the Roku PlayerScreen, x1.5).
+   Everything here sits on a transparent page, so the video shows wherever nothing
+   is drawn. */
+
+.player-cover {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1920px;
+  height: 1080px;
+  background: var(--bg);
+  opacity: 0;
+  transition: opacity 300ms linear;
+}
+.player-cover.is-visible {
+  opacity: 1;
+}
+
+.player-controls {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1920px;
+  height: 1080px;
+  opacity: 0;
+  transition: opacity 200ms linear;
+}
+.player-controls.is-visible {
+  opacity: 1;
+}
+
+.player-top-fade,
+.player-bottom-fade {
+  position: absolute;
+  left: 0;
+  width: 1920px;
+}
+.player-top-fade {
+  top: 0;
+  height: 210px;
+  background: linear-gradient(rgba(13, 9, 32, 0.85), rgba(13, 9, 32, 0));
+}
+.player-bottom-fade {
+  top: 645px;
+  height: 435px;
+  background: linear-gradient(rgba(13, 9, 32, 0), rgba(13, 9, 32, 0.92));
+}
+
+.player-back {
+  position: absolute;
+  left: 72px;
+  top: 45px;
+  width: 180px;
+  height: 66px;
+  line-height: 66px;
+  border-radius: 999px;
+  background: rgba(48, 39, 90, 0.85);
+  color: var(--pill-text);
+  text-align: center;
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 27px;
+  white-space: pre;
+  transition: transform 150ms var(--ease-out), background-color 150ms linear, color 150ms linear;
+}
+.player-back.is-focused {
+  background: var(--focus);
+  color: var(--on-focus);
+  transform: scale(1.06);
+}
+
+.player-title {
+  position: absolute;
+  left: 282px;
+  top: 45px;
+  width: 1566px;
+  height: 66px;
+  line-height: 66px;
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 33px;
+  color: var(--text);
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.player-play {
+  position: absolute;
+  left: 72px;
+  top: 837px;
+  width: 84px;
+  height: 84px;
+  border-radius: 50%;
+  background: rgba(48, 39, 90, 0.85);
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 150ms var(--ease-out), background-color 150ms linear, color 150ms linear;
+}
+.player-play svg {
+  display: block;
+}
+.player-play.is-focused {
+  background: var(--focus);
+  color: var(--on-focus);
+  transform: scale(1.08);
+}
+
+.player-elapsed,
+.player-remaining {
+  position: absolute;
+  top: 861px;
+  height: 36px;
+  line-height: 36px;
+  font-weight: 800;
+  font-size: 26px;
+  white-space: nowrap;
+}
+.player-elapsed {
+  left: 180px;
+  width: 144px;
+  text-align: right;
+  color: var(--text);
+}
+.player-remaining {
+  left: 1704px;
+  width: 150px;
+  color: var(--text-dim);
+}
+
+.player-bar {
+  position: absolute;
+  left: 342px;
+  top: 876px;
+  width: 1344px;
+  height: 8px;
+}
+.bar-track,
+.bar-fill,
+.bar-preview {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 8px;
+  border-radius: 4px;
+}
+.bar-track {
+  width: 1344px;
+  background: rgba(201, 184, 255, 0.25);
+}
+.bar-fill {
+  width: 0;
+  background: var(--focus);
+}
+.bar-preview {
+  display: none;
+  width: 0;
+  background: rgba(255, 158, 207, 0.8);
+}
+.bar-preview.is-visible {
+  display: block;
+}
+
+.bar-knob {
+  position: absolute;
+  left: 0;
+  top: 866px;
+  width: 27px;
+  height: 27px;
+  border-radius: 50%;
+  background: var(--text);
+  opacity: 0;
+}
+.bar-knob.is-visible {
+  opacity: 1;
+}
+
+.player-bubble {
+  position: absolute;
+  left: 0;
+  top: 795px;
+  width: 156px;
+  height: 54px;
+  line-height: 54px;
+  border-radius: 999px;
+  background: var(--focus);
+  color: var(--on-focus);
+  text-align: center;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 26px;
+  opacity: 0;
+}
+.player-bubble.is-visible {
+  opacity: 1;
+}
+
+.player-note {
+  position: absolute;
+  left: 180px;
+  top: 795px;
+  width: 1500px;
+  height: 54px;
+  line-height: 54px;
+  font-weight: 800;
+  font-size: 26px;
+  color: var(--butter);
+}
+
+.player-buttons {
+  position: absolute;
+  left: 72px;
+  top: 954px;
+  white-space: nowrap;
+}
+.player-buttons .pill {
+  background: rgba(48, 39, 90, 0.85);
+}
+.player-buttons .pill.is-focused {
+  background: var(--focus);
+}
+
+/* A ring that turns while the stream opens or buffers. */
+.player-spinner {
+  display: none;
+  position: absolute;
+  left: 912px;
+  top: 492px;
+  width: 96px;
+  height: 96px;
+  box-sizing: border-box;
+  border-radius: 50%;
+  border: 8px solid rgba(201, 184, 255, 0.22);
+  border-top-color: var(--focus);
+  animation: player-spin 900ms linear infinite;
+}
+.player-spinner.is-visible {
+  display: block;
+}
+@keyframes player-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.upnext {
+  display: none;
+  position: absolute;
+  left: 1200px;
+  top: 750px;
+  width: 648px;
+  height: 234px;
+  box-sizing: border-box;
+  padding: 30px 42px 0;
+  border-radius: var(--radius-card);
+  background: var(--surface-2);
+  animation: upnext-enter 300ms var(--ease-out) both;
+}
+.upnext.is-visible {
+  display: block;
+}
+.upnext::after {
+  content: "";
+  position: absolute;
+  left: 594px;
+  top: 27px;
+  width: 27px;
+  height: 27px;
+  background: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M12 0c.8 6.4 5.6 11.2 12 12-6.4.8-11.2 5.6-12 12-.8-6.4-5.6-11.2-12-12C6.4 11.2 11.2 6.4 12 0z' fill='%23FFD98A'/></svg>") no-repeat;
+  background-size: 100% 100%;
+}
+.upnext-eyebrow {
+  font-weight: 800;
+  font-size: 21px;
+  letter-spacing: 3px;
+  color: var(--pink);
+}
+.upnext-title {
+  margin-top: 9px;
+  height: 90px;
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 33px;
+  line-height: 45px;
+  color: var(--text);
+  white-space: pre-wrap;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.upnext-hint {
+  margin-top: 12px;
+  font-size: 26px;
+  color: var(--text-dim);
+  white-space: pre;
+}
+@keyframes upnext-enter {
+  from {
+    opacity: 0;
+    transform: translateY(27px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.player-error {
+  display: none;
+  position: absolute;
+  left: 210px;
+  top: 225px;
+  width: 1500px;
+  height: 630px;
+  border-radius: var(--radius-card);
+  background: var(--surface-1);
+}
+.player-error.is-visible {
+  display: block;
+}
+.player-error-title {
+  position: absolute;
+  left: 66px;
+  top: 51px;
+  width: 1368px;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 42px;
+  line-height: 54px;
+  color: var(--text);
+}
+.player-error-detail {
+  position: absolute;
+  left: 66px;
+  top: 129px;
+  width: 1368px;
+  height: 405px;
+  overflow: hidden;
+  font-size: 27px;
+  line-height: 37px;
+  color: var(--pill-text);
+  white-space: pre-line;
+  word-break: break-word;
+}
+.player-error-hint {
+  position: absolute;
+  left: 66px;
+  top: 552px;
+  width: 1368px;
+  font-weight: 800;
+  font-size: 27px;
+  color: var(--pink);
+  white-space: pre;
+}
+
+.player-panel {
+  display: none;
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1920px;
+  height: 1080px;
+  background: rgba(13, 9, 32, 0.85);
+}
+.player-panel.is-visible {
+  display: block;
+}
+.player-panel-title {
+  position: absolute;
+  left: 180px;
+  top: 120px;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 51px;
+  color: var(--text);
+}
+.player-panel-list {
+  position: absolute;
+  left: 180px;
+  top: 240px;
+  width: 1560px;
+}
+.panel-row {
+  position: relative;
+  height: 66px;
+  margin-bottom: 9px;
+  border-radius: 999px;
+  color: #a195cc;
+}
+.panel-row.is-active {
+  color: var(--text);
+}
+.panel-row.is-focused {
+  background: var(--focus);
+  color: var(--on-focus);
+}
+.panel-dot {
+  display: none;
+  position: absolute;
+  left: 30px;
+  top: 27px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--pink);
+}
+.panel-row.is-active .panel-dot {
+  display: block;
+}
+.panel-row.is-focused .panel-dot {
+  background: var(--on-focus);
+}
+.panel-label {
+  position: absolute;
+  left: 66px;
+  top: 0;
+  width: 1470px;
+  height: 66px;
+  line-height: 66px;
+  font-weight: 800;
+  font-size: 30px;
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

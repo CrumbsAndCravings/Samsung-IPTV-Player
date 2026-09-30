@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { ListItem } from "../src/core/xtream";
 import { matchTitles } from "../src/probe/library";
 import { PlayResult, ProbeState, reportLines, reportText } from "../src/probe/report";
-import { errorLabel } from "../src/probe/playtest";
+import { errorLabel } from "../src/platform/player";
 import { infoQueue, Sample, slotsFor } from "../src/probe/samples";
 
 function sample(ext: string, video: string, audio: string): Sample {

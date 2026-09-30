@@ -26,7 +26,7 @@ body {
 body.playing {
   background: transparent;
 }
-body.playing .screen {
+body.playing .screen:not(.player) {
   visibility: hidden;
 }
 

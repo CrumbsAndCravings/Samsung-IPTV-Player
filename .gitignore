@@ -9,3 +9,6 @@ out/
 *.pem
 tizen.local.json
 .buildResult/
+
+# Generated sample video for the desktop harness (tools/make_sample_video.py).
+dev/media/

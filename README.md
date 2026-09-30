@@ -2,14 +2,14 @@
 
 ARAN+ is a cosy, Netflix-style IPTV player for movies and series from an Xtream Codes provider. This repo is the Samsung Tizen version, built for a Samsung Q60 series 65" TV and laid out for 1920x1080. The Roku app ([CrumbsAndCravings/roku-iptv-player](https://github.com/CrumbsAndCravings/roku-iptv-player)) is the working reference for every feature, and its [`docs/samsung-plan.md`](https://github.com/CrumbsAndCravings/roku-iptv-player/blob/main/docs/samsung-plan.md) is the build plan this repo follows.
 
-## Status: M2 (browse your library)
+## Status: M3 (the player)
 
 | | Scope | State |
 |---|---|---|
 | **M0** | Repo, config.xml, hello-world screen with fonts and palette, packaging and install scripts, the TV checks | Done on the TV, see [docs/m0-findings.md](docs/m0-findings.md) |
 | **M1** | `core/` ports with tests, storage, mock server, desktop harness | Done: every applicable Roku check is ported and passes, plus new subtitle-file and playability modules |
-| **M2** | Login, Home, Details, account menu | Built; needs a run on the TV |
-| M3 | Player: controls, jump preview, resume, Up Next, errors | |
+| **M2** | Login, Home, Details, account menu | Done: browsing works on the TV |
+| **M3** | Player: controls, jump preview, resume, Up Next, errors | Built and tested in the desktop harness; waiting on a TV test |
 | M4 | Audio and subtitle tracks, OpenSubtitles | |
 | M5 | Search, motion polish, performance pass | |
 
@@ -21,9 +21,14 @@ What the app does now:
 - **Details** for movies (Play, or Resume and Play from start) and series (seasons, with Specials first, and the episode list with stills, runtimes and synopses).
 - **"Won't play"** marks titles this TV can't play (AVI, for now), with "Try anyway".
 - **Account menu** (the round button at the right of the tabs): Keep watching, Setup checks, Sign out.
-- **Play** opens a simple test player for now. The real player, with resume, Continue Watching and Up Next, comes in M3. Search comes in M5.
+- **The player.** Back and the title at the top; play/pause, the bar and the times at the bottom; Episodes, Next episode and Restart underneath. The controls show when you press a key and hide after 5 seconds of playing.
+- **Jump preview.** Press or hold **Left/Right** (or Rewind/Fast forward) and the bar shows where you'll land before you get there; the longer you hold, the bigger the steps. The jump happens a moment after you let go, **OK** jumps straight away and **Back** cancels.
+- **Resume and Continue Watching.** Progress is saved every 15 seconds and when you leave. Resuming starts 5 seconds early. A movie drops out of Continue Watching when you finish it; a series moves on to the next episode.
+- **Up Next** counts down 8 seconds at the end of an episode, then plays the next one (specials come after the last season). **OK** plays it now, **Back** stops.
+- **Errors explain themselves.** A stream that fails is tried once more; if it fails again you see Samsung's reason, the file's format, whether this TV normally plays files like it, and the stream address with your login hidden. Files this TV can't play (AVI) say so before they try.
+- Search comes in M5, audio and subtitle tracks in M4.
 
-Remote: **Up** from the first row (or **Left** from a row's first poster) reaches the tabs. **Back** jumps to the first row, then the tabs, then asks to exit. On Details, **Down** reaches the seasons and episodes.
+Remote: **Up** from the first row (or **Left** from a row's first poster) reaches the tabs. **Back** jumps to the first row, then the tabs, then asks to exit. On Details, **Down** reaches the seasons and episodes. In the player, **OK** pauses, **Up** reaches Back, **Down** reaches the buttons, **Back** hides the controls and then leaves, and **Stop** leaves at once.
 
 The **Setup checks** screen from M0 is under the account menu. It checks the TV's engine and model, the connection to your provider and to OpenSubtitles, and plays test files, with a report that is safe to photograph or scan as a QR code (logins, server names and keys are replaced with placeholders).
 
@@ -69,12 +74,13 @@ npm run dev        # desktop harness and fake IPTV server on http://localhost:80
 npm test           # unit tests (vitest)
 npm run check      # typecheck, lint, tests, bundle, and an ES2018 syntax check of the bundle
 npm run screens    # screenshots of each screen from the harness, in out/screens
+python3 tools/make_sample_video.py   # a 40 s test video for the harness player (dev/media, not committed)
 npm run images     # regenerate icon.png and the glows (needs Pillow)
 ```
 
-In the desktop harness the arrow keys, Enter, and Escape (as Back) stand in for the remote, and the player falls back to HTML5 video (MP4 and WebM only). The TV-only APIs (`tizen`, `webapis`) are absent there, so the TV fields stay blank.
+In the desktop harness the arrow keys, Enter, Escape (as Back), Space (play/pause) and comma and full stop (Rewind and Fast forward) stand in for the remote, and the player falls back to HTML5 video (MP4 and WebM only). The TV-only APIs (`tizen`, `webapis`) are absent there, so the TV fields stay blank.
 
-The harness includes a fake Xtream server (`dev/mock-xtream.mjs`): sign in with server `localhost:8080`, username `demo`, password `demo`. It has a few hundred made-up movies and series with generated artwork, and it reproduces the real provider's quirks (numbers as strings, `info: []`, episodes as a plain array, title prefixes, adult categories). Streams play `dev/media/sample.mp4` if you put one there. No real account is ever needed to develop.
+The harness includes a fake Xtream server (`dev/mock-xtream.mjs`): sign in with server `localhost:8080`, username `demo`, password `demo`. It has a few hundred made-up movies and series with generated artwork, and it reproduces the real provider's quirks (numbers as strings, `info: []`, episodes as a plain array, title prefixes, adult categories). Streams play `dev/media/sample.webm` (made by `tools/make_sample_video.py`) or a `sample.mp4` you put there. No real account is ever needed to develop.
 
 Every push runs the same checks on GitHub Actions and uploads the unsigned build as an artifact.
 

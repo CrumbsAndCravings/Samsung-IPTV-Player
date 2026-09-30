@@ -48,3 +48,11 @@ export interface Player {
   suspend(): void;
   restore(): void;
 }
+
+// AVPlay reports failures as a generic WebAPIException name (TypeMismatchError,
+// UnknownError...) with the real reason, PLAYER_ERROR_*, in the message.
+export function errorLabel(name: string, detail: string): string {
+  const code = /PLAYER_ERROR_[A-Z_]+/.exec(detail);
+  if (code) return code[0];
+  return detail ? name + ": " + detail : name;
+}
