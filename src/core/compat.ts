@@ -1,7 +1,7 @@
 // Will this file play on this TV? The Roku app asked the device (CanDecodeVideo);
 // Tizen has no reliable equivalent, so this combines:
 //   - what the M0 checks found on this TV (docs/m0-findings.md): HEVC and H.264 in MKV
-//     and MP4 play; most AVIs fail to open, though some play;
+//     and MP4 play; none of the four AVIs tried played;
 //   - what the TV has learned since: each title's last result, and codec combinations
 //     that have failed for several titles and never played.
 // Never blocks outright: the screens offer "OK to try anyway", as on Roku.
@@ -31,10 +31,11 @@ interface Learned {
   at: number;
 }
 
-// Containers the M0 checks found unreliable here.
-const CONTAINER_NOTES: { [ext: string]: string } = {
-  avi: "AVI files often don't play on this TV.",
-  divx: "DivX files often don't play on this TV.",
+// Containers the M0 checks found don't play here. Blocked, not warned: none of the four
+// AVIs tried played (three failed to open, one opened and never started).
+const BLOCKED_CONTAINERS: { [ext: string]: string } = {
+  avi: "This is an AVI file. AVI files don't play on this TV. Your provider may have another version of this title.",
+  divx: "This is a DivX file. DivX files don't play on this TV. Your provider may have another version of this title.",
 };
 
 const MAX_LEARNED = 500;
@@ -77,8 +78,8 @@ export function playCheck(f: FileFacts): PlayCheck {
       return { verdict: "blocked", reason: "Files like this (" + f.ext.toUpperCase() + ", " + what + ") haven't played on this TV." };
     }
   }
-  const note = CONTAINER_NOTES[f.ext.toLowerCase()];
-  if (note) return { verdict: "warn", reason: note };
+  const blocked = BLOCKED_CONTAINERS[f.ext.toLowerCase()];
+  if (blocked) return { verdict: "blocked", reason: blocked };
   return { verdict: "ok", reason: "" };
 }
 

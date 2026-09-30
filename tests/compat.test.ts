@@ -13,8 +13,11 @@ describe("playability on this TV", () => {
     expect(playCheck(file("m:2", "mp4", "h264", "aac")).verdict).toBe("ok");
   });
 
-  it("warns before AVI, but doesn't block it", () => {
-    expect(playCheck(file("m:3", "AVI", "mpeg4", "mp3"))).toEqual({ verdict: "warn", reason: "AVI files often don't play on this TV." });
+  it("marks AVI as won't play, since none played in M0", () => {
+    expect(playCheck(file("m:3", "AVI", "mpeg4", "mp3"))).toEqual({
+      verdict: "blocked",
+      reason: "This is an AVI file. AVI files don't play on this TV. Your provider may have another version of this title.",
+    });
   });
 
   it("remembers a title that failed, and one that played", () => {
@@ -28,24 +31,29 @@ describe("playability on this TV", () => {
   });
 
   it("blocks a combination only after two titles failed and none played", () => {
-    learnResult(file("m:6", "avi", "mpeg4", "mp3"), false, NOT_SUPPORTED);
-    expect(playCheck(file("m:7", "avi", "mpeg4", "mp3")).verdict).toBe("warn");
-    learnResult(file("m:8", "avi", "mpeg4", "mp3"), false, NOT_SUPPORTED);
-    expect(playCheck(file("m:7", "avi", "mpeg4", "mp3"))).toEqual({
+    learnResult(file("m:6", "mkv", "vc1", "dts"), false, NOT_SUPPORTED);
+    expect(playCheck(file("m:7", "mkv", "vc1", "dts")).verdict).toBe("ok");
+    learnResult(file("m:8", "mkv", "vc1", "dts"), false, NOT_SUPPORTED);
+    expect(playCheck(file("m:7", "mkv", "vc1", "dts"))).toEqual({
       verdict: "blocked",
-      reason: "Files like this (AVI, MPEG-4 (DivX/Xvid) video, MP3 audio) haven't played on this TV.",
+      reason: "Files like this (MKV, VC-1 video, DTS audio) haven't played on this TV.",
     });
-    learnResult(file("m:9", "avi", "mpeg4", "mp3"), true, "");
-    expect(playCheck(file("m:7", "avi", "mpeg4", "mp3")).verdict).toBe("warn");
+    learnResult(file("m:9", "mkv", "vc1", "dts"), true, "");
+    expect(playCheck(file("m:7", "mkv", "vc1", "dts")).verdict).toBe("ok");
+  });
+
+  it("lets an AVI that did play here through", () => {
+    learnResult(file("m:14", "avi", "h264", "aac"), true, "");
+    expect(playCheck(file("m:14", "avi", "h264", "aac")).verdict).toBe("ok");
   });
 
   it("doesn't learn from connection trouble or judge unknown codecs as a group", () => {
     learnResult(file("m:10", "mkv", "hevc", "aac"), false, "PLAYER_ERROR_CONNECTION_FAILED");
     expect(playCheck(file("m:10", "mkv", "hevc", "aac")).verdict).toBe("ok");
-    learnResult(file("m:11", "avi"), false, NOT_SUPPORTED);
-    learnResult(file("m:12", "avi"), false, NOT_SUPPORTED);
-    expect(playCheck(file("m:13", "avi")).verdict).toBe("warn");
-    expect(comboOf(file("m:13", "avi"))).toBe("");
+    learnResult(file("m:11", "mkv"), false, NOT_SUPPORTED);
+    learnResult(file("m:12", "mkv"), false, NOT_SUPPORTED);
+    expect(playCheck(file("m:13", "mkv")).verdict).toBe("ok");
+    expect(comboOf(file("m:13", "mkv"))).toBe("");
   });
 
   it("recognises format errors", () => {
