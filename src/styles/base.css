@@ -1,0 +1,271 @@
+/* Page, screens, glows and the shared building blocks (pills, fields, cards). */
+
+html {
+  background: transparent;
+}
+
+html,
+body {
+  margin: 0;
+  width: 1920px;
+  height: 1080px;
+  overflow: hidden;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 28px;
+  line-height: 1.35;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* While a video plays, the page must be see-through so AVPlay's plane shows. */
+body.playing {
+  background: transparent;
+}
+body.playing .screen {
+  visibility: hidden;
+}
+
+#av-player,
+.html5-player {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 1920px;
+  height: 1080px;
+  background: transparent;
+}
+.html5-player {
+  background: #000;
+}
+
+#app {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 1920px;
+  height: 1080px;
+}
+
+.screen {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1920px;
+  height: 1080px;
+  overflow: hidden;
+  animation: screen-enter 300ms var(--ease-out) both;
+}
+
+@keyframes screen-enter {
+  from {
+    opacity: 0;
+    transform: translateY(27px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Two soft glows behind each screen, from pre-rendered PNGs (no CSS blur on a TV). */
+.glow {
+  position: absolute;
+  pointer-events: none;
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+}
+.glow-lavender {
+  left: -520px;
+  top: -560px;
+  width: 1500px;
+  height: 1500px;
+  background-image: url("../../assets/images/glow_lavender.png");
+  opacity: 0.2;
+}
+.glow-pink {
+  right: -520px;
+  bottom: -600px;
+  width: 1400px;
+  height: 1400px;
+  background-image: url("../../assets/images/glow_pink.png");
+  opacity: 0.12;
+}
+
+.logo {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 66px;
+  line-height: 1;
+  letter-spacing: 2px;
+}
+.logo-name {
+  color: var(--lavender);
+  background: linear-gradient(#e2d8ff, #b9a3ff);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.logo-plus {
+  color: var(--pink);
+  margin-left: 3px;
+}
+
+.card {
+  background: var(--surface-1);
+  border-radius: var(--radius-card);
+  padding: 33px 39px;
+  margin-bottom: 27px;
+}
+.card-title {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 39px;
+  margin: 0 0 6px;
+}
+.card-note {
+  color: var(--text-faint);
+  font-size: 24px;
+  margin: 0 0 21px;
+}
+
+.pill {
+  display: inline-block;
+  vertical-align: middle;
+  height: 66px;
+  line-height: 66px;
+  padding: 0 39px;
+  margin: 0 18px 12px 0;
+  border-radius: 999px;
+  background: var(--pill);
+  color: var(--pill-text);
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 30px;
+  white-space: nowrap;
+  transition: transform 150ms var(--ease-out), background-color 150ms linear, color 150ms linear;
+}
+.pill.is-selected {
+  background: var(--pill-selected);
+  color: var(--text);
+}
+.pill.is-focused {
+  background: var(--focus);
+  color: var(--on-focus);
+  transform: scale(1.06);
+}
+.pill.is-disabled {
+  opacity: 0.45;
+}
+
+.field {
+  display: inline-block;
+  vertical-align: top;
+  box-sizing: border-box;
+  width: 100%;
+  margin-bottom: 18px;
+}
+.field-half {
+  width: 49%;
+  margin-right: 2%;
+}
+.field-half + .field-half {
+  margin-right: 0;
+}
+.field-label {
+  display: block;
+  color: var(--text-faint);
+  font-size: 22px;
+  margin: 0 0 6px 27px;
+}
+.field-input {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  height: 72px;
+  padding: 0 30px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 30px;
+  outline: none;
+  box-shadow: 0 0 0 4px transparent;
+  transition: box-shadow 150ms linear;
+}
+.field-input::-webkit-input-placeholder {
+  color: var(--text-faint);
+}
+.field.is-focused .field-input {
+  box-shadow: 0 0 0 4px var(--focus);
+}
+.field.is-editing .field-input {
+  background: var(--pill);
+  box-shadow: 0 0 0 4px var(--pink);
+}
+
+/* Status dots: lavender works, pink failed, butter partly, outline not yet. */
+.dot {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  margin-right: 15px;
+  vertical-align: middle;
+  position: relative;
+  top: -2px;
+  flex-shrink: 0;
+}
+.dot-ok {
+  background: var(--lavender);
+}
+.dot-fail {
+  background: var(--pink);
+}
+.dot-warn {
+  background: var(--butter);
+}
+.dot-todo {
+  box-shadow: inset 0 0 0 3px var(--text-faint);
+}
+
+.dialog-scrim {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1920px;
+  height: 1080px;
+  background: rgba(21, 16, 40, 0.82);
+  animation: fade-in 200ms linear both;
+}
+.dialog {
+  position: absolute;
+  left: 660px;
+  top: 390px;
+  width: 600px;
+  box-sizing: border-box;
+  padding: 45px 48px 36px;
+  border-radius: var(--radius-card);
+  background: var(--surface-1);
+  text-align: center;
+}
+.dialog-title {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 45px;
+  margin: 0 0 33px;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}

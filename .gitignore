@@ -1,0 +1,11 @@
+node_modules/
+dist/
+out/
+*.wgt
+.DS_Store
+.env
+# Signing certificates and per-computer TV settings stay off git.
+*.p12
+*.pem
+tizen.local.json
+.buildResult/

@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    // The oldest TV this might be (Tizen 5.0, 2019) runs Chromium 63, so only
+    // ES2017 library APIs (plus Promise.finally) are allowed. esbuild lowers syntax.
+    "target": "ES2017",
+    "lib": ["ES2017", "ES2018.Promise", "DOM"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "types": [],
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "esModuleInterop": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["src", "tests"]
+}

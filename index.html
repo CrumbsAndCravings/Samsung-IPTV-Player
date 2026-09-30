@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=1920, height=1080">
+  <title>ARAN+</title>
+  <link rel="stylesheet" href="app.css">
+  <!-- Samsung's product APIs (AVPlay, ProductInfo). Only resolves on the TV. -->
+  <script src="$WEBAPIS/webapis/webapis.js"></script>
+</head>
+<body>
+  <!-- AVPlay draws video on its own plane underneath the page. -->
+  <object id="av-player" type="application/avplayer"></object>
+  <div id="app"></div>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,44 @@
+/* ARAN+ design tokens (plan section 5), laid out for 1920x1080. */
+
+@font-face {
+  font-family: "Fredoka";
+  src: url("../../assets/fonts/Fredoka-Medium.ttf") format("truetype");
+  font-weight: 500;
+}
+@font-face {
+  font-family: "Fredoka";
+  src: url("../../assets/fonts/Fredoka-SemiBold.ttf") format("truetype");
+  font-weight: 600;
+}
+@font-face {
+  font-family: "Nunito";
+  src: url("../../assets/fonts/Nunito-SemiBold.ttf") format("truetype");
+  font-weight: 600;
+}
+@font-face {
+  font-family: "Nunito";
+  src: url("../../assets/fonts/Nunito-ExtraBold.ttf") format("truetype");
+  font-weight: 800;
+}
+
+:root {
+  --bg: #151028;
+  --surface-1: #1e1736;
+  --surface-2: #241c42;
+  --pill: #30275a;
+  --pill-selected: #43377a;
+  --focus: #c9b8ff;
+  --on-focus: #151028;
+  --lavender: #b9a3ff;
+  --pink: #ff9ecf;
+  --butter: #ffd98a;
+  --text: #f7f3ff;
+  --text-dim: #c3b8e6;
+  --text-faint: #9083bd;
+  --pill-text: #d8cef5;
+
+  --radius-card: 15px;
+  --ease-out: cubic-bezier(0.215, 0.61, 0.355, 1);
+  --font-display: "Fredoka", sans-serif;
+  --font-body: "Nunito", sans-serif;
+}
