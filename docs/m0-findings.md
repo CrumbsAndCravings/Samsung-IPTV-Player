@@ -42,15 +42,18 @@ The user agent has no `Chrome/` token: `... (KHTML, like Gecko) 69.0.3497.106/5.
 | Lost in Paradise (2026), MKV, HEVC Main, AAC | Played; 5.3 s to start; two English text tracks |
 | Cheetahs Up Close, MP4, H.264 High, AAC 5.1 | Played; 3.7 s to start; seek reported failed (see below) |
 | Harry Potter and the Order of the Phoenix, AVI, MPEG-4 ASP, MP3 | Failed three times: `PLAYER_ERROR_NOT_SUPPORTED_FORMAT` while preparing |
+| They Will Kill You, MKV (0.1.1) | Played |
+| Man of Steel, AVI (0.1.1) | Failed |
 | DTS audio | Not tried yet |
 
-HEVC, the reason for moving to Samsung, works.
+HEVC, the reason for moving to Samsung, works. AVI doesn't: both AVIs tried failed, while every MKV and MP4 played.
+
+**Embedded subtitles work.** With 0.1.1, Lost in Paradise's English text track showed on screen once selected: AVPlay hands the text to `onsubtitlechange` and ARAN+ draws it. That '70s Show has no text track (`T: none`), so it needs online subtitles (M4).
 
 ## Still open
 
-- **AVI in general.** Only one AVI has been tried. 0.1.1 lists more AVIs under "More AVI files to try".
+- **The error name for Man of Steel**, to confirm it matches Harry Potter's.
 - **Seeking.** 0.1.0 checked the position 1.5 s after a seek, which is too soon for a progressive file. 0.1.1 waits up to 10 s and logs where it landed.
-- **Embedded subtitles.** Lost in Paradise has two English tracks, but nothing was seen on screen. 0.1.1 counts the subtitle cues AVPlay hands over and logs each text track's details.
 - **DTS audio.**
 - **Slow start of the Main 10 file** (15.5 s). Worth timing again.
 
@@ -60,4 +63,5 @@ HEVC, the reason for moving to Samsung, works.
 - **One stream at a time.** Never open a second connection to a stream while one is playing. Compute the moviehash (M4) before starting playback, not during. Don't pre-load the next episode. After stopping a stream, expect the provider to take a moment to free the slot; retry once after a short wait.
 - **OpenSubtitles headers:** send `Api-Key` and `X-User-Agent: ARANplus v<version>`. Don't count on `User-Agent`.
 - **Search index (M5):** load series with the single call. Load movies per category in the background, three at a time, from the first search of a session; it takes over a minute, so the "Still indexing your library" note matters. Consider keeping the index between sessions.
-- **Playability check (M2 and M3):** AVI is rare and at least partly unsupported. Remember failures per title for AVI rather than per codec combination, so one bad file doesn't mark every AVI "Won't play".
+- **Playability check (M2 and M3):** mark AVI "Won't play" on this TV, with "OK to try anyway" as on Roku. It is 1.6 % of the movies. Remember other failures per title rather than per codec combination, so one bad file doesn't mark a whole format.
+- **Provider flood protection:** after the setup screen loaded all movies category by category (well over a hundred requests in about a minute), the provider stopped answering for a while, and sign-in timed out until it recovered. Keep request bursts small (at most three at once, with pauses between batches) and cache what is already loaded.
