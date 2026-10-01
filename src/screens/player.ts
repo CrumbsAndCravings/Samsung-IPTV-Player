@@ -17,7 +17,7 @@ import type { FindRequest } from "../core/opensubtitles";
 import { barFraction } from "../core/playback";
 import { progressPut, progressRemove } from "../core/progress";
 import { redact } from "../core/redact";
-import { COMMIT_AFTER_MS, SeekPreview, TICK_MS } from "../core/seek";
+import { COMMIT_AFTER_MS, JumpResult, SeekPreview, SeekRunner, TICK_MS } from "../core/seek";
 import { cleanCueText, CueTrack, parseSubtitles } from "../core/srt";
 import { loadOsAccount, loadPrefs, savePref } from "../core/storage";
 import { activeSubtitle, audioPlan, freshOnline, NUDGE_MS, OnlineStatus, SubtitleSource, subtitleMenu, subtitlePlan, tracksNote } from "../core/subtitles";
@@ -115,6 +115,8 @@ export class PlayerScreen implements Screen {
   private paused = false;
   private introShown = false;
   private seekBroken = false;
+  private seekError = "";
+  private seeker: SeekRunner | null = null;
   private pendingSeekSecs = 0; // a resume the player refused before playing
 
   private controlsVisible = false;
@@ -260,6 +262,7 @@ export class PlayerScreen implements Screen {
     this.paused = false;
     this.introShown = false;
     this.seekBroken = false;
+    this.seekError = "";
     this.pendingSeekSecs = 0;
     setText(this.noteEl, "");
     this.resetSubtitles();
@@ -306,6 +309,7 @@ export class PlayerScreen implements Screen {
     const api = this.app.api;
     if (!api) return this.close();
     const token = ++this.streamToken;
+    this.seeker = this.newSeeker();
     const item = this.item;
     const ext = (item.ext || "mp4").toLowerCase();
     const url = streamUrl(api.creds, item.kind === "episode" ? "series" : "movie", item.itemId, ext);
@@ -608,7 +612,7 @@ export class PlayerScreen implements Screen {
     if (!this.started) return;
     if (this.seekBroken) {
       if (!this.controlsVisible) this.showControls("bar");
-      this.note("Jumping isn't available in this video.");
+      this.note("Jumping isn't working in this video (" + this.seekError + ").");
       return;
     }
     window.clearTimeout(this.commitTimer);
@@ -653,11 +657,29 @@ export class PlayerScreen implements Screen {
     this.timeAt = Date.now();
     this.renderBar();
     this.restartHideTimer();
-    this.player.seek(targetSecs * 1000).catch((err: Error) => {
-      logError("seek failed:", err.name, err.message);
-      this.seekBroken = true;
-      this.note("Jumping isn't available in this video.");
-    });
+    if (this.seeker) this.seeker.jump(targetSecs * 1000);
+  }
+
+  // Jumps for this stream go through here one at a time (core/seek.ts SeekRunner).
+  private newSeeker(): SeekRunner {
+    const runner: SeekRunner = new SeekRunner(
+      (ms) =>
+        this.player.seek(ms).catch((err: Error) => {
+          throw new Error(errorLabel(err.name, err.message));
+        }),
+      (result: JumpResult) => {
+        if (runner !== this.seeker || this.closing || result.ok) return;
+        logError("jump failed:", result.error, result.gaveUp ? "(giving up on jumps)" : "");
+        this.seekError = result.error;
+        // The note lives in the controls, so bring them back to show it.
+        if (this.mode === "playing" && !this.panel && !this.controlsVisible) this.showControls("bar");
+        if (result.gaveUp) {
+          this.seekBroken = true;
+          this.note("Jumping isn't working in this video (" + result.error + ").");
+        } else this.note("That jump didn't work (" + result.error + "). Try again in a moment.");
+      },
+    );
+    return runner;
   }
 
   // --- Buttons, episodes, Up Next ---------------------------------------------------

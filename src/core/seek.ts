@@ -81,3 +81,85 @@ export class SeekPreview {
     this.target = clampSeek(this.target + seconds * this.direction, durationSecs);
   }
 }
+
+export const SEEK_RETRY_MS = 1500;
+export const SEEK_TIMEOUT_MS = 15000;
+export const MAX_FAILED_JUMPS = 3;
+
+export interface JumpResult {
+  ok: boolean;
+  error: string; // the player's reason, when it failed
+  gaveUp: boolean; // several jumps in a row failed: stop offering them
+}
+
+// Sends jumps to the player one at a time. AVPlay refuses a seek while the previous
+// one is still landing (seconds, on an IPTV stream), and that used to switch jumping
+// off for the whole video after two quick jumps. Now a jump made meanwhile waits and
+// only the newest is sent; a failed jump is tried once more; and jumping is given up
+// only after several jumps in a row fail. A seek that never answers counts as done.
+export class SeekRunner {
+  private busy = false;
+  private queued = -1; // ms
+  private failures = 0;
+
+  constructor(
+    private send: (ms: number) => Promise<void>,
+    private onResult: (result: JumpResult) => void,
+    private wait: (ms: number, fn: () => void) => void = (ms, fn) => {
+      window.setTimeout(fn, ms);
+    },
+  ) {}
+
+  get gaveUp(): boolean {
+    return this.failures >= MAX_FAILED_JUMPS;
+  }
+
+  jump(ms: number): void {
+    if (this.busy) this.queued = ms;
+    else this.run(ms, 0);
+  }
+
+  private run(ms: number, attempt: number): void {
+    this.busy = true;
+    let settled = false;
+    const settle = (ok: boolean, error: string) => {
+      if (settled) return;
+      settled = true;
+      this.finished(ms, attempt, ok, error);
+    };
+    this.wait(SEEK_TIMEOUT_MS, () => settle(true, ""));
+    this.send(ms).then(
+      () => settle(true, ""),
+      (err: Error) => settle(false, err.message || err.name || "SEEK_FAILED"),
+    );
+  }
+
+  private finished(ms: number, attempt: number, ok: boolean, error: string): void {
+    const next = this.queued;
+    this.queued = -1;
+    if (ok) this.failures = 0;
+    if (next >= 0) {
+      // A newer jump is waiting; it replaces this one, worked or not.
+      this.run(next, 0);
+      if (ok) this.onResult({ ok: true, error: "", gaveUp: false });
+      return;
+    }
+    if (ok) {
+      this.busy = false;
+      this.onResult({ ok: true, error: "", gaveUp: false });
+      return;
+    }
+    if (attempt === 0) {
+      this.wait(SEEK_RETRY_MS, () => {
+        // A jump made during the wait wins over the retry.
+        const newer = this.queued;
+        this.queued = -1;
+        this.run(newer >= 0 ? newer : ms, newer >= 0 ? 0 : 1);
+      });
+      return;
+    }
+    this.busy = false;
+    this.failures++;
+    this.onResult({ ok: false, error, gaveUp: this.gaveUp });
+  }
+}
