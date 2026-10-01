@@ -203,20 +203,29 @@ export class SearchScreen implements Screen {
   }
 
   private onKeyboardKey(key: Key, event: KeyboardEvent): void {
+    // A USB keyboard plugged into the TV (or a computer's, in the harness), and a
+    // remote's number keys: any single character types itself, Backspace deletes.
+    const char = event && event.key && event.key.length === 1 ? event.key : "";
+    if (char || (event && event.key === "Backspace" && key === "other")) {
+      this.query = applyKey(this.query, char === " " ? "space" : char || "delete");
+      this.typed();
+      return;
+    }
     if (key === "up" || key === "down" || key === "left" || key === "right") {
       if (!this.keyboard.move(key) && key === "right") this.focusResults();
       this.renderFocus();
     } else if (key === "ok") {
-      this.query = applyKey(this.query, this.keyboard.current);
-      this.typed();
+      // Shift, Caps and the symbols page only change the keyboard.
+      const pressed = this.keyboard.press();
+      if (pressed !== null) {
+        this.query = applyKey(this.query, pressed);
+        this.typed();
+      }
+      this.renderFocus();
     } else if (key === "ff") this.focusResults();
     else if (key === "back") this.app.pop();
-    else if ((key === "other" || key === "playpause") && /^[a-zA-Z0-9 ]$/.test(event.key || "")) {
-      // A USB keyboard plugged into the TV (or a computer's, in the harness).
-      this.query = applyKey(this.query, event.key === " " ? "space" : event.key.toLowerCase());
-      this.typed();
-    }
   }
+
 
   private onResultsKey(key: Key): void {
     const r = this.rows[this.rowIndex];

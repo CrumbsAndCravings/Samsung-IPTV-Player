@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyKey, moveKey } from "../src/ui/keyboard";
+import { applyKey, KeyboardState, moveKey } from "../src/ui/keyboard";
 import { libraryStatusText } from "../src/core/search";
 
 describe("the Search keyboard", () => {
@@ -11,12 +11,14 @@ describe("the Search keyboard", () => {
     expect(moveKey({ row: 2, col: 3 }, "down")).toEqual({ row: 3, col: 3 });
   });
   it("treats the wide bottom keys as one each", () => {
-    expect(moveKey({ row: 5, col: 3 }, "down")).toEqual({ row: 6, col: 2 }); // Delete
-    expect(moveKey({ row: 6, col: 2 }, "right")).toEqual({ row: 6, col: 4 }); // Clear
+    expect(moveKey({ row: 5, col: 3 }, "down")).toEqual({ row: 6, col: 2 }); // Caps
+    expect(moveKey({ row: 6, col: 2 }, "right")).toEqual({ row: 6, col: 4 }); // symbols
     expect(moveKey({ row: 6, col: 4 }, "right")).toBeNull();
-    expect(moveKey({ row: 6, col: 2 }, "left")).toEqual({ row: 6, col: 0 }); // Space
+    expect(moveKey({ row: 6, col: 2 }, "left")).toEqual({ row: 6, col: 0 }); // Shift
+    expect(moveKey({ row: 6, col: 2 }, "down")).toEqual({ row: 7, col: 2 }); // Delete
+    expect(moveKey({ row: 7, col: 4 }, "up")).toEqual({ row: 6, col: 4 });
     expect(moveKey({ row: 6, col: 4 }, "up")).toEqual({ row: 5, col: 4 });
-    expect(moveKey({ row: 6, col: 0 }, "down")).toBeNull();
+    expect(moveKey({ row: 7, col: 0 }, "down")).toBeNull();
   });
   it("types, spaces, deletes and clears", () => {
     expect(applyKey("the", "m")).toBe("them");
@@ -27,6 +29,54 @@ describe("the Search keyboard", () => {
     expect(applyKey("", "delete")).toBe("");
     expect(applyKey("them", "clear")).toBe("");
     expect(applyKey("x".repeat(40), "a")).toBe("x".repeat(40));
+    expect(applyKey("Spider", "-")).toBe("Spider-");
+  });
+
+  // Puts the focus on a key by its grid position and presses OK.
+  const pressAt = (state: KeyboardState, row: number, col: number) => {
+    state.pos = { row, col };
+    return state.press();
+  };
+
+  it("capitalises the next letter after Shift, then goes back to lower case", () => {
+    const k = new KeyboardState();
+    expect(pressAt(k, 6, 0)).toBeNull(); // Shift
+    expect(k.label("a")).toBe("A");
+    expect(pressAt(k, 0, 0)).toBe("A");
+    expect(k.shift).toBe(false);
+    expect(pressAt(k, 0, 1)).toBe("b");
+  });
+
+  it("keeps capitals on with Caps until it's pressed again", () => {
+    const k = new KeyboardState();
+    pressAt(k, 6, 2); // Caps
+    expect(pressAt(k, 0, 0)).toBe("A");
+    expect(pressAt(k, 0, 1)).toBe("B");
+    expect(pressAt(k, 4, 2)).toBe("1");
+    pressAt(k, 6, 2);
+    expect(pressAt(k, 0, 2)).toBe("c");
+  });
+
+  it("switches to symbols and back", () => {
+    const k = new KeyboardState();
+    expect(k.label("symbols")).toBe("#+=");
+    pressAt(k, 6, 4);
+    expect(k.label("symbols")).toBe("abc");
+    expect(pressAt(k, 0, 0)).toBe("!");
+    expect(pressAt(k, 0, 5)).toBe("-");
+    expect(pressAt(k, 7, 0)).toBe("space");
+    pressAt(k, 6, 4);
+    expect(pressAt(k, 0, 0)).toBe("a");
+  });
+
+  it("leaves Shift waiting while symbols are typed", () => {
+    const k = new KeyboardState();
+    pressAt(k, 6, 0); // Shift
+    pressAt(k, 6, 4); // symbols
+    expect(pressAt(k, 0, 2)).toBe("&");
+    expect(k.shift).toBe(true);
+    pressAt(k, 6, 4); // letters
+    expect(pressAt(k, 1, 0)).toBe("G");
   });
 });
 
