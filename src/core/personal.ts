@@ -2,7 +2,7 @@
 // tools/build.mjs), ported from the Roku app's Registry.brs (BuiltInCreds,
 // LanguagePrefs, SyncConfig) and MainScene.brs. docs/features.md §2.2, §4.2, §9.4.
 
-import { readJson, regDelete, regRead, regWrite } from "./storage";
+import { loadCreds, readJson, regDelete, regRead, regWrite, saveCreds } from "./storage";
 import { Creds, field, fieldStr, isArr, Json, normalizeServer, toStr } from "./utils";
 
 let data: Json = typeof __PERSONAL__ === "undefined" ? null : __PERSONAL__;
@@ -42,14 +42,21 @@ export function syncConfig(): { url: string; key: string } | null {
 // When this build carries a different login from the one the TV last saw, the saved
 // login and Continue Watching (whose IDs belong to the old provider) are cleared, so
 // the new one signs in by itself. Online subtitles are kept. Returns true when it did.
+// A saved login for the same account is kept with its Continue Watching (unlike the
+// Roku app, which clears it too), taking the build's password if that changed.
 export function applyBuiltInLogin(): boolean {
   const builtIn = builtInCreds();
   if (!builtIn) return false;
   const stamp = builtIn.server + " " + builtIn.username;
   if (regRead("account", "builtIn") === stamp) return false;
+  regWrite("account", "builtIn", stamp);
+  const saved = loadCreds();
+  if (saved && normalizeServer(saved.server).toLowerCase() === builtIn.server.toLowerCase() && saved.username === builtIn.username) {
+    if (saved.password !== builtIn.password) saveCreds(builtIn);
+    return false;
+  }
   regDelete("account", "creds");
   regDelete("progress", "items");
   regDelete("progress", "removed");
-  regWrite("account", "builtIn", stamp);
   return true;
 }
