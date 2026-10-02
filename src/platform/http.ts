@@ -1,6 +1,7 @@
 // All network access goes through XHR: timeouts, abort(), progress events and
 // response headers all work the same on every Tizen engine.
 
+import { Headers, isCloudflareBlock, refusalText } from "../core/refusals";
 import { Json } from "../core/utils";
 
 export interface HttpRequest {
@@ -25,6 +26,16 @@ export interface HttpResponse {
   overflowed: boolean; // aborted by maxBytes
   headerErrors: string[]; // headers the engine refused to set (by throwing)
   header(name: string): string | null;
+  headers(): Headers; // every header, with lower-case names
+}
+
+function parseHeaders(raw: string): Headers {
+  const out: Headers = {};
+  for (const line of raw.split(/\r?\n/)) {
+    const colon = line.indexOf(":");
+    if (colon > 0) out[line.slice(0, colon).trim().toLowerCase()] = line.slice(colon + 1).trim();
+  }
+  return out;
 }
 
 export interface Pending {
@@ -56,6 +67,13 @@ export function send(req: HttpRequest): Pending {
             return xhr.getResponseHeader(name);
           } catch {
             return null;
+          }
+        },
+        headers: () => {
+          try {
+            return parseHeaders(xhr.getAllResponseHeaders() || "");
+          } catch {
+            return {};
           }
         },
       });
@@ -106,16 +124,20 @@ export interface JsonResult {
   error: string;
   ms: number;
   bytes: number;
+  cfBlock: boolean; // Cloudflare itself turned the request away
 }
 
-// JSON GET with the Roku app's error wording (tasks/Http.brs).
+// JSON GET with the Roku app's error wording (tasks/Http.brs): a refusal says who
+// answered and what they said.
 export function getJson(url: string, timeoutMs = 20000): Promise<JsonResult> {
   return send({ url, timeoutMs }).promise.then((res) => {
-    const base = { code: res.code, ms: res.ms, bytes: res.text.length, data: undefined as Json };
+    const base = { code: res.code, ms: res.ms, bytes: res.text.length, data: undefined as Json, cfBlock: false };
     if (res.timedOut) return { ...base, ok: false, error: "The server took too long to answer." };
     if (res.code === 0) return { ...base, ok: false, error: "Couldn't reach the server (no answer, or the request was blocked)." };
-    if (res.code === 401 || res.code === 403) return { ...base, ok: false, error: "The server refused the login (HTTP " + res.code + ")." };
-    if (res.code !== 200) return { ...base, ok: false, error: "The server answered with HTTP " + res.code + "." };
+    if (res.code !== 200) {
+      const headers = res.headers();
+      return { ...base, ok: false, cfBlock: isCloudflareBlock(headers, res.text), error: refusalText(res.code, headers, res.text) };
+    }
     try {
       return { ...base, ok: true, data: JSON.parse(res.text) as Json, error: "" };
     } catch {

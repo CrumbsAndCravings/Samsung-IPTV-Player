@@ -81,9 +81,12 @@ export function saveCreds(creds: Creds): void {
   writeJson("account", "creds", { server: creds.server, username: creds.username, password: creds.password });
 }
 
+// Signing out forgets the login, Continue Watching and the OpenSubtitles account. The
+// stored library is deleted separately (data/library.ts), since it lives elsewhere.
 export function clearAccount(): void {
   regDelete("account", "creds");
   regDelete("progress", "items");
+  regDelete("progress", "removed");
   regDelete("opensubtitles", "account");
 }
 

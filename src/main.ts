@@ -4,6 +4,7 @@
 import "./styles/app.css";
 import { App } from "./app";
 import { log, logError } from "./core/log";
+import { applyBuiltInLogin, builtInCreds } from "./core/personal";
 import { loadCreds } from "./core/storage";
 import { registerKeys } from "./platform/keys";
 import { getPlayer } from "./platform/players";
@@ -43,9 +44,12 @@ function boot(): void {
   };
   app.onSignedOut = () => app.resetTo(new LoginScreen(app));
 
+  // A personal build whose login changed replaces the saved one (and Continue Watching).
+  if (applyBuiltInLogin()) log("personal build: using its login");
   const creds = loadCreds();
   if (creds) app.onSignedIn(creds);
-  else app.onSignedOut();
+  // With no saved login, a personal build signs in by itself.
+  else app.resetTo(new LoginScreen(app, builtInCreds() !== null));
 }
 
 boot();

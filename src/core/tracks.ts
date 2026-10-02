@@ -3,17 +3,20 @@
 // AVPlay's getTotalTrackInfo (see fromAvplay).
 
 import type { Track } from "../platform/player";
+import { codecLabel } from "./utils";
 
 export interface TrackInput {
   id: string;
   language: string;
   description: string;
+  format?: string; // audio codec, like "dts" or "ac3"
 }
 
 export interface TrackOption {
   id: string;
   label: string;
   language: string;
+  format?: string; // audio only, lower case; "" when unknown
 }
 
 const NAMES: { [code: string]: string } = {
@@ -51,11 +54,11 @@ export function audioOptions(tracks: TrackInput[] | null | undefined): TrackOpti
   const options: TrackOption[] = [];
   for (const track of tracks || []) {
     if (track.id === "") continue;
-    options.push({
-      id: track.id,
-      label: trackLabel(track.language, track.description, "Track " + (options.length + 1)),
-      language: track.language.toLowerCase(),
-    });
+    // "English · DTS": the format says why a track might be silent on this TV.
+    const format = (track.format || "").toLowerCase();
+    let label = trackLabel(track.language, track.description, "Track " + (options.length + 1));
+    if (format !== "") label += " · " + codecLabel(format);
+    options.push({ id: track.id, label, language: track.language.toLowerCase(), format });
   }
   return options;
 }
@@ -84,5 +87,5 @@ export function optionIndex(options: TrackOption[], key: keyof TrackOption, valu
 export function fromAvplay(tracks: Track[], kind: "AUDIO" | "TEXT"): TrackInput[] {
   return tracks
     .filter((t) => t.kind === kind)
-    .map((t) => ({ id: String(t.index), language: t.language, description: "" }));
+    .map((t) => ({ id: String(t.index), language: t.language, description: "", format: kind === "AUDIO" ? t.codec : "" }));
 }

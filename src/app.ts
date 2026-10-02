@@ -7,7 +7,7 @@ import { credsSecrets, setSecrets } from "./core/redact";
 import { clearAccount, loadCreds, readOsFields } from "./core/storage";
 import type { Creds } from "./core/utils";
 import { XtreamApi } from "./data/api";
-import { SearchLibrary } from "./data/library";
+import { deleteStoredLibrary, SearchLibrary } from "./data/library";
 import { exitApp } from "./platform/tizen";
 import { Dialog, DialogOptions } from "./ui/dialog";
 import { KeyTarget, setKeyTarget } from "./ui/focus";
@@ -23,7 +23,8 @@ export interface Screen extends KeyTarget {
 export class App {
   private stack: Screen[] = [];
   api: XtreamApi | null = null;
-  // The search index for this login; it loads on the first search.
+  // The whole library for this login: searched, browsed by category and counted. It
+  // starts on the first search, category page or Categories tab.
   library: SearchLibrary | null = null;
 
   constructor(readonly root: HTMLElement) {}
@@ -34,6 +35,7 @@ export class App {
 
   // Sets the login used by every screen, and what the logs must hide.
   useCreds(creds: Creds | null): void {
+    if (this.library) this.library.stop();
     this.api = creds ? new XtreamApi(creds) : null;
     this.library = this.api ? new SearchLibrary(this.api) : null;
     this.refreshSecrets();
@@ -99,6 +101,7 @@ export class App {
     log("signing out");
     clearAccount();
     this.useCreds(null);
+    deleteStoredLibrary();
     this.onSignedOut();
   }
 

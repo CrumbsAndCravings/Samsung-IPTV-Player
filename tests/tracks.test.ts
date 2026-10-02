@@ -56,7 +56,19 @@ describe("AVPlay tracks", () => {
       { index: 1, kind: "AUDIO" as const, language: "eng", codec: "mpeg", detail: {} },
       { index: 3, kind: "TEXT" as const, language: "en", codec: "", detail: {} },
     ];
-    expect(audioOptions(fromAvplay(tracks, "AUDIO"))).toEqual([{ id: "1", label: "English", language: "eng" }]);
+    expect(audioOptions(fromAvplay(tracks, "AUDIO"))).toEqual([{ id: "1", label: "English · MPEG", language: "eng", format: "mpeg" }]);
     expect(subtitleOptions(fromAvplay(tracks, "TEXT"))[1]).toEqual({ id: "3", label: "English", language: "en" });
+  });
+});
+
+describe("audio formats", () => {
+  it("are shown and kept, from the Roku app's tests/utils_test.brs", () => {
+    const withFormat = audioOptions([
+      { id: "1", language: "eng", description: "", format: "DTS" },
+      { id: "2", language: "eng", description: "", format: "AC3" },
+    ]);
+    expect(withFormat[0].label).toBe("English · DTS");
+    expect(withFormat[1].format).toBe("ac3");
+    expect(audioOptions([{ id: "1", language: "eng", description: "" }])[0].format).toBe("");
   });
 });

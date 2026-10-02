@@ -1,6 +1,6 @@
 // Ported from the Roku app's tests/parse_test.brs (auth, categories, VOD and series info).
 import { describe, expect, it } from "vitest";
-import { cleanEpisodeTitle, parseAuth, parseCategories, parseList, parseSeriesInfo, parseVodInfo } from "../src/core/xtream";
+import { buildRow, cleanEpisodeTitle, parseAuth, parseCategories, parseList, parseSeriesInfo, parseVodInfo } from "../src/core/xtream";
 
 describe("auth", () => {
   it("accepts active accounts only", () => {
@@ -137,5 +137,20 @@ describe("lists", () => {
     expect(items).toEqual([{ kind: "movie", id: "1", name: "One", poster: "https://image.tmdb.org/t/p/w342/a.jpg", ext: "mkv" }]);
     expect(parseList([{ name: "Show", series_id: 7, cover: "" }], "series")[0].id).toBe("7");
     expect(parseList({}, "movie")).toEqual([]);
+  });
+});
+
+// Ported from the Roku app's tests/parse_test.brs (new since 0.4.1).
+describe("provider quirks found later", () => {
+  it("ignores a poster picture reported as the video", () => {
+    const cover = parseVodInfo({ info: { video: { codec_name: "mjpeg", profile: "Baseline" }, audio: { codec_name: "aac" } }, movie_data: { container_extension: "mkv" } });
+    expect(cover.videoCodec).toBe("");
+    expect(cover.videoProfile).toBe("");
+    expect(cover.audioCodec).toBe("aac");
+  });
+  it("takes provider tags and years off row titles", () => {
+    const tagged = buildRow([{ name: "EN ★ Alterity - 2026", stream_id: 1, added: "5" }], "movie", "Row", 40);
+    expect(tagged.items[0].title).toBe("Alterity");
+    expect(tagged.items[0].year).toBe("2026");
   });
 });

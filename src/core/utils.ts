@@ -166,10 +166,18 @@ function decode(value: string): string {
   }
 }
 
-// Pulls server, username and password out of a pasted get.php / player_api.php link.
+// Pulls server, username and password out of a pasted link: get.php or player_api.php
+// with ?username=&password=, or a path like /playlist/<user>/<pass>/m3u_plus (also
+// /live/, /movie/ and /series/ stream links).
 export function parseProviderLink(raw: string): Creds {
   const text = raw.trim();
   const result: Creds = { server: normalizeServer(text), username: "", password: "" };
+  const path = /^[a-z]+:\/\/[^/?]+\/(playlist|live|movie|series)\/([^/?]+)\/([^/?]+)/i.exec(text);
+  if (path) {
+    result.username = decode(path[2]);
+    result.password = decode(path[3]);
+    return result;
+  }
   const question = text.indexOf("?");
   if (question < 0) return result;
   for (const pair of text.slice(question + 1).split("&")) {
@@ -238,6 +246,8 @@ const CODEC_NAMES: { [codec: string]: string } = {
   ac3: "Dolby AC-3",
   eac3: "Dolby E-AC-3",
   dts: "DTS",
+  dca: "DTS",
+  mp4a: "AAC",
   mp3: "MP3",
   truehd: "Dolby TrueHD",
   opus: "Opus",
@@ -261,4 +271,48 @@ export function describeCodecs(videoCodec: string, videoProfile: string, audioCo
   }
   if (audioCodec !== "") parts.push(codecLabel(audioCodec) + " audio");
   return parts.join(", ");
+}
+
+// "EN ★ Alterity - 2026" -> { title: "Alterity", year: "2026" }. Some providers put a
+// language tag in front of every title (2 to 4 capitals and a symbol like ★ or |) and
+// the year at the end. "UFO - 2018", "M3GAN" and "DC: ..." keep their names.
+export function splitTitle(name: string): { title: string; year: string } {
+  let title = name.trim();
+  let letters = 0;
+  while (letters < title.length && letters < 5) {
+    const c = title.charCodeAt(letters);
+    if (c < 65 || c > 90) break;
+    letters++;
+  }
+  if (letters >= 2 && letters <= 4) {
+    let rest = title.slice(letters).trim();
+    const mark = rest.codePointAt(0) || 0;
+    if (rest.charAt(0) === "|" || mark > 383) {
+      rest = rest.slice(mark > 0xffff ? 2 : 1).trim();
+      if (rest !== "") title = rest;
+    }
+  }
+  let year = "";
+  const found = /^(.*\S)\s+-\s+((?:19|20)\d\d)$/.exec(title);
+  if (found) {
+    title = found[1];
+    year = found[2];
+  }
+  return { title, year };
+}
+
+// 1234567 -> "1,234,567"
+export function commas(value: number): string {
+  return String(Math.round(value)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+// The text behind a login's sync "space": the server in lower case without a default
+// port, a newline, then the username. Every device signed in to the same provider
+// account gets the same text, so the same Continue Watching list (Roku's SyncSpaceText;
+// every platform must build it exactly the same way).
+export function syncSpaceText(creds: { server: string; username: string }): string {
+  let server = normalizeServer(creds.server).toLowerCase();
+  if (server.indexOf("http://") === 0 && /:80$/.test(server)) server = server.slice(0, -3);
+  if (server.indexOf("https://") === 0 && /:443$/.test(server)) server = server.slice(0, -4);
+  return server + "\n" + creds.username;
 }

@@ -82,11 +82,11 @@ describe("the Search keyboard", () => {
 
 describe("the library status line", () => {
   it("counts lists while loading, then titles", () => {
-    expect(libraryStatusText({ done: 0, total: 0, failed: 0, titles: 0, error: "" })).toBe("Getting your library ready for search…");
-    expect(libraryStatusText({ done: 5, total: 34, failed: 0, titles: 12345, error: "" })).toBe("Loading your library: 5 of 34 lists (12,345 titles so far)");
-    expect(libraryStatusText({ done: 34, total: 34, failed: 0, titles: 28494, error: "" })).toBe("Searching all 28,494 titles");
-    expect(libraryStatusText({ done: 34, total: 34, failed: 2, titles: 900, error: "" })).toBe("Searching all 900 titles (2 lists didn't load)");
-    expect(libraryStatusText({ done: 0, total: 0, failed: 0, titles: 0, error: "The server took too long to answer." })).toBe(
+    expect(libraryStatusText({ done: 0, total: 0, failed: 0, titles: 0, error: "", stopped: false })).toBe("Getting your library ready for search…");
+    expect(libraryStatusText({ done: 5, total: 34, failed: 0, titles: 12345, error: "", stopped: false })).toBe("Loading your library: 5 of 34 lists (12,345 titles so far)");
+    expect(libraryStatusText({ done: 34, total: 34, failed: 0, titles: 28494, error: "", stopped: false })).toBe("Searching all 28,494 titles");
+    expect(libraryStatusText({ done: 34, total: 34, failed: 2, titles: 900, error: "", stopped: false })).toBe("Searching all 900 titles (2 lists didn't load)");
+    expect(libraryStatusText({ done: 0, total: 0, failed: 0, titles: 0, error: "The server took too long to answer.", stopped: false })).toBe(
       "Couldn't load your library. The server took too long to answer. Leave Search and come back to try again.",
     );
   });

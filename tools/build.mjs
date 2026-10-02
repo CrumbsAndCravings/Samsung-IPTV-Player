@@ -2,13 +2,35 @@
 //   node tools/build.mjs          production bundle
 //   import { ... } for the dev server (tools/dev.mjs)
 import * as esbuild from "esbuild";
-import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const dist = path.join(root, "dist");
 const pkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
+
+// A personal build can carry a login, languages and sync settings in personal.json
+// (git-ignored; see personal.example.json), so the TV signs in by itself. The dev
+// harness ignores it unless ARANPLUS_PERSONAL names a file, so it never talks to the
+// real provider by accident. Nothing from it is printed.
+export function readPersonal({ dev = false } = {}) {
+  const file = process.env.ARANPLUS_PERSONAL || (dev ? "" : path.join(root, "personal.json"));
+  if (!file || !existsSync(file)) return null;
+  let data;
+  try {
+    data = JSON.parse(readFileSync(file, "utf8"));
+  } catch (err) {
+    throw new Error(`${path.basename(file)} isn't valid JSON: ${err.message}`, { cause: err });
+  }
+  if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error(`${path.basename(file)} must hold a JSON object`);
+  const parts = [];
+  if (data.server && data.username && data.password) parts.push("a login");
+  if (Array.isArray(data.languages)) parts.push("languages " + data.languages.join(", "));
+  if (data.sync && data.sync.url && data.sync.key) parts.push("sync");
+  console.log(`personal build: ${path.basename(file)} with ${parts.join(", ") || "nothing usable"}`);
+  return data;
+}
 
 export function esbuildOptions({ dev = false } = {}) {
   return {
@@ -21,7 +43,7 @@ export function esbuildOptions({ dev = false } = {}) {
     target: ["es2018", "chrome69"],
     loader: { ".ttf": "file", ".png": "file" },
     assetNames: "assets/[name]",
-    define: { __APP_VERSION__: JSON.stringify(pkg.version), __DEV__: String(dev) },
+    define: { __APP_VERSION__: JSON.stringify(pkg.version), __DEV__: String(dev), __PERSONAL__: JSON.stringify(readPersonal({ dev })) },
     minify: !dev,
     sourcemap: dev ? "inline" : false,
     logLevel: "info",

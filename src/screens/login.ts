@@ -1,10 +1,13 @@
 // Sign in (plan 7.1; the Roku app's LoginScreen): server, username and password, typed
-// with the TV's keyboard. Pasting a full M3U or get.php link into Server fills in the
-// username and password. The login is checked with the server before it is saved, and
-// a failure shows the server's own reason.
+// with the TV's keyboard. Pasting a full M3U, get.php, /playlist/ or stream link into
+// Server fills in the username and password. The login is checked with the server
+// before it is saved, and a failure shows who answered and what they said, with the
+// address used, in a card in place of the tips. A personal build's own login
+// (personal.json) fills the form, and signs in by itself at launch.
 
 import type { App, Screen } from "../app";
 import { log } from "../core/log";
+import { builtInCreds } from "../core/personal";
 import { loadCreds, saveCreds } from "../core/storage";
 import { Creds, normalizeServer, parseProviderLink } from "../core/utils";
 import { checkLogin } from "../data/api";
@@ -21,11 +24,18 @@ export class LoginScreen implements Screen {
   private fields: Field[];
   private submit: HTMLElement;
   private status: HTMLElement;
+  private tips: HTMLElement;
+  private errorCard: HTMLElement;
+  private errorText: HTMLElement;
   private index = 0; // 0..2 fields, 3 the Sign in button
   private busy = false;
 
-  constructor(private app: App) {
-    const saved = loadCreds();
+  // `autoSignIn` (launch only, never after signing out) submits a built-in login.
+  constructor(
+    private app: App,
+    private autoSignIn = false,
+  ) {
+    const saved = loadCreds() || builtInCreds();
     this.fields = [
       this.field("Server", "text", "e.g. http://line.example.com:8080", saved ? saved.server : ""),
       this.field("Username", "text", "", saved ? saved.username : ""),
@@ -33,6 +43,8 @@ export class LoginScreen implements Screen {
     ];
     this.submit = h("div", { class: "pill", text: "Sign in" });
     this.status = h("div", { class: "login-status" });
+    this.errorText = h("div", { class: "login-error-text" });
+    this.errorCard = h("div", { class: "login-tips login-error is-hidden" }, [h("div", { class: "login-tips-heading", text: "Couldn't sign in" }), this.errorText]);
     this.el = h("div", { class: "screen login" }, [
       h("div", { class: "glow glow-lavender" }),
       h("div", { class: "glow glow-pink" }),
@@ -42,15 +54,29 @@ export class LoginScreen implements Screen {
       h("div", { class: "login-fields" }, this.fields.map((f) => f.wrap)),
       h("div", { class: "login-submit" }, [this.submit]),
       this.status,
-      h("div", { class: "login-tips" }, [
+      (this.tips = h("div", { class: "login-tips" }, [
         h("div", { class: "login-tips-heading", text: "Where to find these" }),
         h("p", { text: "Your provider's welcome email lists a server address, username and password. It may call them an Xtream or API login." }),
         h("p", { text: "Have an M3U link instead? Put it in Server and the username and password fill in by themselves." }),
         h("p", { text: "Press OK on a box to type, and Done on the TV keyboard when you're finished." }),
-      ]),
+      ])),
+      this.errorCard,
     ]);
     this.index = this.nextEmpty();
     this.style();
+  }
+
+  onShow(): void {
+    if (!this.autoSignIn) return;
+    this.autoSignIn = false;
+    if (this.nextEmpty() === 3) this.signIn();
+  }
+
+  // Long errors go in the card where the tips were, inside the TV's safe area.
+  private showError(text: string): void {
+    setText(this.errorText, text);
+    toggle(this.errorCard, "is-hidden", text === "");
+    toggle(this.tips, "is-hidden", text !== "");
   }
 
   private field(label: string, type: string, placeholder: string, value: string): Field {
@@ -67,14 +93,15 @@ export class LoginScreen implements Screen {
     const f = this.fields[i];
     if (!f) return;
     toggle(f.wrap, "is-editing", false);
-    const text = f.input.value;
-    if (i === 0 && text.toLowerCase().indexOf("username=") >= 0) {
+    const text = f.input.value.trim();
+    if (i === 0) {
       const link = parseProviderLink(text);
       f.input.value = link.server;
       if (link.username) this.fields[1].input.value = link.username;
       if (link.password) this.fields[2].input.value = link.password;
-    } else if (i !== 2) f.input.value = text.trim();
+    } else f.input.value = text;
     setText(this.status, "");
+    this.showError("");
     this.index = this.nextEmpty();
     this.style();
   }
@@ -104,7 +131,7 @@ export class LoginScreen implements Screen {
     const creds: Creds = {
       server: normalizeServer(this.fields[0].input.value),
       username: this.fields[1].input.value.trim(),
-      password: this.fields[2].input.value,
+      password: this.fields[2].input.value.trim(),
     };
     if (!creds.server || !creds.username || !creds.password) {
       setText(this.status, "Fill in the server, username and password first.");
@@ -113,11 +140,13 @@ export class LoginScreen implements Screen {
       return;
     }
     this.busy = true;
+    this.showError("");
     setText(this.status, "Checking your login…");
     checkLogin(creds).then((error) => {
       this.busy = false;
       if (error) {
-        setText(this.status, error);
+        setText(this.status, "");
+        this.showError(error);
         return;
       }
       log("signed in");

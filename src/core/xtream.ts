@@ -13,6 +13,7 @@ import {
   Json,
   JsonObject,
   sizedImage,
+  splitTitle,
   toInt,
   yearOf,
 } from "./utils";
@@ -63,13 +64,20 @@ export interface CodecInfo {
   audioCodec: string;
 }
 
+// MKV files often carry their poster as a picture "video" stream, and some providers
+// report that instead of the film (MJPEG Baseline). The real codec is then unknown.
+export function isPictureCodec(codec: string): boolean {
+  return ["mjpeg", "png", "bmp", "gif", "webp", "tiff"].indexOf(codec.toLowerCase()) >= 0;
+}
+
 // The provider's ffprobe summary of the file, when it has one.
 export function codecFields(info: Json): CodecInfo {
   const video = field(info, "video");
   const audio = field(info, "audio");
+  const picture = isPictureCodec(fieldStr(video, "codec_name"));
   return {
-    videoCodec: fieldStr(video, "codec_name"),
-    videoProfile: fieldStr(video, "profile"),
+    videoCodec: picture ? "" : fieldStr(video, "codec_name"),
+    videoProfile: picture ? "" : fieldStr(video, "profile"),
     audioCodec: fieldStr(audio, "codec_name"),
   };
 }
@@ -168,7 +176,7 @@ export function cleanEpisodeTitle(raw: string, seriesName: string): string {
 export function parseSeriesInfo(data: Json): { info: SeriesInfo; seasons: Season[] } {
   const rawInfo = field(data, "info");
   const info: JsonObject = isObj(rawInfo) ? rawInfo : {};
-  const seriesName = fieldStr(info, "name");
+  const seriesName = splitTitle(fieldStr(info, "name")).title;
 
   // "episodes" is normally {"1": [...], "2": [...]}, but PHP turns it into a
   // plain array when the season keys happen to be sequential.
@@ -304,32 +312,35 @@ export function buildRow(data: Json, kind: "movie" | "series", title: string, li
   return { title, items };
 }
 
+// Provider tags and years come off titles ("EN ★ Alterity - 2026" -> "Alterity", 2026).
 function movieItem(raw: JsonObject): Item {
+  const named = splitTitle(fieldStr(raw, "name"));
   return makeItem({
     kind: "movie",
-    title: fieldStr(raw, "name"),
+    title: named.title,
     poster: sizedImage(fieldStr(raw, "stream_icon"), POSTER_SIZE),
     itemId: fieldStr(raw, "stream_id"),
     ext: fieldStr(raw, "container_extension"),
     tmdbId: firstText([raw.tmdb, raw.tmdb_id]),
     score: fieldStr(raw, "rating"),
-    year: yearOf(firstText([raw.year, raw.releaseDate])),
+    year: yearOf(firstText([raw.year, raw.releaseDate])) || named.year,
     description: fieldStr(raw, "plot"),
     genre: fieldStr(raw, "genre"),
   });
 }
 
 function seriesItem(raw: JsonObject): Item {
+  const named = splitTitle(fieldStr(raw, "name"));
   return makeItem({
     kind: "series",
-    title: fieldStr(raw, "name"),
+    title: named.title,
     poster: sizedImage(fieldStr(raw, "cover"), POSTER_SIZE),
     itemId: fieldStr(raw, "series_id"),
     seriesId: fieldStr(raw, "series_id"),
     tmdbId: firstText([raw.tmdb, raw.tmdb_id]),
     backdrop: sizedImage(firstUrl(raw.backdrop_path), BACKDROP_SIZE),
     description: fieldStr(raw, "plot"),
-    year: yearOf(firstText([raw.releaseDate, raw.release_date, raw.year])),
+    year: yearOf(firstText([raw.releaseDate, raw.release_date, raw.year])) || named.year,
     genre: fieldStr(raw, "genre"),
     score: fieldStr(raw, "rating"),
     starring: fieldStr(raw, "cast"),

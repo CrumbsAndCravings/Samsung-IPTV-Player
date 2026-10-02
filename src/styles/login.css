@@ -116,6 +116,24 @@
   font-weight: 500;
   font-size: 33px;
 }
+.login-tips.is-hidden {
+  display: none;
+}
+/* Room for a long refusal, still above the TV's safe-area edge. */
+.login-error {
+  top: 300px;
+}
+.login-error .login-tips-heading {
+  color: var(--pink);
+}
+.login-error-text {
+  margin-top: 18px;
+  font-size: 26px;
+  line-height: 1.35;
+  color: var(--text-dim);
+  white-space: pre-line;
+  overflow-wrap: break-word;
+}
 .login-tips p {
   margin: 18px 0 0;
   font-size: 27px;

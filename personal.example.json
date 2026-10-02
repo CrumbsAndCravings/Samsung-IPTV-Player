@@ -1,0 +1,7 @@
+{
+  "server": "http://provider.example:8080",
+  "username": "your-username",
+  "password": "your-password",
+  "languages": ["en", "hi", "pa"],
+  "sync": { "url": "https://aranplus-sync.your-subdomain.workers.dev", "key": "the SYNC_KEY you set on the Worker" }
+}

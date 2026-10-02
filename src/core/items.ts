@@ -4,7 +4,9 @@
 
 import { formatRuntime, toInt, toStr } from "./utils";
 
-export type ItemKind = "movie" | "series" | "episode";
+// "category" and "seeAll" are cards that open a category's page (Categories tab, search
+// results, and the tile at the end of every row).
+export type ItemKind = "movie" | "series" | "episode" | "category" | "seeAll";
 
 export interface Item {
   kind: ItemKind;
@@ -31,7 +33,9 @@ export interface Item {
   hasInfo: boolean; // details from get_vod_info / get_series_info are in
   placeholder: boolean; // a pulsing poster while a row loads
   progress: number; // 0..1, Continue Watching
-  caption: string; // "S1:E4" under a Continue Watching poster
+  caption: string; // "S1:E4" under a Continue Watching poster; "Movies · 104" on a category
+  categoryId: string; // category and See all cards
+  listKind: "movie" | "series" | ""; // what a category card's page lists
 }
 
 export interface Row {
@@ -67,6 +71,8 @@ export function makeItem(values: Partial<Item>): Item {
     placeholder: false,
     progress: 0,
     caption: "",
+    categoryId: "",
+    listKind: "",
   };
   return Object.assign(item, values);
 }

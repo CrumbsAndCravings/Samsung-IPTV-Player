@@ -8,6 +8,8 @@ out/
 *.p12
 *.pem
 tizen.local.json
+# A personal build's login, languages and sync key; never commit it.
+personal.json
 .buildResult/
 
 # Generated sample video for the desktop harness (tools/make_sample_video.py).

@@ -7,12 +7,23 @@ import { Creds, apiUrl } from "../core/utils";
 import { Category, parseAuth, parseCategories, parseSeriesInfo, parseVodInfo, buildRow, SeriesInfo, Season, VodInfo } from "../core/xtream";
 import type { Row } from "../core/items";
 import { log } from "../core/log";
+import { signInErrorText } from "../core/refusals";
 import { getJson, JsonResult } from "../platform/http";
 
 const MAX_IN_FLIGHT = 3;
 const SPACING_MS = 120;
 
-export class ApiError extends Error {}
+// A failed request, with the HTTP status (0 when there was no answer) so screens can
+// tell a refusal from a hiccup.
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly code = 0,
+    readonly cfBlock = false,
+  ) {
+    super(message);
+  }
+}
 
 type Job = { url: string; timeoutMs: number; resolve: (r: JsonResult) => void };
 
@@ -71,7 +82,7 @@ export class XtreamApi {
     return this.fetch(apiUrl(this.creds, action, params), timeoutMs).then((res) => {
       if (!res.ok) {
         log("api", action, "failed:", res.error);
-        throw new ApiError(res.error);
+        throw new ApiError(res.error, res.code, res.cfBlock);
       }
       return res.data;
     });
@@ -109,10 +120,11 @@ export class XtreamApi {
   }
 }
 
-// Checks a login before it is saved. Resolves with an error message, or "" when it works.
+// Checks a login before it is saved. Resolves with "" when it works, otherwise the
+// error with the address used and the usual causes (docs/features.md §2.3).
 export function checkLogin(creds: Creds): Promise<string> {
   return getJson(apiUrl(creds, "")).then((res) => {
-    if (!res.ok) return res.error;
+    if (!res.ok) return signInErrorText(res.error, creds.server, res.code, res.cfBlock);
     const auth = parseAuth(res.data);
     return auth.ok ? "" : auth.error;
   });
