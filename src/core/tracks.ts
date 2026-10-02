@@ -89,3 +89,29 @@ export function fromAvplay(tracks: Track[], kind: "AUDIO" | "TEXT"): TrackInput[
     .filter((t) => t.kind === kind)
     .map((t) => ({ id: String(t.index), language: t.language, description: "", format: kind === "AUDIO" ? t.codec : "" }));
 }
+
+// Audio this TV can't decode: Samsung dropped DTS from its 2018 and later TVs, and
+// TrueHD was never there, so such a track plays silently. Unknown formats count as fine.
+export function canDecodeAudio(format: string): boolean {
+  const f = format.trim().toLowerCase();
+  return !(f.indexOf("dts") === 0 || f === "dca" || f === "truehd" || f === "mlp");
+}
+
+// At playback start, when the track playing can't be decoded: another to switch to
+// (the same language first), with the note to show, or no id and a note saying why
+// there may be no sound. Null when the track is fine (the Roku app's audio rescue).
+export function audioRescue(options: TrackOption[], currentId: string): { id: string; note: string } | null {
+  const current = options.filter((o) => o.id === currentId)[0];
+  if (!current || canDecodeAudio(current.format || "")) return null;
+  const bad = codecLabel(current.format || "");
+  const playable = options.filter((o) => o.id !== currentId && canDecodeAudio(o.format || ""));
+  const pick = playable.filter((o) => o.language === current.language)[0] || playable[0];
+  if (pick) return { id: pick.id, note: "Switched to " + pick.label + ", because this TV can't play " + bad + " audio." };
+  return { id: "", note: "No sound? This file's audio is " + bad + ", which this TV can't play. Your provider may have another version of this title." };
+}
+
+// "Audio now: Dolby AC-3." for the Audio & subtitles panel, or "".
+export function audioNowText(options: TrackOption[], currentId: string): string {
+  const current = options.filter((o) => o.id === currentId)[0];
+  return current && current.format ? "Audio now: " + codecLabel(current.format) + "." : "";
+}

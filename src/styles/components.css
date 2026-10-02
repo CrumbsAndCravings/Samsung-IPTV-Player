@@ -57,7 +57,7 @@
   line-height: 60px;
   padding: 0 30px;
   margin-right: 6px;
-  border-radius: 999px;
+  border-radius: var(--radius-button);
   font-family: var(--font-display);
   font-weight: 500;
   font-size: 28px;
@@ -76,7 +76,7 @@
   top: 0;
   height: 60px;
   width: 0;
-  border-radius: 999px;
+  border-radius: var(--radius-button);
   background: var(--pill);
   transition: transform 220ms var(--ease-out), width 220ms var(--ease-out), background-color 150ms linear, opacity 150ms linear;
 }
@@ -106,7 +106,7 @@
   transform: scale(1.08);
 }
 
-/* Posters */
+/* Posters: sharp corners, 15 px apart, badges on the poster (the Roku app's look). */
 .poster {
   position: absolute;
   left: 0;
@@ -123,7 +123,7 @@
   position: relative;
   width: 180px;
   height: 270px;
-  border-radius: 15px;
+  border-radius: var(--radius-poster);
   overflow: hidden;
   background: var(--surface-2);
 }
@@ -152,18 +152,18 @@
 }
 .poster-ring {
   position: absolute;
-  left: -8px;
-  top: -8px;
-  width: 196px;
-  height: 286px;
+  left: -7px;
+  top: -7px;
+  width: 194px;
+  height: 284px;
   box-sizing: border-box;
   border: 4px solid var(--focus);
-  border-radius: 21px;
+  border-radius: var(--radius-ring);
   opacity: 0;
   transition: opacity 150ms linear;
 }
 .poster.is-focused .poster-frame {
-  transform: scale(1.08);
+  transform: scale(1.06);
 }
 .poster.is-focused .poster-ring {
   opacity: 1;
@@ -171,31 +171,41 @@
 .poster.is-blocked .poster-img {
   opacity: 0.35;
 }
-.poster-caption {
-  margin-top: 18px;
+/* "S1:E4" or "Won't play" on a dark band at the bottom of the poster. */
+.poster-badge {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 36px;
+  line-height: 36px;
+  padding: 0 9px;
+  background: rgba(21, 16, 40, 0.84);
   text-align: center;
   font-weight: 800;
-  font-size: 21px;
-  color: var(--text-dim);
+  font-size: 20px;
+  color: var(--text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.poster.is-blocked .poster-caption {
+.poster-badge.has-progress {
+  bottom: 6px;
+}
+.poster.is-blocked .poster-badge {
   color: var(--butter);
 }
+/* Continue Watching: a strip along the bottom edge. */
 .poster-progress {
   position: absolute;
-  left: 15px;
-  bottom: 18px;
-  width: 150px;
+  left: 0;
+  right: 0;
+  bottom: 0;
   height: 6px;
-  border-radius: 3px;
-  background: rgba(21, 16, 40, 0.8);
+  background: rgba(21, 16, 40, 0.84);
 }
 .poster-fill {
   height: 6px;
-  border-radius: 3px;
   background: var(--pink);
 }
 .poster.is-placeholder .poster-card {
@@ -209,6 +219,52 @@
   50% {
     opacity: 1;
   }
+}
+/* Category and See all cards: the name on a tinted card. */
+.poster.is-category .poster-card,
+.poster.is-see-all .poster-card {
+  background: var(--pill);
+}
+.poster-category-name {
+  position: absolute;
+  left: 15px;
+  top: 18px;
+  width: 150px;
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 26px;
+  line-height: 1.2;
+  color: var(--text);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 5;
+  overflow: hidden;
+  overflow-wrap: break-word;
+}
+.poster-category-caption {
+  position: absolute;
+  left: 15px;
+  bottom: 18px;
+  width: 150px;
+  font-weight: 800;
+  font-size: 20px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.poster-see-all {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 180px;
+  height: 270px;
+  line-height: 270px;
+  text-align: center;
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 28px;
+  color: var(--lavender);
 }
 
 /* Dialogs */

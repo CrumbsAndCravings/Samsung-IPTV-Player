@@ -20,8 +20,8 @@ describe("fake Xtream server", () => {
   it("lists categories without the adult ones", () => {
     const movies = parseCategories(call("action=get_vod_categories"));
     const series = parseCategories(call("action=get_series_categories"));
-    expect(movies.length).toBe(8);
-    expect(series.length).toBe(5);
+    expect(movies.length).toBe(13);
+    expect(series.length).toBe(8);
     expect(movies.every((c) => c.name.indexOf("XXX") < 0)).toBe(true);
   });
 

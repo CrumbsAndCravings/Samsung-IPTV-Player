@@ -53,7 +53,7 @@
   width: 180px;
   height: 66px;
   line-height: 66px;
-  border-radius: 999px;
+  border-radius: var(--radius-button);
   background: rgba(48, 39, 90, 0.85);
   color: var(--pill-text);
   text-align: center;
@@ -184,7 +184,7 @@
   width: 156px;
   height: 54px;
   line-height: 54px;
-  border-radius: 999px;
+  border-radius: var(--radius-button);
   background: var(--focus);
   color: var(--on-focus);
   text-align: center;
@@ -390,7 +390,7 @@
   position: relative;
   height: 66px;
   margin-bottom: 9px;
-  border-radius: 999px;
+  border-radius: var(--radius-button);
   color: #a195cc;
 }
 .panel-row.is-active {

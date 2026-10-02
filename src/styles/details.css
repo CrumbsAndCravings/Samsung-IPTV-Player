@@ -142,7 +142,7 @@
   top: 0;
   width: 1776px;
   height: 156px;
-  border-radius: 15px;
+  border-radius: var(--radius-card);
   box-shadow: 0 0 0 4px transparent;
   transition: background-color 150ms linear, box-shadow 150ms linear;
 }
@@ -156,7 +156,7 @@
   top: 15px;
   width: 225px;
   height: 126px;
-  border-radius: 12px;
+  border-radius: var(--radius-poster);
   overflow: hidden;
   background: var(--surface-2);
 }

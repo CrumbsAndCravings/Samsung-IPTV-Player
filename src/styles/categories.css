@@ -1,0 +1,177 @@
+/* The Categories tab and a category's page ("See all"). */
+
+.page-heading {
+  position: absolute;
+  left: 348px;
+  top: 39px;
+  width: 1080px;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 48px;
+  line-height: 63px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.page-subheading {
+  position: absolute;
+  left: 348px;
+  top: 105px;
+  width: 1300px;
+  font-weight: 700;
+  font-size: 24px;
+  color: #8579b0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Categories tab: rows of cards. */
+.categories-viewport {
+  position: absolute;
+  left: 0;
+  top: 156px;
+  width: 1920px;
+  height: 924px;
+  overflow: hidden;
+}
+.categories-track {
+  top: 12px;
+}
+.category-row {
+  height: 228px;
+}
+.category-card {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 315px;
+  height: 156px;
+  box-sizing: border-box;
+  padding: 18px 21px 0 27px;
+  border-radius: var(--radius-card);
+  background: var(--pill);
+  box-shadow: inset 6px 0 0 var(--pink);
+  transition: transform 150ms var(--ease-out), background-color 150ms linear;
+}
+.category-card.is-focused {
+  background: var(--pill-selected);
+  transform: scale(1.06);
+  box-shadow: inset 6px 0 0 var(--pink), 0 0 0 4px var(--focus);
+}
+.category-card-name {
+  height: 78px;
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 28px;
+  line-height: 1.35;
+  color: var(--text);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: break-word;
+}
+.category-card-caption {
+  margin-top: 15px;
+  font-weight: 800;
+  font-size: 22px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* A category's page: a 9 by 3 grid of posters. */
+.category-heading {
+  width: 1000px;
+}
+.category-search {
+  position: absolute;
+  left: 1428px;
+  top: 36px;
+  width: 420px;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0 18px;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.category-focus-title {
+  position: absolute;
+  left: 990px;
+  top: 105px;
+  width: 858px;
+  text-align: right;
+  font-weight: 800;
+  font-size: 27px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.category-viewport {
+  position: absolute;
+  left: 0;
+  top: 156px;
+  width: 1920px;
+  height: 900px;
+  overflow: hidden;
+}
+.category-grid {
+  position: absolute;
+  left: 90px;
+  top: 15px;
+  transition: transform 300ms var(--ease-out);
+  will-change: transform;
+}
+.category-message {
+  position: absolute;
+  left: 144px;
+  top: 300px;
+  width: 1632px;
+  font-size: 33px;
+  line-height: 1.35;
+  color: var(--text-dim);
+}
+/* The keyboard opens over the left of the page; the grid narrows behind it. */
+.category-keyboard {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 714px;
+  height: 1080px;
+  background: var(--bg);
+  box-shadow: 30px 0 60px rgba(21, 16, 40, 0.7);
+}
+.category-keyboard.is-hidden {
+  display: none;
+}
+.category-keyboard-heading {
+  position: absolute;
+  left: 72px;
+  top: 45px;
+  width: 569px;
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 33px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.category-keyboard .search-query {
+  top: 117px;
+}
+.category-keyboard .keyboard {
+  top: 222px;
+}
+.category-done {
+  position: absolute;
+  left: 72px;
+  top: 900px;
+  width: 569px;
+  box-sizing: border-box;
+  margin: 0;
+  text-align: center;
+}

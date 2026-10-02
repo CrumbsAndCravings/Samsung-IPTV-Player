@@ -55,24 +55,35 @@ function ext(r) {
   return x < 0.79 ? "mkv" : x < 0.98 ? "mp4" : "avi";
 }
 
+// Named the way real providers name them (docs/features.md §4.1): language codes, odd
+// symbols, new-release and 4K categories, India split by language, and a few other
+// languages that a personal build's language choice hides.
 const VOD_CATEGORIES = [
-  ["1", "EN | Action"],
-  ["2", "EN | Comedy"],
-  [3, "EN | Drama"],
-  ["4", "EN | Family"],
-  ["5", "EN | Sci-Fi"],
-  ["6", "4K | Movies"],
-  ["7", "Documentaries"],
-  ["8", "EN | Thriller"],
+  ["1", "EN ✪ ACTION"],
+  ["2", "EN ✪ COMEDY"],
+  [3, "EN ✪ DRAMA"],
+  ["4", "EN ✪ FAMILY"],
+  ["5", "EN ✪ SCI-FI"],
+  ["6", "EN ✪ ACTION [4K]"],
+  ["7", "DOCUMENTARIES"],
+  ["8", "EN ✪ THRILLER"],
+  ["9", "NEW RELEASES 2026"],
+  ["10", "IN ✪ BOLLYWOOD"],
+  ["11", "IN ✪ PUNJABI"],
+  ["12", "FR ✪ ACTION"],
+  ["13", "AR ✪ أفلام"],
   ["99", "XXX Adult"],
 ];
 
 const SERIES_CATEGORIES = [
-  ["21", "EN | Comedy Series"],
-  ["22", "EN | Drama Series"],
-  [23, "EN | Crime"],
-  ["24", "Kids"],
-  ["25", "Docuseries"],
+  ["21", "EN ◉ COMEDY SERIES"],
+  ["22", "EN ◉ DRAMA SERIES"],
+  [23, "EN ◉ CRIME"],
+  ["24", "KIDS"],
+  ["25", "DOCUSERIES"],
+  ["26", "|UK| TOP 10 THIS WEEK"],
+  ["27", "IN ◉ INDIAN"],
+  ["28", "TR ◉ DIZI"],
   ["98", "Adult 18+"],
 ];
 
@@ -91,10 +102,11 @@ function buildLibrary() {
       const name = title(r);
       const year = 1985 + Math.floor(r() * 41);
       const container = ext(r);
-      const tagged = r() < 0.2 ? "EN - " + name : name;
+      // Some providers tag titles with a language and end them with the year.
+      const tagged = r() < 0.2 ? "EN ★ " + name + " - " + year : name;
       const m = {
         num: list.length + 1,
-        name: tagged + (r() < 0.4 ? " (" + year + ")" : ""),
+        name: tagged + (tagged === name && r() < 0.4 ? " (" + year + ")" : ""),
         stream_type: "movie",
         stream_id: r() < 0.5 ? id : String(id),
         stream_icon: "/mock-art/poster/m" + id + ".svg",

@@ -1,16 +1,15 @@
-// A movie or a series (plan 7.3; the Roku app's DetailsScreen): backdrop, title, meta
-// line, plot, cast and director, and a butter note when this TV can't play it.
-// Movies get Resume / Play from start (or just Play). Series get Resume S1:E4 (or Play
-// S1:E1), a row of season pills and the episode list; moving down scrolls the page up.
-//
-// The full player arrives in M3. Until then Play opens the setup checks' test player,
-// and what happens teaches the playability check (core/compat.ts).
+// A movie or a series (plan 7.3; the Roku app's DetailsScreen, docs/features.md §5.4):
+// backdrop, title, meta line, plot, cast and director, and a butter note when this TV
+// can't play it. Movies get Resume / Play from start (or just Play). Series get Resume
+// S1:E4 (or Play S1:E1), a row of season pills and the episode list; moving down
+// scrolls the page up, and Left/Right in the list switch seasons. A title on Continue
+// Watching also gets Remove from Continue Watching (the whole show, for a series).
 
 import type { App, Screen } from "../app";
 import { FileFacts, playCheck } from "../core/compat";
 import { applyInfo, Item, metaLine } from "../core/items";
 import { log } from "../core/log";
-import { progressFind, progressFraction, ProgressEntry } from "../core/progress";
+import { progressFind, progressFraction, ProgressEntry, progressRemove } from "../core/progress";
 import { episodeCode, formatClock, formatRuntime, sizedImage, toInt } from "../core/utils";
 import { episodeItem, POSTER_SIZE, Season } from "../core/xtream";
 import type { Watching } from "../core/watch";
@@ -20,7 +19,11 @@ import { append, clear, h, setText, toggle } from "../ui/dom";
 import { PlayerScreen } from "./player";
 
 type Zone = "buttons" | "seasons" | "episodes";
-type ButtonAction = "play" | "restart" | "resume" | "playFirst" | "resumeEpisode" | "episodes";
+type ButtonAction = "play" | "restart" | "resume" | "playFirst" | "resumeEpisode" | "episodes" | "forget";
+
+type Button = { label: string; action: ButtonAction };
+
+const FORGET: Button = { label: "Remove from Continue Watching", action: "forget" };
 
 const EPISODE_H = 171; // row height plus spacing
 const EPISODES_SHOWN = 5;
@@ -53,7 +56,7 @@ export class DetailsScreen implements Screen {
   private episodeTrack: HTMLElement;
 
   private zone: Zone = "buttons";
-  private buttons: { label: string; action: ButtonAction }[] = [];
+  private buttons: Button[] = [];
   private buttonEls: HTMLElement[] = [];
   private buttonIndex = 0;
 
@@ -148,11 +151,8 @@ export class DetailsScreen implements Screen {
   private movieButtons(): void {
     this.entry = progressFind("m:" + this.item.itemId);
     if (this.entry && toInt(this.entry.pos) > 0) {
-      this.setButtons([
-        { label: "Resume from " + formatClock(toInt(this.entry.pos)), action: "resume" },
-        { label: "Play from start", action: "restart" },
-      ]);
-    } else this.setButtons([{ label: "Play", action: "play" }]);
+      this.setButtons([{ label: "Resume from " + formatClock(toInt(this.entry.pos)), action: "resume" }, { label: "Play from start", action: "restart" }, FORGET]);
+    } else this.setButtons(this.entry ? [{ label: "Play", action: "play" }, FORGET] : [{ label: "Play", action: "play" }]);
   }
 
   // --- Series ---------------------------------------------------------------------
@@ -225,18 +225,15 @@ export class DetailsScreen implements Screen {
       this.showSeason(entrySeason >= 0 ? entrySeason : Math.max(0, firstRegular));
     } else this.renderEpisodes();
     const order = this.playOrder();
+    let buttons: Button[] = [];
     if (entrySeason >= 0 && this.entry) {
       const verb = toInt(this.entry.pos) > 0 ? "Resume " : "Play ";
-      this.setButtons([
-        { label: verb + episodeCode(this.entry.season, this.entry.episode), action: "resumeEpisode" },
-        { label: "Episodes", action: "episodes" },
-      ]);
+      buttons = [{ label: verb + episodeCode(this.entry.season, this.entry.episode), action: "resumeEpisode" }, { label: "Episodes", action: "episodes" }];
     } else if (order.length > 0) {
-      this.setButtons([
-        { label: "Play " + episodeCode(order[0].seasonNo, order[0].episodeNo), action: "playFirst" },
-        { label: "Episodes", action: "episodes" },
-      ]);
+      buttons = [{ label: "Play " + episodeCode(order[0].seasonNo, order[0].episodeNo), action: "playFirst" }, { label: "Episodes", action: "episodes" }];
     }
+    if (this.entry && buttons.length > 0) buttons.push(FORGET);
+    if (buttons.length > 0) this.setButtons(buttons);
   }
 
   private showSeason(index: number): void {
@@ -305,7 +302,7 @@ export class DetailsScreen implements Screen {
 
   // --- Buttons and seasons ----------------------------------------------------------
 
-  private setButtons(buttons: { label: string; action: ButtonAction }[]): void {
+  private setButtons(buttons: Button[]): void {
     this.buttons = buttons;
     this.buttonEls = buttons.map((b) => h("div", { class: "pill", text: b.label }));
     clear(this.buttonsEl);
@@ -364,6 +361,9 @@ export class DetailsScreen implements Screen {
         if (ep) this.play(ep, entry && entry.id === ep.itemId ? toInt(entry.pos) : 0);
         break;
       }
+      case "forget":
+        this.forget();
+        break;
       case "episodes":
         this.enterZone("episodes");
         if (entry) {
@@ -373,6 +373,15 @@ export class DetailsScreen implements Screen {
         this.renderEpisodes();
         break;
     }
+  }
+
+  // Takes the title off Continue Watching (the whole show for a series); the buttons
+  // go back to plain Play.
+  private forget(): void {
+    progressRemove((this.item.kind === "series" ? "s:" : "m:") + this.item.itemId);
+    if (this.app.sync) this.app.sync.now();
+    this.buttonIndex = 0;
+    this.refreshAfterPlay();
   }
 
   // --- Playing ----------------------------------------------------------------------
@@ -497,6 +506,13 @@ export class DetailsScreen implements Screen {
           this.episodeIndex++;
           this.renderEpisodes();
         }
+        break;
+      // The previous or next season, from its first episode.
+      case "left":
+        if (this.seasonIndex > 0) this.showSeason(this.seasonIndex - 1);
+        break;
+      case "right":
+        if (this.seasonIndex < this.seasons.length - 1) this.showSeason(this.seasonIndex + 1);
         break;
       case "ok":
       case "play": {

@@ -18,7 +18,7 @@
   height: 78px;
   box-sizing: border-box;
   padding: 0 33px;
-  border-radius: 999px;
+  border-radius: var(--radius-button);
   background: var(--pill);
   line-height: 78px;
   white-space: nowrap;
@@ -68,7 +68,7 @@
   width: 84px;
   height: 72px;
   line-height: 72px;
-  border-radius: 15px;
+  border-radius: var(--radius-button);
   background: var(--surface-2);
   color: var(--pill-text);
   text-align: center;
@@ -116,6 +116,7 @@
 .search-row {
   left: 15px;
   top: 12px;
+  transition: transform 300ms var(--ease-out);
 }
 .search-message {
   position: absolute;

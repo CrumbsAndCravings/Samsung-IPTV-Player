@@ -37,7 +37,11 @@
   --text-faint: #9083bd;
   --pill-text: #d8cef5;
 
-  --radius-card: 15px;
+  /* Sharp, Netflix-style corners: the Roku app's 3 to 5 px, at 1080p. */
+  --radius-card: 6px;
+  --radius-button: 6px;
+  --radius-poster: 5px;
+  --radius-ring: 8px;
   --ease-out: cubic-bezier(0.215, 0.61, 0.355, 1);
   --font-display: "Fredoka", sans-serif;
   --font-body: "Nunito", sans-serif;

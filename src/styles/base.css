@@ -139,7 +139,7 @@ body.playing .screen:not(.player) {
   line-height: 66px;
   padding: 0 39px;
   margin: 0 18px 12px 0;
-  border-radius: 999px;
+  border-radius: var(--radius-button);
   background: var(--pill);
   color: var(--pill-text);
   font-family: var(--font-display);
@@ -188,7 +188,7 @@ body.playing .screen:not(.player) {
   height: 72px;
   padding: 0 30px;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--radius-button);
   background: var(--surface-2);
   color: var(--text);
   font-family: var(--font-body);

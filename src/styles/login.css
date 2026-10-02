@@ -33,7 +33,7 @@
   position: relative;
   height: 96px;
   margin-bottom: 21px;
-  border-radius: 24px;
+  border-radius: var(--radius-card);
   background: var(--surface-2);
   box-shadow: 0 0 0 4px transparent;
   transition: background-color 150ms linear, box-shadow 150ms linear;

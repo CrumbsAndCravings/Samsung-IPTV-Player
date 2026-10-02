@@ -1,7 +1,8 @@
 // Search (plan 7.4; the Roku app's SearchScreen): the keyboard on the left, results on
-// the right as a Movies row and a Series row that update as you type. The library
-// loads in the background on the first search of a session (data/library.ts), and
-// results fill in as it arrives. Right past the keyboard (or Fast forward) reaches the
+// the right as rows that update as you type: Categories whose name matches (OK opens
+// the category's page), then Movies, then Series. The library is stored on the TV and
+// searched at once; the very first time, it loads in the background (data/library.ts)
+// and results fill in as it arrives. Right past the keyboard (or Fast forward) reaches the
 // results; Left from a row's first poster, Back or Rewind returns to the keyboard.
 
 import type { App, Screen } from "../app";
@@ -11,14 +12,14 @@ import type { SearchLibrary } from "../data/library";
 import type { Key } from "../platform/keys";
 import { h, setText, toggle } from "../ui/dom";
 import { applyKey, OnScreenKeyboard } from "../ui/keyboard";
-import { isBlocked, posterEl } from "../ui/poster";
+import { COL_W, isBlocked, posterEl } from "../ui/poster";
+import { CategoryScreen } from "./category";
 import { DetailsScreen } from "./details";
 
 const LIMIT = 40; // per row, as on Roku
 const DEBOUNCE_MS = 250;
-const COL_W = 210;
-const ROW_H = 366;
-const FULL_COLS = 5;
+const ROW_H = 348;
+const FULL_COLS = 6;
 const REFRESH_MS = 1500; // how often results catch up while the library loads
 
 // The last search, so coming back to Search picks up where you were.
@@ -132,15 +133,15 @@ export class SearchScreen implements Screen {
 
   private showRows(rows: Row[]): void {
     for (const r of this.rows) if (r.el.parentNode) r.el.parentNode.removeChild(r.el);
-    this.rows = rows.map((row, i) => {
+    this.rows = rows.map((row) => {
       const strip = h("div", { class: "row-strip" });
       const el = h("div", { class: "row search-row" }, [h("div", { class: "row-title", text: row.title }), strip]);
-      el.style.transform = "translateY(" + i * ROW_H + "px)";
       this.track.appendChild(el);
       return { row, col: 0, scroll: 0, el, strip, posters: {} };
     });
     this.rowIndex = 0;
     this.pending = false;
+    this.positionRows();
     this.rows.forEach((r) => this.renderStrip(r, false));
     this.renderFocusTitle();
   }
@@ -179,10 +180,22 @@ export class SearchScreen implements Screen {
 
   private renderFocusTitle(): void {
     const item = this.zone === "results" ? this.focusedItem() : null;
-    setText(this.focusTitle, item ? item.title + (isBlocked(item) ? "   ·   Won't play on this TV" : "") : "");
+    let text = item ? item.title : "";
+    if (item && item.kind === "category") text += "   ·   " + item.caption;
+    else if (item && isBlocked(item)) text += "   ·   Won't play on this TV";
+    setText(this.focusTitle, text);
+  }
+
+  // Two rows fit; the third slides into view when focused.
+  private positionRows(): void {
+    const offset = this.zone === "results" ? Math.max(0, this.rowIndex - 1) : 0;
+    this.rows.forEach((r, i) => {
+      r.el.style.transform = "translateY(" + (i - offset) * ROW_H + "px)";
+    });
   }
 
   private renderFocus(): void {
+    this.positionRows();
     this.keyboard.render(this.zone === "keyboard");
     this.rows.forEach((r, i) => this.renderStrip(r, this.zone === "results" && i === this.rowIndex));
     this.renderFocusTitle();
@@ -241,7 +254,10 @@ export class SearchScreen implements Screen {
       if (this.rowIndex < this.rows.length - 1) this.rowIndex++;
     } else if (key === "ok") {
       const item = this.focusedItem();
-      if (item) this.app.push(new DetailsScreen(this.app, item));
+      if (item && item.kind === "category") {
+        const kind = item.listKind === "series" ? "series" : "movie";
+        this.app.push(new CategoryScreen(this.app, { kind, categoryId: item.categoryId, title: item.title + "  ·  " + (kind === "series" ? "Series" : "Movies") }));
+      } else if (item) this.app.push(new DetailsScreen(this.app, item));
       return;
     } else if (key === "back" || key === "rew") return this.focusKeyboard();
     else return;

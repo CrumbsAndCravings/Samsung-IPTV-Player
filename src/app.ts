@@ -3,11 +3,13 @@
 // over it and take the keys while open.
 
 import { log } from "./core/log";
+import { syncConfig } from "./core/personal";
 import { credsSecrets, setSecrets } from "./core/redact";
 import { clearAccount, loadCreds, readOsFields } from "./core/storage";
 import type { Creds } from "./core/utils";
 import { XtreamApi } from "./data/api";
 import { deleteStoredLibrary, SearchLibrary } from "./data/library";
+import { ProgressSync } from "./data/sync";
 import { exitApp } from "./platform/tizen";
 import { Dialog, DialogOptions } from "./ui/dialog";
 import { KeyTarget, setKeyTarget } from "./ui/focus";
@@ -26,6 +28,8 @@ export class App {
   // The whole library for this login: searched, browsed by category and counted. It
   // starts on the first search, category page or Categories tab.
   library: SearchLibrary | null = null;
+  // Continue Watching between devices, for a personal build with a sync service.
+  sync: ProgressSync | null = null;
 
   constructor(readonly root: HTMLElement) {}
 
@@ -36,8 +40,11 @@ export class App {
   // Sets the login used by every screen, and what the logs must hide.
   useCreds(creds: Creds | null): void {
     if (this.library) this.library.stop();
+    if (this.sync) this.sync.stop();
     this.api = creds ? new XtreamApi(creds) : null;
     this.library = this.api ? new SearchLibrary(this.api) : null;
+    this.sync = ProgressSync.forCreds(creds);
+    if (this.sync) this.sync.now(); // at launch and sign-in
     this.refreshSecrets();
   }
 
@@ -48,6 +55,8 @@ export class App {
     const os = readOsFields();
     const secrets = creds ? credsSecrets(creds.server, creds.username, creds.password) : [];
     secrets.push({ value: os.apiKey, label: "<api key>" }, { value: os.username, label: "<os user>" }, { value: os.password, label: "<os password>" });
+    const sync = syncConfig();
+    if (sync) secrets.push({ value: sync.key, label: "<sync key>" });
     setSecrets(secrets);
   }
 

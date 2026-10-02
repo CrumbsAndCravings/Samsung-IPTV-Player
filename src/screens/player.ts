@@ -17,15 +17,17 @@ import type { FindRequest } from "../core/opensubtitles";
 import { barFraction } from "../core/playback";
 import { progressPut, progressRemove } from "../core/progress";
 import { redact } from "../core/redact";
+import { httpDetail, isRefusalCode } from "../core/refusals";
 import { COMMIT_AFTER_MS, JumpResult, SeekPreview, SeekRunner, TICK_MS } from "../core/seek";
 import { cleanCueText, CueTrack, parseSubtitles } from "../core/srt";
 import { loadOsAccount, loadPrefs, savePref } from "../core/storage";
 import { activeSubtitle, audioPlan, freshOnline, NUDGE_MS, OnlineStatus, SubtitleSource, subtitleMenu, subtitlePlan, tracksNote } from "../core/subtitles";
-import { audioOptions, fromAvplay, optionIndex, subtitleOptions, TrackOption } from "../core/tracks";
+import { audioNowText, audioOptions, audioRescue, fromAvplay, optionIndex, subtitleOptions, TrackOption } from "../core/tracks";
 import { describeCodecs, episodeCode, formatClock, streamUrl } from "../core/utils";
 import { currentOf, dueForSave, entryFor, finishedChange, hasNext, resumeFrom, saveAction, Watching } from "../core/watch";
 import { knownHash, movieHash } from "../data/moviehash";
 import { OsClient } from "../data/opensubtitles";
+import { send } from "../platform/http";
 import type { Key } from "../platform/keys";
 import { errorLabel, PlayerEvents } from "../platform/player";
 import { getPlayer } from "../platform/players";
@@ -47,6 +49,9 @@ const PANEL_ROWS = 9;
 const TRACK_ROWS = 7;
 const AUTO_SUBTITLES_AFTER_MS = 2500; // Roku's autoSubTimer
 const SUBTITLE_TICK_MS = 100;
+const RESCUE_NOTE_MS = 9000;
+const SYNC_EVERY_MS = 5 * 60000;
+const CHECK_STREAM_MS = 10000;
 
 const PLAY_ICON = '<svg viewBox="0 0 24 24" width="36" height="36"><path d="M7 4.5v15l12.5-7.5z" fill="currentColor"/></svg>';
 const PAUSE_ICON = '<svg viewBox="0 0 24 24" width="36" height="36"><rect x="5.5" y="4" width="4.5" height="16" rx="1.2" fill="currentColor"/><rect x="14" y="4" width="4.5" height="16" rx="1.2" fill="currentColor"/></svg>';
@@ -156,6 +161,7 @@ export class PlayerScreen implements Screen {
   private subtitleTick = 0;
   private autoTimer = 0;
   private secondsLeft = 0;
+  private syncTimer = 0;
   // Samsung asks apps to suspend AVPlay while hidden (the Home button) and restore it
   // when they come back.
   private onVisibility = () => {
@@ -459,6 +465,30 @@ export class PlayerScreen implements Screen {
     setText(this.errorDetail, this.diagnosis());
     setText(this.errorHint, "OK to try again   ·   Back to return");
     this.show(this.errorEl, true);
+    this.checkStream();
+  }
+
+  // Asks the server for the start of the stream, to say whether it refused it (a trial
+  // that doesn't include it, one device at a time, an ended trial) rather than the TV
+  // failing to play it. The player has let go of the connection by now.
+  private checkStream(): void {
+    const api = this.app.api;
+    if (!api) return;
+    const item = this.item;
+    const token = this.streamToken;
+    const url = streamUrl(api.creds, item.kind === "episode" ? "series" : "movie", item.itemId, (item.ext || "mp4").toLowerCase());
+    send({ url, headers: { Range: "bytes=0-1023" }, timeoutMs: CHECK_STREAM_MS, maxBytes: 65536 }).promise.then((res) => {
+      if (token !== this.streamToken || this.closing || !this.failed) return;
+      let line = "";
+      if (res.timedOut) line = "Asked the server for the stream again: no answer in 10 seconds.";
+      else if (res.code === 0) line = "Asked the server for the stream again: the connection failed.";
+      else if (res.code >= 400) {
+        line = "Asked the server for the stream again: " + redact(httpDetail(res.code, res.headers(), res.text)) + ".";
+        if (isRefusalCode(res.code)) line += " The provider refused it. The trial may not include it, may allow one device at a time, or may have ended.";
+      }
+      log("stream check:", res.code, line);
+      if (line) setText(this.errorDetail, this.diagnosis() + "\n" + line);
+    });
   }
 
   // What went wrong, what the file is, and whether this TV plays files like it.
@@ -579,10 +609,10 @@ export class PlayerScreen implements Screen {
     }
   }
 
-  private note(text: string): void {
+  private note(text: string, ms = 4000): void {
     setText(this.noteEl, text);
     window.clearTimeout(this.noteTimer);
-    this.noteTimer = window.setTimeout(() => setText(this.noteEl, ""), 4000);
+    this.noteTimer = window.setTimeout(() => setText(this.noteEl, ""), ms);
   }
 
   private resume(): void {
@@ -924,6 +954,10 @@ export class PlayerScreen implements Screen {
     }
     this.booted = true;
     document.addEventListener("visibilitychange", this.onVisibility);
+    // Continue Watching reaches other devices every few minutes while a video plays.
+    this.syncTimer = window.setInterval(() => {
+      if (this.app.sync && this.started && !this.paused) this.app.sync.now();
+    }, SYNC_EVERY_MS);
     this.startItem(this.startSecs);
   }
 
@@ -935,8 +969,11 @@ export class PlayerScreen implements Screen {
   destroy(): void {
     this.closing = true;
     this.clearTimers();
+    window.clearInterval(this.syncTimer);
     this.stopStream();
     document.removeEventListener("visibilitychange", this.onVisibility);
+    // Right after leaving a video, so another device can pick up where this one stopped.
+    if (this.app.sync) this.app.sync.now();
   }
 
   // --- Audio & subtitles ------------------------------------------------------------
@@ -975,6 +1012,13 @@ export class PlayerScreen implements Screen {
       const prefs = loadPrefs();
       const audio = audioPlan(prefs.audio || "", this.audioOpts);
       if (audio && audio !== this.currentAudio) this.selectAudio(audio);
+      // A track this TV can't decode (DTS, usually) would play silently.
+      const rescue = audioRescue(this.audioOpts, this.currentAudio);
+      if (rescue) {
+        log("audio rescue:", rescue.note);
+        if (rescue.id) this.selectAudio(rescue.id);
+        this.note(rescue.note, RESCUE_NOTE_MS);
+      }
       const plan = subtitlePlan(prefs.subtitles || "", this.embeddedOpts, this.online.configured);
       if (plan.kind === "embedded") this.showEmbedded(plan.id);
       else {
@@ -1135,7 +1179,8 @@ export class PlayerScreen implements Screen {
     const audioActive = optionIndex(this.audioOpts, "id", this.currentAudio);
     this.renderOptions(this.audioList, this.audioOpts.map((o) => o.label), audioActive, this.audioCursor, this.column === 0, TRACK_ROWS);
     this.renderOptions(this.subsList, this.subMenu.map((o) => o.label), activeSubtitle(this.subMenu, this.source), this.subCursor, this.column === 1, TRACK_ROWS);
-    setText(this.tracksNoteEl, tracksNote(this.online, this.embeddedOpts.length - 1));
+    const notes = [audioNowText(this.audioOpts, this.currentAudio), tracksNote(this.online, this.embeddedOpts.length - 1)];
+    setText(this.tracksNoteEl, notes.filter((n) => n !== "").join(" "));
   }
 
   private chooseTrack(): void {

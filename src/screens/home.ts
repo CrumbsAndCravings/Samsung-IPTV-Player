@@ -1,37 +1,68 @@
-// Home, Movies and Series (plan 7.2; the Roku app's HomeScreen): a nav bar with a
-// gliding highlight and the account button, a hero for the focused title, and rows of
-// posters below. Only the rows and posters near the focus are in the page, and rows
-// load a few at a time as you scroll, so a big library doesn't choke the TV.
+// Home, Movies and Series (plan 7.2; the Roku app's HomeScreen, docs/features.md §4.4
+// and §5.1): a nav bar with a gliding highlight and the account button, a hero for the
+// focused title, and rows of posters below. Only the rows and posters near the focus
+// are in the page, and rows load a few at a time as you scroll, so a big library
+// doesn't choke the TV.
+//
+// Home holds Continue Watching, then up to 18 rows: new releases first, then the rest,
+// movies and series taking turns and each language you watch taking turns. Movies and
+// Series list every wanted category. Each row ends with a See all tile for its whole
+// category. Holding OK on a Continue Watching poster offers to remove it.
 
 import type { App, Screen } from "../app";
+import { languageTurns, organizeCategories, OrganizedCategory, takeTurns } from "../core/categories";
 import { playCheck } from "../core/compat";
 import { applyInfo, Item, makeItem, metaLine } from "../core/items";
 import { log } from "../core/log";
-import { continueWatchingRow } from "../core/progress";
+import { languagePrefs } from "../core/personal";
+import { continueWatchingRow, progressRemove } from "../core/progress";
+import { isRefusalCode } from "../core/refusals";
 import { sizedImage } from "../core/utils";
 import { Category, POSTER_SIZE } from "../core/xtream";
+import { ApiError } from "../data/api";
 import type { Key } from "../platform/keys";
 import { h, setText, toggle } from "../ui/dom";
-import { itemKey, posterEl } from "../ui/poster";
+import { COL_W, itemKey, posterEl } from "../ui/poster";
 import { Backdrop } from "../ui/backdrop";
+import { CategoriesScreen } from "./categories";
+import { CategoryScreen } from "./category";
 import { DetailsScreen } from "./details";
 import { SetupChecksScreen } from "./setup";
 import { SearchScreen } from "./search";
 import { SubtitleSetupScreen } from "./subtitle-setup";
 
-const TABS = ["Home", "Movies", "Series", "Search"];
+const TABS = ["Home", "Movies", "Series", "Categories", "Search"];
 const ACCOUNT = TABS.length; // nav cursor index of the account button
 
-const ROW_H = 366; // title, poster, caption and the gap below
-const COL_W = 210; // poster width plus spacing
-const FULL_COLS = 8; // posters fully in view
+const ROW_H = 345; // title, poster and the gap below
+const FULL_COLS = 9; // posters fully in view
 const HERO_REST_MS = 600;
 const ROW_BATCH = 5;
+const HOME_ROWS = 18;
+const HOLD_MS = 700; // holding OK this long on a Continue Watching poster
 
 interface PlanEntry {
   kind: "movie" | "series";
   categoryId: string;
+  label: string;
   title: string;
+  lang: string;
+  demoted: boolean;
+}
+
+// Plan entries for organized categories of one kind; with `wantNew` true or false, only
+// the categories of new releases or only the others.
+function planEntries(list: OrganizedCategory[], kind: "movie" | "series", wantNew: boolean | null): PlanEntry[] {
+  const entries: PlanEntry[] = [];
+  for (const c of list) {
+    if (wantNew === null || c.isNew === wantNew) entries.push({ kind, categoryId: c.id, label: c.label, title: c.label, lang: c.lang, demoted: c.demoted });
+  }
+  return entries;
+}
+
+// Every wanted category, organized (the Q60 is 4K, so 4K categories aren't demoted).
+export function organized(list: Category[]): OrganizedCategory[] {
+  return organizeCategories(list, languagePrefs(), new Date().getFullYear());
 }
 
 interface RowState {
@@ -72,6 +103,7 @@ export class HomeScreen implements Screen {
   private movieCats: Category[] | null = null;
   private seriesCats: Category[] | null = null;
   private lastError = "";
+  private lastRefused = false;
 
   private rows: RowState[] = [];
   private rowIndex = 0;
@@ -82,6 +114,8 @@ export class HomeScreen implements Screen {
   private heroItem: Item | null = null;
   private heroTimer = 0;
   private heroDebounce = 0;
+  private holdTimer = 0; // OK is down on a Continue Watching poster
+  private unsubscribeSync: (() => void) | null = null;
 
   constructor(private app: App) {
     this.tabEls = TABS.map((name) => h("div", { class: "nav-tab", text: name }));
@@ -111,6 +145,8 @@ export class HomeScreen implements Screen {
     ]);
     this.styleNav();
     this.loadCategories();
+    // Another device changed Continue Watching.
+    if (app.sync) this.unsubscribeSync = app.sync.onChange(() => this.refreshContinueWatching());
   }
 
   // --- Loading ----------------------------------------------------------------------
@@ -120,9 +156,10 @@ export class HomeScreen implements Screen {
     if (!api) return;
     this.failed = false;
     this.lastError = "";
+    this.lastRefused = false;
     setText(this.status, "Loading your library…");
     const note = (err: Error) => {
-      this.lastError = err.message;
+      this.noteError(err);
       return [] as Category[];
     };
     Promise.all([api.categories("movie").catch(note), api.categories("series").catch(note)]).then(([movies, series]) => {
@@ -132,22 +169,30 @@ export class HomeScreen implements Screen {
     });
   }
 
+  private noteError(err: Error): void {
+    this.lastError = err.message;
+    this.lastRefused = err instanceof ApiError && (isRefusalCode(err.code) || err.cfBlock);
+  }
+
+  // Which category rows each tab shows. Categories in languages you don't watch are
+  // left out, names are tidied ("EN | ACTION ★" becomes "Action"), and categories of
+  // new releases come first.
   private buildPlan(tab: number): PlanEntry[] {
-    const movies = this.movieCats || [];
-    const series = this.seriesCats || [];
-    const plan: PlanEntry[] = [];
-    if (tab === 0) {
-      // Home mixes the provider's first six movie and first six series categories.
-      for (let i = 0; i < 6; i++) {
-        if (i < movies.length) plan.push({ kind: "movie", categoryId: movies[i].id, title: movies[i].name + "  ·  Movies" });
-        if (i < series.length) plan.push({ kind: "series", categoryId: series[i].id, title: series[i].name + "  ·  Series" });
-      }
-    } else if (tab === 1) {
-      for (const c of movies) plan.push({ kind: "movie", categoryId: c.id, title: c.name });
-    } else if (tab === 2) {
-      for (const c of series) plan.push({ kind: "series", categoryId: c.id, title: c.name });
-    }
-    return plan;
+    const movies = organized(this.movieCats || []);
+    const series = organized(this.seriesCats || []);
+    if (tab === 1) return planEntries(movies, "movie", null);
+    if (tab === 2) return planEntries(series, "series", null);
+    if (tab !== 0) return [];
+    const langs = languagePrefs();
+    const newest = takeTurns(planEntries(movies, "movie", true), planEntries(series, "series", true));
+    const rest = languageTurns(takeTurns(planEntries(movies, "movie", false), planEntries(series, "series", false)), langs);
+    return newest
+      .concat(rest)
+      .slice(0, HOME_ROWS)
+      .map((entry) => {
+        entry.title = entry.label + (entry.kind === "series" ? "  ·  Series" : "  ·  Movies");
+        return entry;
+      });
   }
 
   private showTab(tab: number): void {
@@ -167,8 +212,8 @@ export class HomeScreen implements Screen {
     this.styleNav();
 
     if (this.rows.length === 0) {
-      this.failed = this.lastError !== "";
-      setText(this.status, this.failed ? "Couldn't load your library. " + this.lastError + " Press OK to try again." : "Your provider didn't list anything here.");
+      if (this.lastError !== "") return this.showLoadError();
+      setText(this.status, "Your provider didn't list anything here.");
       this.clearHero();
       this.focusNav();
       this.renderRows();
@@ -200,8 +245,10 @@ export class HomeScreen implements Screen {
         .row(entry.kind, entry.categoryId, entry.title)
         .then((loaded) => {
           if (generation !== this.generation) return;
-          if (loaded.items.length === 0) return this.dropRow(row);
-          row.items = loaded.items;
+          if (loaded.items.length === 0) return this.dropRow(row, true);
+          // A See all tile ends the row; its page lists the whole category.
+          const title = this.tab === 1 ? entry.title + "  ·  Movies" : this.tab === 2 ? entry.title + "  ·  Series" : entry.title;
+          row.items = loaded.items.concat([makeItem({ kind: "seeAll", title, categoryId: entry.categoryId, listKind: entry.kind })]);
           this.rebuildRow(row);
           if (this.focusedRow() === row) this.onFocusMoved();
           return undefined;
@@ -209,27 +256,45 @@ export class HomeScreen implements Screen {
         .catch((err: Error) => {
           if (generation !== this.generation) return;
           log("row failed:", entry.title, err.message);
-          this.dropRow(row);
+          // The server is saying no or not answering. Asking for every other category
+          // would look like a flood and could keep this connection blocked longer.
+          this.noteError(err);
+          this.planIndex = this.plan.length;
+          this.dropRow(row, false);
         });
     }
   }
 
-  // An empty or failed category is dropped and the next one pulled in instead.
-  private dropRow(row: RowState): void {
+  // An empty category is dropped and the next one pulled in instead (`next`).
+  private dropRow(row: RowState, next: boolean): void {
     const index = this.rows.indexOf(row);
     if (index < 0) return;
     if (row.el && row.el.parentNode) row.el.parentNode.removeChild(row.el);
     this.rows.splice(index, 1);
     for (const r of this.rows) this.detachRow(r); // positions changed
     if (this.rowIndex > index || this.rowIndex >= this.rows.length) this.rowIndex = Math.max(0, Math.min(this.rowIndex - (this.rowIndex > index ? 1 : 0), this.rows.length - 1));
-    this.appendRows(1);
+    if (next) this.appendRows(1);
     if (this.rows.length === 0) {
+      if (this.lastError !== "") return this.showLoadError();
       setText(this.status, "Your provider didn't list anything here.");
       this.clearHero();
       this.focusNav();
     }
     this.renderRows();
     this.onFocusMoved();
+  }
+
+  // Wraps to three lines; refusals add the usual causes.
+  private showLoadError(): void {
+    this.failed = true;
+    let text = "Couldn't load your library. " + this.lastError;
+    if (this.lastRefused) {
+      text += " The provider may have moved to a new address (ask them, then sign out from the account button and back in), the trial may have ended, or they may be blocking your connection for a while.";
+    }
+    setText(this.status, text + " Press OK to try again.");
+    this.clearHero();
+    this.focusNav();
+    this.renderRows();
   }
 
   // --- Rows -------------------------------------------------------------------------
@@ -332,7 +397,8 @@ export class HomeScreen implements Screen {
 
   private refreshHero(): void {
     const item = this.focusedItem();
-    if (!item || item.placeholder) return;
+    // See all keeps the previous title in the hero.
+    if (!item || item.placeholder || item.kind === "seeAll") return;
     this.showHero(item);
     window.clearTimeout(this.heroTimer);
     if (!item.hasInfo && item.kind === "movie") this.heroTimer = window.setTimeout(() => this.fetchInfo(item), HERO_REST_MS);
@@ -349,6 +415,7 @@ export class HomeScreen implements Screen {
         meta = "Won't play on this TV (" + check.label + ")" + (meta ? "   ·   " + meta : "");
       }
     }
+    if (this.continueItem() === item) meta += "   ·   Hold OK to remove";
     setText(this.heroMeta, meta);
     toggle(this.heroMeta, "is-warning", blocked);
     setText(this.heroPlot, item.description);
@@ -435,6 +502,12 @@ export class HomeScreen implements Screen {
       this.loadCategories();
       return;
     }
+    if (TABS[this.navCursor] === "Categories") {
+      // Still loading the category lists: nothing to show yet.
+      if (!this.movieCats || !this.seriesCats) return;
+      this.app.push(new CategoriesScreen(this.app, organized(this.movieCats), organized(this.seriesCats)));
+      return;
+    }
     if (this.navCursor !== this.tab) this.showTab(this.navCursor);
     this.focusRows();
   }
@@ -473,12 +546,21 @@ export class HomeScreen implements Screen {
       case "right":
         this.moveCol(1);
         break;
-      case "ok":
-      case "play": {
-        const item = this.focusedItem();
-        if (item && !item.placeholder) this.app.push(new DetailsScreen(this.app, item));
+      case "ok": {
+        const item = this.continueItem();
+        if (item) {
+          // Held, it offers to remove the title; let go sooner and it opens.
+          window.clearTimeout(this.holdTimer);
+          this.holdTimer = window.setTimeout(() => {
+            this.holdTimer = 0;
+            this.showContinueMenu(item);
+          }, HOLD_MS);
+        } else this.open(this.focusedItem());
         break;
       }
+      case "play":
+        this.open(this.focusedItem());
+        break;
       case "back":
         // Back jumps to the first row, then the nav bar, then asks to exit.
         if (this.rowIndex > 0) {
@@ -492,6 +574,70 @@ export class HomeScreen implements Screen {
       default:
         break;
     }
+  }
+
+  onKeyUp(key: Key): void {
+    if (key !== "ok" || !this.holdTimer) return;
+    window.clearTimeout(this.holdTimer);
+    this.holdTimer = 0;
+    this.open(this.continueItem());
+  }
+
+  private open(item: Item | null): void {
+    if (!item || item.placeholder) return;
+    if (item.kind === "seeAll") {
+      this.app.push(new CategoryScreen(this.app, { kind: item.listKind === "series" ? "series" : "movie", categoryId: item.categoryId, title: item.title }));
+      return;
+    }
+    this.app.push(new DetailsScreen(this.app, item));
+  }
+
+  // --- Continue Watching --------------------------------------------------------------
+
+  // The focused poster when it's in the Continue Watching row.
+  private continueItem(): Item | null {
+    if (this.navFocused || this.rowIndex !== 0 || !this.rows[0] || !this.rows[0].isContinue) return null;
+    return this.focusedItem();
+  }
+
+  private showContinueMenu(item: Item): void {
+    this.app.dialog({
+      title: item.title,
+      message: "Remove it from Continue Watching? Where you stopped is forgotten.",
+      buttons: [
+        {
+          label: "Remove from Continue Watching",
+          action: () => {
+            progressRemove((item.kind === "series" ? "s:" : "m:") + item.itemId);
+            this.refreshContinueWatching();
+            if (this.app.sync) this.app.sync.now();
+          },
+        },
+        { label: "Keep it" },
+      ],
+      focus: 1,
+    });
+  }
+
+  private refreshContinueWatching(): void {
+    if (this.tab !== 0 || !this.movieCats) return;
+    const cw = continueWatchingRow();
+    const had = this.rows.length > 0 && this.rows[0].isContinue;
+    if (had) this.detachRow(this.rows[0]);
+    if (cw && had) {
+      this.rows[0].items = cw.items;
+      this.rows[0].col = Math.max(0, Math.min(this.rows[0].col, cw.items.length - 1));
+    } else if (cw) {
+      this.rows.unshift(this.rowState(cw.title, cw.items, true));
+      if (this.rows.length > 1) this.rowIndex++;
+    } else if (had) {
+      this.rows.shift();
+      this.rowIndex = Math.max(0, this.rowIndex - 1);
+    }
+    for (const row of this.rows) this.detachRow(row);
+    if (this.rows.length > 0) setText(this.status, "");
+    this.renderRows();
+    if (!this.navFocused) this.onFocusMoved();
   }
 
   private onNavKey(key: Key): void {
@@ -508,7 +654,7 @@ export class HomeScreen implements Screen {
         this.activateNav();
         break;
       case "down":
-        if (this.navCursor === ACCOUNT || TABS[this.navCursor] === "Search") this.focusRows();
+        if (this.navCursor === ACCOUNT || TABS[this.navCursor] === "Search" || TABS[this.navCursor] === "Categories") this.focusRows();
         else this.activateNav();
         break;
       case "back":
@@ -522,24 +668,10 @@ export class HomeScreen implements Screen {
   // --- Screen -------------------------------------------------------------------------
 
   onShow(): void {
-    // Back from Details: Continue Watching may have changed.
-    if (this.tab === 0 && this.movieCats) {
-      const cw = continueWatchingRow();
-      const had = this.rows.length > 0 && this.rows[0].isContinue;
-      if (had) this.detachRow(this.rows[0]);
-      if (cw && had) {
-        this.rows[0].items = cw.items;
-        this.rows[0].col = Math.min(this.rows[0].col, cw.items.length - 1);
-      } else if (cw) {
-        this.rows.unshift(this.rowState(cw.title, cw.items, true));
-        this.rowIndex++;
-      } else if (had) {
-        this.rows.shift();
-        this.rowIndex = Math.max(0, this.rowIndex - 1);
-      }
-      for (const row of this.rows) this.detachRow(row);
-      this.renderRows();
-    }
+    // Back from Details or the player: Continue Watching may have changed.
+    this.refreshContinueWatching();
+    // Pick up what other devices watched (at most once a minute).
+    if (this.app.sync) this.app.sync.soon();
     this.styleNav();
     if (!this.navFocused) this.onFocusMoved();
   }
@@ -547,11 +679,14 @@ export class HomeScreen implements Screen {
   onHide(): void {
     window.clearTimeout(this.heroTimer);
     window.clearTimeout(this.heroDebounce);
+    window.clearTimeout(this.holdTimer);
+    this.holdTimer = 0;
   }
 
   destroy(): void {
     this.onHide();
     this.generation++;
+    if (this.unsubscribeSync) this.unsubscribeSync();
   }
 
   // For the screenshot script and tests.

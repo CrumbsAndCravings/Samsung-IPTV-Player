@@ -31,7 +31,12 @@ async function shot(name) {
 
 try {
   await page.goto(`http://localhost:${port}/`);
-  await page.evaluate(() => localStorage.clear());
+  await page.evaluate(() => {
+    localStorage.clear();
+    // The languages a personal build would set (English, Hindi, Punjabi).
+    localStorage.setItem("aranplus:prefs:languages", JSON.stringify(["en", "hi", "pa"]));
+    globalThis.indexedDB.deleteDatabase("aranplus");
+  });
   await page.reload();
   await page.waitForSelector(".screen.login");
   await shot("login");
@@ -45,7 +50,16 @@ try {
   };
   await type("localhost:" + port);
   await type("demo");
-  await type("demo");
+  await type("nope");
+  await page.keyboard.press("Enter"); // refused: the error card replaces the tips
+  await page.waitForSelector(".login-error:not(.is-hidden)");
+  await shot("login-error");
+  await page.keyboard.press("ArrowUp");
+  await page.keyboard.press("Enter");
+  for (let i = 0; i < 4; i++) await page.keyboard.press("Backspace");
+  await page.keyboard.type("demo");
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(100);
   await shot("login-filled");
   await page.keyboard.press("Enter");
   await page.waitForSelector(".screen.home");
@@ -57,28 +71,75 @@ try {
   await page.waitForTimeout(1500);
   await shot("home-rows");
 
+  // The end of a row: See all.
+  for (let i = 0; i < 40; i++) await page.keyboard.press("ArrowRight");
+  await page.waitForTimeout(600);
+  await shot("home-see-all");
+  await page.keyboard.press("Enter");
+  await page.waitForSelector(".screen.category");
+  await page.waitForTimeout(1500);
+  await shot("category-see-all");
+  await page.keyboard.press("Backspace");
+  await page.waitForTimeout(300);
+
   await page.keyboard.press("Backspace"); // Back: to the first row
   await page.keyboard.press("Backspace"); // Back: to the nav bar
   await page.keyboard.press("ArrowRight");
   await shot("home-nav");
 
-  // Search: the library loads in the background; type with a computer keyboard here.
+  // Categories: cards by language, with counts from the stored library.
   await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("Enter");
+  await page.waitForSelector(".screen.categories");
+  await page.waitForTimeout(2500);
+  await shot("categories");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("Enter");
+  await page.waitForSelector(".screen.category");
+  await page.waitForTimeout(800);
+  await shot("category");
+  // Search this category, with the app's keyboard.
+  await page.keyboard.press("ArrowUp");
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(300);
+  await page.keyboard.type("the");
+  await page.waitForTimeout(800);
+  await shot("category-search");
+  await page.keyboard.press("Backspace"); // close the keyboard, keeping the search
+  await page.waitForTimeout(300);
+  await shot("category-searched");
+  await page.keyboard.press("Backspace"); // clear the search
+  await page.keyboard.press("Backspace"); // back to Categories
+  await page.waitForTimeout(300);
+  await page.keyboard.press("Backspace"); // back to Home
+  await page.waitForTimeout(300);
+
+  // Search: the library is stored by now; type with a computer keyboard here.
   await page.keyboard.press("ArrowRight");
   await page.keyboard.press("Enter");
   await page.waitForSelector(".screen.search");
   await page.waitForTimeout(300);
   await shot("search");
   await page.keyboard.type("silver");
-  await page.waitForTimeout(2500);
+  await page.waitForTimeout(2000);
   for (let i = 0; i < 6; i++) await page.keyboard.press("ArrowRight");
   await page.keyboard.press("ArrowDown");
   await shot("search-results");
   await page.keyboard.press("Backspace"); // results -> keyboard
+  // Clear (straight down from the last column), then a search that finds a category.
+  for (let i = 0; i < 7; i++) await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("punjabi");
+  await page.waitForTimeout(2000);
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowRight");
+  await shot("search-categories");
+  await page.keyboard.press("Backspace"); // results -> keyboard
   await page.keyboard.press("Backspace"); // back to Home
   await page.waitForTimeout(300);
-  await page.keyboard.press("ArrowLeft");
-  await page.keyboard.press("ArrowLeft");
+  for (let i = 0; i < 3; i++) await page.keyboard.press("ArrowLeft");
   await page.keyboard.press("Enter"); // Movies
   await page.waitForTimeout(2500);
   await shot("movies");
@@ -165,6 +226,21 @@ try {
     await page.keyboard.press("Enter"); // Home, with Continue Watching
     await page.waitForTimeout(2000);
     await shot("home-continue");
+    // Holding OK on a Continue Watching poster offers to remove it.
+    await page.keyboard.down("Enter");
+    await page.waitForTimeout(900);
+    await page.keyboard.up("Enter");
+    await page.waitForSelector(".dialog-scrim");
+    await shot("home-continue-menu");
+    await page.keyboard.press("Backspace");
+    await page.waitForTimeout(300);
+    // A quick press opens it; Details offers to remove it too.
+    await page.keyboard.press("Enter");
+    await page.waitForSelector(".screen.details");
+    await page.waitForTimeout(1500);
+    await shot("details-continue");
+    await page.keyboard.press("Backspace");
+    await page.waitForTimeout(300);
   } else {
     console.log("no dev/media/sample.webm: skipping the player (python3 tools/make_sample_video.py)");
     await page.keyboard.press("Backspace");
