@@ -184,6 +184,7 @@ tests/                               vitest
 dev/                                 fake Xtream server, fake OpenSubtitles, screenshot script
 tools/                               build, dev server, Tizen CLI wrapper, image generator
 docs/m0-findings.md                  what the TV told us in M0, and the decisions it changed
+docs/roku-helper-plan.md             the plan for letting the Roku app use the helper too
 ```
 
 ### Performance
