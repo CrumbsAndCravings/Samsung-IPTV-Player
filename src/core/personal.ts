@@ -60,3 +60,18 @@ export function applyBuiltInLogin(): boolean {
   regDelete("progress", "removed");
   return true;
 }
+
+// The helper on a computer at home that converts what this TV can't play (helper/),
+// or null. The helper writes these into personal.json the first time it runs.
+export function transcoderConfig(): { url: string; key: string } | null {
+  const settings = field(data, "transcoder");
+  let url = fieldStr(settings, "url").trim();
+  const key = fieldStr(settings, "key").trim();
+  if (url === "" || key === "") return null;
+  if (url.charAt(url.length - 1) === "/") url = url.slice(0, -1);
+  return { url, key };
+}
+
+export function helperOn(): boolean {
+  return transcoderConfig() !== null;
+}

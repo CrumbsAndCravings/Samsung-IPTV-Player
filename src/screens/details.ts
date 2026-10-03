@@ -7,6 +7,7 @@
 
 import type { App, Screen } from "../app";
 import { FileFacts, playCheck } from "../core/compat";
+import { helperOn } from "../core/personal";
 import { applyInfo, Item, metaLine } from "../core/items";
 import { log } from "../core/log";
 import { progressFind, progressFraction, ProgressEntry, progressRemove } from "../core/progress";
@@ -145,7 +146,8 @@ export class DetailsScreen implements Screen {
 
   private movieCompat(): void {
     const check = playCheck(factsOf(this.item));
-    setText(this.compatEl, check.verdict === "blocked" ? "Won't play on this TV. " + check.reason : "");
+    if (check.verdict !== "blocked") setText(this.compatEl, "");
+    else setText(this.compatEl, helperOn() ? "This TV can't play this file itself, so the helper on your computer converts it while you watch." : "Won't play on this TV. " + check.reason);
   }
 
   private movieButtons(): void {
@@ -208,6 +210,7 @@ export class DetailsScreen implements Screen {
       }
     }
     if (blocked === 0) setText(this.compatEl, "");
+    else if (helperOn()) setText(this.compatEl, blocked === total ? "This TV can't play this file itself, so the helper on your computer converts it while you watch." : blocked + " of " + total + " episodes play through the helper on your computer, which converts them for this TV.");
     else if (blocked === total) setText(this.compatEl, "Won't play on this TV. " + reason);
     else setText(this.compatEl, blocked + " of " + total + " episodes won't play on this TV. They're marked in the list.");
   }
@@ -252,8 +255,8 @@ export class DetailsScreen implements Screen {
   }
 
   private episodeEl(ep: Item, number: number): HTMLElement {
-    const check = playCheck(factsOf(ep));
-    const blocked = check.verdict === "blocked";
+    // With the helper, those play too (it converts them), so they aren't marked.
+    const blocked = playCheck(factsOf(ep)).verdict === "blocked" && !helperOn();
     const img = h("img", { class: "episode-img", attrs: { alt: "" } });
     if (ep.poster) {
       img.onerror = () => img.parentNode && img.parentNode.removeChild(img);
@@ -386,10 +389,11 @@ export class DetailsScreen implements Screen {
 
   // --- Playing ----------------------------------------------------------------------
 
-  // Files this TV can't play ask first; "Try anyway" goes ahead regardless.
+  // Files this TV can't play ask first; "Try anyway" goes ahead regardless. With the
+  // helper, they just play (through it).
   private play(target: Item, startSecs: number): void {
     const check = playCheck(factsOf(target));
-    if (check.verdict === "blocked") {
+    if (check.verdict === "blocked" && !helperOn()) {
       this.app.dialog({
         title: "This may not play",
         message: check.reason,

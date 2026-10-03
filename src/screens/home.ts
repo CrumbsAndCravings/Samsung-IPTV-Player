@@ -14,7 +14,7 @@ import { languageTurns, organizeCategories, OrganizedCategory, takeTurns } from 
 import { playCheck } from "../core/compat";
 import { applyInfo, Item, makeItem, metaLine } from "../core/items";
 import { log } from "../core/log";
-import { languagePrefs } from "../core/personal";
+import { helperOn, languagePrefs } from "../core/personal";
 import { continueWatchingRow, progressRemove } from "../core/progress";
 import { isRefusalCode } from "../core/refusals";
 import { sizedImage } from "../core/utils";
@@ -408,7 +408,7 @@ export class HomeScreen implements Screen {
     setText(this.heroTitle, item.title);
     let meta = item.caption ? "Resume  " + item.caption : metaLine(item);
     let blocked = false;
-    if (item.kind !== "series") {
+    if (item.kind !== "series" && !helperOn()) {
       const check = playCheck({ key: itemKey(item), ext: item.ext, videoCodec: item.videoCodec, videoProfile: item.videoProfile, audioCodec: item.audioCodec });
       if (check.verdict === "blocked") {
         blocked = true;

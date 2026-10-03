@@ -23,7 +23,7 @@ What the app does now:
 - **A category's page** (See all, a category card, or a category found by Search): every title in it, newest first, 9 across, from the library stored on the TV, so nothing is asked of the provider. **Search this category** (Up from the first row) opens the keyboard and the grid narrows as you type.
 - **The hero** at the top shows the focused title's backdrop, year, runtime, genre, rating and plot; movie details arrive after you rest on a poster for a moment.
 - **Details** for movies (Play, or Resume and Play from start) and series (seasons, with Specials first, and the episode list with stills, runtimes and synopses; **Left/Right** in the list switch seasons). A title on Continue Watching also gets **Remove from Continue Watching**.
-- **"Won't play"** marks titles this TV can't play (AVI, for now), with "Try anyway". Codecs that are really a file's cover picture (MJPEG, PNG) no longer count.
+- **"Won't play"** marks titles this TV can't play (AVI, for now), with "Try anyway". Codecs that are really a file's cover picture (MJPEG, PNG) no longer count. With [the helper on your computer](#the-helper-on-your-computer), those titles play too, and a title that fails on its own is tried through it.
 - **Account menu** (the round button at the right of the tabs): Keep watching, Online subtitles, Setup checks, Sign out. Signing out also forgets the stored library.
 - **The player.** Back and the title at the top; play/pause, the bar and the times at the bottom; Audio & subtitles, Episodes, Next episode and Restart underneath. The controls show when you press a key and hide after 5 seconds of playing.
 - **Jump preview.** Press or hold **Left/Right** (or Rewind/Fast forward) and the bar shows where you'll land before you get there; the longer you hold, the bigger the steps. The jump happens a moment after you let go, **OK** jumps straight away and **Back** cancels. Jumps go to the TV's player one at a time; one that fails is tried again, and if it still fails the reason shows under the bar.
@@ -81,7 +81,29 @@ A build can carry settings of your own in `personal.json` at the top of the repo
 - **`sync`:** the address and key of your sync Worker, set up once with the Roku repo's [sync guide](https://github.com/CrumbsAndCravings/roku-iptv-player/blob/main/sync/README.md). Use the same key as the Roku build. Without it nothing syncs.
 - **`server`, `username`, `password`:** a login the TV signs in with by itself. Leave them out to type the login on the TV as usual. With them, the signed `.wgt` holds your login, so keep that file to yourself. When a newer build carries a different login, the TV replaces the saved one and clears Continue Watching (its titles belong to the old provider). A login typed on the TV for the same account is kept, Continue Watching and all.
 
+- **`transcoder`:** where [the helper on your computer](#the-helper-on-your-computer) is, and its key. The helper writes this itself the first time it runs.
+
 `npm run install:tv` (and `npm run build`) picks the file up and prints which parts it found, never their values. The desktop harness ignores it unless `ARANPLUS_PERSONAL` names a file, so `npm run dev` never talks to your provider by accident.
+
+## The helper on your computer
+
+The TV plays MKV and MP4 files with H.264 or HEVC pictures, but not AVI files (old DivX and Xvid movies, about 1 in 60 of the provider's), and not DTS or TrueHD sound. The helper fixes that: a small program on a computer at home, switched on while you watch, that uses [FFmpeg](https://ffmpeg.org) to turn those files into a stream the TV plays.
+
+**How it works.** When a title can't play on the TV (an AVI, sound the TV can't decode, or a file that failed before), ARAN+ asks the helper instead of the provider. The helper fetches the file with your login (from `personal.json`, so the login never travels from the TV), and FFmpeg sends it on as an MPEG-TS stream:
+
+- **The picture** is kept as it is when the TV plays it (H.264, HEVC). DivX and Xvid are first just repackaged, which takes almost no computing power; if the TV still refuses, they are converted to H.264, and ARAN+ remembers which way worked. Conversion uses the graphics card or Intel Quick Sync when the computer has one, otherwise the processor (fine for standard definition).
+- **The sound** is kept when it is AAC, AC-3 or E-AC-3; DTS and TrueHD become AC-3 (surround stays surround), and the rest AAC.
+- **Jumping** starts the helper's stream again at the new time, so a jump takes a few seconds. Resuming works the same way.
+- The file's own subtitle tracks don't come through; online subtitles still work.
+
+**Set it up on Windows (once):**
+
+1. Install FFmpeg: open PowerShell and run `winget install Gyan.FFmpeg`.
+2. Make sure `personal.json` (in the top folder of this repo) has your provider's login: the helper needs `server`, `username` and `password`.
+3. Open a new window in the repo folder and run `npm run helper` (or double-click `helper\start-helper.cmd`). The first time, it adds `transcoder` (this computer's address and a random key) to `personal.json`, and Windows asks whether Node.js may use the network: allow **private networks**.
+4. Run `npm run install:tv` once more, so the TV knows where the helper is.
+
+From then on, start the helper before you watch (or put a shortcut to `helper\start-helper.cmd` in the Startup folder: press Win+R, type `shell:startup`). Its window shows what it is converting. If the TV says the helper didn't answer, check that the computer is on and the window is open. Give the computer a fixed address in your router, or the TV may lose it; the helper says when the address in `personal.json` no longer matches.
 
 ## Setup checks on the TV
 
@@ -150,12 +172,14 @@ src/
   data/api.ts                        Xtream calls: session cache, at most three at once
   data/library.ts                    the stored library: loaded gently, saved, refreshed daily
   data/sync.ts                       Continue Watching through the sync Worker
+  data/transcoder.ts                 the helper on a computer at home
   data/opensubtitles.ts moviehash.ts OpenSubtitles calls and the file fingerprint
   screens/                           sign in, Home, Categories, a category's page, Search, Details,
                                      player, Online subtitles, Setup checks
   probe/                             the M0 setup checks
   styles/                            design tokens, base styles, screen styles
 assets/fonts  assets/images          Fredoka and Nunito (SIL OFL), generated glows
+helper/                              the helper for a computer at home: FFmpeg converts what the TV can't play
 tests/                               vitest
 dev/                                 fake Xtream server, fake OpenSubtitles, screenshot script
 tools/                               build, dev server, Tizen CLI wrapper, image generator

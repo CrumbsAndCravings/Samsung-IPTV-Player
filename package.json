@@ -1,6 +1,6 @@
 {
   "name": "aranplus-samsung",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "description": "ARAN+ for Samsung Tizen TVs: a cosy, Netflix-style IPTV player built on the Xtream Codes API.",
   "type": "module",
@@ -20,7 +20,8 @@
     "run:tv": "node tools/tizen.mjs run",
     "debug:tv": "node tools/tizen.mjs debug",
     "images": "python3 tools/make_images.py",
-    "screens": "node dev/screens.mjs"
+    "screens": "node dev/screens.mjs",
+    "helper": "node helper/aranplus-helper.mjs"
   },
   "dependencies": {
     "qrcode-generator": "^2.0.4"

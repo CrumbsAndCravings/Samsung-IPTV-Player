@@ -23,9 +23,11 @@ import { cleanCueText, CueTrack, parseSubtitles } from "../core/srt";
 import { loadOsAccount, loadPrefs, savePref } from "../core/storage";
 import { activeSubtitle, audioPlan, freshOnline, NUDGE_MS, OnlineStatus, SubtitleSource, subtitleMenu, subtitlePlan, tracksNote } from "../core/subtitles";
 import { audioNowText, audioOptions, audioRescue, fromAvplay, optionIndex, subtitleOptions, TrackOption } from "../core/tracks";
-import { describeCodecs, episodeCode, formatClock, streamUrl } from "../core/utils";
+import { codecLabel, describeCodecs, episodeCode, formatClock, streamUrl } from "../core/utils";
 import { currentOf, dueForSave, entryFor, finishedChange, hasNext, resumeFrom, saveAction, Watching } from "../core/watch";
 import { knownHash, movieHash } from "../data/moviehash";
+import { helperInfo, HelperInfo, helperLastError, helperStreamUrl, learnedMode, learnMode, needsHelper, rememberNeedsHelper, VideoMode } from "../data/transcoder";
+import { helperOn } from "../core/personal";
 import { OsClient } from "../data/opensubtitles";
 import { send } from "../platform/http";
 import type { Key } from "../platform/keys";
@@ -52,6 +54,8 @@ const SUBTITLE_TICK_MS = 100;
 const RESCUE_NOTE_MS = 9000;
 const SYNC_EVERY_MS = 5 * 60000;
 const CHECK_STREAM_MS = 10000;
+const HELPER_NEVER_STARTED_MS = 45000; // the provider, then FFmpeg, then the TV
+const REOPEN_AFTER_MS = 300;
 
 const PLAY_ICON = '<svg viewBox="0 0 24 24" width="36" height="36"><path d="M7 4.5v15l12.5-7.5z" fill="currentColor"/></svg>';
 const PAUSE_ICON = '<svg viewBox="0 0 24 24" width="36" height="36"><rect x="5.5" y="4" width="4.5" height="16" rx="1.2" fill="currentColor"/><rect x="14" y="4" width="4.5" height="16" rx="1.2" fill="currentColor"/></svg>';
@@ -123,6 +127,16 @@ export class PlayerScreen implements Screen {
   private seekError = "";
   private seeker: SeekRunner | null = null;
   private pendingSeekSecs = 0; // a resume the player refused before playing
+  // Through the helper on a computer at home (data/transcoder.ts): its stream starts
+  // where asked, so the TV's time is added to offsetMs, and a jump reopens the stream.
+  private route: "direct" | "helper" = "direct";
+  private helper: HelperInfo | null = null;
+  private helperVideo: VideoMode = "copy";
+  private convertTried = false;
+  private helperTried = false; // this title has already moved to the helper
+  private helperFromStart = false; // it went to the helper without trying on its own
+  private offsetMs = 0;
+  private jumpTo = -1; // reopen the helper's stream here
 
   private controlsVisible = false;
   private row: Row = "bar";
@@ -270,6 +284,14 @@ export class PlayerScreen implements Screen {
     this.seekBroken = false;
     this.seekError = "";
     this.pendingSeekSecs = 0;
+    this.route = "direct";
+    this.helper = null;
+    this.helperVideo = "copy";
+    this.convertTried = false;
+    this.helperTried = false;
+    this.helperFromStart = false;
+    this.offsetMs = 0;
+    this.jumpTo = -1;
     setText(this.noteEl, "");
     this.resetSubtitles();
 
@@ -278,9 +300,14 @@ export class PlayerScreen implements Screen {
     setText(this.titleEl, w.kind === "movie" ? item.title : (w.seriesName || "") + "   ·   " + episodeCode(item.seasonNo, item.episodeNo) + "  " + item.title);
     this.buildButtons();
 
-    // Files this TV can't play would only fail after a wait, so explain up front.
+    // Files this TV can't play go through the helper on your computer when there is
+    // one; without it they would only fail after a wait, so explain up front.
     this.check = playCheck(factsOf(item));
-    if (this.check.verdict === "blocked" && !this.tryAnyway) {
+    if (helperOn() && (this.check.verdict === "blocked" || needsHelper(factsOf(item).key))) {
+      this.route = "helper";
+      this.helperTried = true;
+      this.helperFromStart = true;
+    } else if (this.check.verdict === "blocked" && !this.tryAnyway) {
       this.showUnplayable(this.check);
       return;
     }
@@ -314,7 +341,9 @@ export class PlayerScreen implements Screen {
   private loadStream(): void {
     const api = this.app.api;
     if (!api) return this.close();
+    if (this.route === "helper") return this.loadHelperStream();
     const token = ++this.streamToken;
+    this.offsetMs = 0;
     this.seeker = this.newSeeker();
     const item = this.item;
     const ext = (item.ext || "mp4").toLowerCase();
@@ -351,6 +380,92 @@ export class PlayerScreen implements Screen {
       });
   }
 
+  // The helper's stream: first what the file holds (once per title), then the stream
+  // from where to start. The picture is repackaged when the TV may play it (or did
+  // before), and converted otherwise.
+  private loadHelperStream(): void {
+    const token = ++this.streamToken;
+    this.seeker = null;
+    this.show(this.spinnerEl, true);
+    const item = this.item;
+    if (this.helper) return this.openHelper(token);
+    log("helper: asking about", factsOf(item).key);
+    helperInfo(item).then(
+      (info) => {
+        if (token !== this.streamToken || this.closing) return;
+        this.helper = info;
+        if (info.duration > 0) this.durationMs = info.duration * 1000;
+        const learned = learnedMode(info.videoCodec);
+        this.helperVideo = info.videoPlan === "convert" ? "convert" : info.videoPlan === "copy" ? "copy" : learned || "copy";
+        if (this.helperVideo === "convert") this.convertTried = true;
+        log("helper:", info.videoCodec || "no picture", "->", this.helperVideo, "sound", info.audio.map((a) => a.codec + ":" + a.plan).join(","), "duration", info.duration);
+        this.openHelper(token);
+      },
+      (err: Error) => {
+        if (token === this.streamToken) this.handleError("HELPER: " + err.message);
+      },
+    );
+  }
+
+  private openHelper(token: number): void {
+    const item = this.item;
+    const from = this.jumpTo >= 0 ? this.jumpTo : resumeFrom(this.startSecs);
+    this.jumpTo = -1;
+    this.offsetMs = from * 1000;
+    this.positionMs = from * 1000;
+    const helper = this.helper;
+    const uhd = !!helper && helper.width > 1920 && this.helperVideo === "copy";
+    log("play via helper", factsOf(item).key, "from", from, this.helperVideo, "attempt", this.attempt + 1);
+    this.player
+      .open(helperStreamUrl(item, from, this.helperVideo), this.events(token), { uhd })
+      .then(() => {
+        if (token !== this.streamToken) return;
+        this.stallTimer = window.setTimeout(() => {
+          if (token === this.streamToken && !this.started) this.handleError("NO_PROGRESS (it opened but never started)");
+        }, HELPER_NEVER_STARTED_MS);
+        this.resume();
+      })
+      .catch((err: Error) => {
+        if (token === this.streamToken) this.handleError(errorLabel(err.name, err.message));
+      });
+  }
+
+  // Moves this title to the helper, from where it got to.
+  private switchToHelper(reason: string): void {
+    if (this.closing || this.route === "helper") return;
+    log("helper: switching,", reason);
+    this.route = "helper";
+    this.helperTried = true;
+    if (this.started) this.startSecs = Math.floor(this.positionMs / 1000);
+    this.started = false;
+    this.firstTimeMs = -1;
+    this.attempt = 0;
+    // The helper's stream numbers its tracks afresh, and has no subtitle tracks.
+    this.tracksApplied = false;
+    this.chosenAudio = "";
+    window.clearTimeout(this.stallTimer);
+    this.stopStream();
+    this.clearSubtitle();
+    this.show(this.errorEl, false);
+    this.show(this.spinnerEl, true);
+    window.clearTimeout(this.retryTimer);
+    this.retryTimer = window.setTimeout(() => this.loadStream(), RETRY_AFTER_MS);
+  }
+
+  // A jump through the helper: its stream starts again at the new time.
+  private reopenAt(targetSecs: number): void {
+    this.jumpTo = Math.max(0, Math.floor(targetSecs));
+    this.startSecs = this.jumpTo;
+    this.started = false;
+    this.firstTimeMs = -1;
+    window.clearTimeout(this.stallTimer);
+    this.stopStream();
+    this.clearSubtitle();
+    this.show(this.spinnerEl, true);
+    window.clearTimeout(this.retryTimer);
+    this.retryTimer = window.setTimeout(() => this.loadStream(), REOPEN_AFTER_MS);
+  }
+
   // Closes the stream; anything it still reports afterwards is ignored.
   private stopStream(): void {
     this.streamToken++;
@@ -370,7 +485,7 @@ export class PlayerScreen implements Screen {
   }
 
   private onTime(ms: number): void {
-    this.positionMs = ms;
+    this.positionMs = this.offsetMs + ms;
     this.timeAt = Date.now();
     if (this.firstTimeMs < 0 && ms > 0) {
       this.firstTimeMs = ms;
@@ -378,7 +493,7 @@ export class PlayerScreen implements Screen {
     }
     // Only real progress counts as playing, not just opening (a Roku lesson).
     if (!this.started && this.firstTimeMs >= 0 && ms - this.firstTimeMs >= 1000) this.onStarted();
-    if (this.started && dueForSave(Math.floor(ms / 1000), this.lastSavedSecs)) this.saveProgress();
+    if (this.started && dueForSave(Math.floor(this.positionMs / 1000), this.lastSavedSecs)) this.saveProgress();
     // After a good stretch, a new failure gets its own retry.
     if (this.attempt > 0 && this.started && ms - this.firstTimeMs > 60000) {
       this.attempt = 0;
@@ -391,9 +506,16 @@ export class PlayerScreen implements Screen {
     this.started = true;
     window.clearTimeout(this.stallTimer);
     this.show(this.spinnerEl, false);
-    const total = this.player.durationMs();
-    if (total > 0) this.durationMs = total;
-    learnResult(factsOf(this.item), true, "");
+    if (this.route === "helper") {
+      // The helper's stream has no fixed length, so its duration comes from the file.
+      if (this.helper && this.helper.videoPlan === "try") learnMode(this.helper.videoCodec, this.helperVideo);
+      // It plays this way, so a later failure (after a jump, say) isn't the picture's fault.
+      this.convertTried = true;
+    } else {
+      const total = this.player.durationMs();
+      if (total > 0) this.durationMs = total;
+      learnResult(factsOf(this.item), true, "");
+    }
     this.applyTracks();
     if (this.pendingSeekSecs > 0) {
       const target = this.pendingSeekSecs;
@@ -430,6 +552,11 @@ export class PlayerScreen implements Screen {
   private onEnded(): void {
     // An error can be followed by "ended"; only a stream that really played counts.
     if (this.failed || !this.started) return;
+    // The helper's stream also ends when the provider's connection drops.
+    if (this.route === "helper" && this.durationMs > 0 && this.positionMs < this.durationMs - 60000) {
+      this.handleError("HELPER: the stream from your computer ended early");
+      return;
+    }
     this.applyFinished();
     this.stopStream(); // frees the provider's one connection for the next episode
     if (hasNext(this.watching, this.index)) this.showUpNext();
@@ -441,11 +568,22 @@ export class PlayerScreen implements Screen {
   private handleError(label: string): void {
     if (this.failed || this.closing) return;
     this.errors.push(label);
-    logError("playback error:", label);
+    logError("playback error:", label, "(" + this.route + ")");
     window.clearTimeout(this.stallTimer);
-    if (!this.started) learnResult(factsOf(this.item), false, label);
+    if (!this.started && this.route === "direct") learnResult(factsOf(this.item), false, label);
     this.stopStream();
     this.clearSubtitle();
+    // The TV refused the repackaged picture: convert it instead, and remember that.
+    const helper = this.helper;
+    if (this.route === "helper" && !this.started && helper && this.helperVideo === "copy" && helper.videoPlan === "try" && !this.convertTried) {
+      this.convertTried = true;
+      this.helperVideo = "convert";
+      learnMode(helper.videoCodec, "convert");
+      log("helper: the TV refused the picture as it is; converting it");
+      this.show(this.spinnerEl, true);
+      this.retryTimer = window.setTimeout(() => this.loadStream(), RETRY_AFTER_MS);
+      return;
+    }
     if (this.attempt === 0) {
       this.attempt = 1;
       if (this.started) this.startSecs = Math.floor(this.positionMs / 1000);
@@ -453,6 +591,11 @@ export class PlayerScreen implements Screen {
       this.firstTimeMs = -1;
       this.show(this.spinnerEl, true);
       this.retryTimer = window.setTimeout(() => this.loadStream(), RETRY_AFTER_MS);
+      return;
+    }
+    // It didn't play on its own: try it through the helper on your computer.
+    if (this.route === "direct" && helperOn() && !this.helperTried) {
+      this.switchToHelper("it didn't play on its own");
       return;
     }
     this.failed = true;
@@ -466,6 +609,13 @@ export class PlayerScreen implements Screen {
     setText(this.errorHint, "OK to try again   ·   Back to return");
     this.show(this.errorEl, true);
     this.checkStream();
+    // The TV's player only says the stream failed; the helper knows why.
+    if (this.route === "helper" && (this.errors[this.errors.length - 1] || "").indexOf("HELPER: ") !== 0) {
+      const token = this.streamToken;
+      helperLastError().then((said) => {
+        if (said && token === this.streamToken && this.failed && !this.closing) setText(this.errorDetail, this.diagnosis() + "\nYour computer says: " + said);
+      });
+    }
   }
 
   // Asks the server for the start of the stream, to say whether it refused it (a trial
@@ -494,9 +644,14 @@ export class PlayerScreen implements Screen {
   // What went wrong, what the file is, and whether this TV plays files like it.
   private diagnosis(): string {
     const item = this.item;
-    const lines = ["Samsung's player says: " + this.errors[this.errors.length - 1]];
-    if (this.errors.length > 1) lines.push("Tried twice, a moment apart.");
+    const last = this.errors[this.errors.length - 1] || "";
+    const lines = [last.indexOf("HELPER: ") === 0 ? last.slice(8) : "Samsung's player says: " + last];
+    const tries = this.errors.length === 2 ? "twice" : this.errors.length + " times";
+    if (this.helperFromStart) lines.push("Tried " + tries + " through the helper on your computer.");
+    else if (this.helperTried) lines.push("Tried " + tries + ", the last through the helper on your computer.");
+    else if (this.errors.length > 1) lines.push("Tried " + tries + ", a moment apart.");
     lines.push(fileLine(item));
+    if (this.route === "helper") lines.push(this.helperLine());
     const check = this.check;
     if (check && check.verdict === "blocked") lines.push(check.reason);
     else if (item.videoCodec) lines.push("This TV normally plays files like this, so the stream itself is the likely problem.");
@@ -507,6 +662,15 @@ export class PlayerScreen implements Screen {
       lines.push("Stream: " + redact(streamUrl(api.creds, item.kind === "episode" ? "series" : "movie", item.itemId, ext)));
     }
     return lines.join("\n");
+  }
+
+  // What the helper was doing, for the error screen.
+  private helperLine(): string {
+    const helper = this.helper;
+    if (!helper) return "Through the helper on your computer, which didn't describe the file.";
+    const picture = this.helperVideo === "convert" ? "picture converted to H.264" : "picture kept as it is";
+    const changed = helper.audio.filter((a) => a.plan !== "copy").map((a) => codecLabel(a.codec) + " sound converted");
+    return "Through the helper on your computer: " + [picture].concat(changed).join(", ") + ".";
   }
 
   private showUnplayable(check: PlayCheck): void {
@@ -687,7 +851,8 @@ export class PlayerScreen implements Screen {
     this.timeAt = Date.now();
     this.renderBar();
     this.restartHideTimer();
-    if (this.seeker) this.seeker.jump(targetSecs * 1000);
+    if (this.route === "helper") this.reopenAt(targetSecs);
+    else if (this.seeker) this.seeker.jump(targetSecs * 1000);
   }
 
   // Jumps for this stream go through here one at a time (core/seek.ts SeekRunner).
@@ -1014,7 +1179,14 @@ export class PlayerScreen implements Screen {
       if (audio && audio !== this.currentAudio) this.selectAudio(audio);
       // A track this TV can't decode (DTS, usually) would play silently.
       const rescue = audioRescue(this.audioOpts, this.currentAudio);
-      if (rescue) {
+      if (rescue && !rescue.id && this.route === "direct" && helperOn()) {
+        // No sound this TV can play: the helper converts it, now and next time.
+        const current = this.audioOpts.filter((o) => o.id === this.currentAudio)[0];
+        const format = current && current.format ? codecLabel(current.format) : "this";
+        rememberNeedsHelper(factsOf(this.item).key);
+        this.note("This file's sound is " + format + ", which this TV can't play, so your computer is converting it.", RESCUE_NOTE_MS);
+        window.setTimeout(() => this.switchToHelper("its sound can't be played"), 0);
+      } else if (rescue) {
         log("audio rescue:", rescue.note);
         if (rescue.id) this.selectAudio(rescue.id);
         this.note(rescue.note, RESCUE_NOTE_MS);

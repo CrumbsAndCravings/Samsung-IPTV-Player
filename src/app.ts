@@ -3,7 +3,7 @@
 // over it and take the keys while open.
 
 import { log } from "./core/log";
-import { syncConfig } from "./core/personal";
+import { syncConfig, transcoderConfig } from "./core/personal";
 import { credsSecrets, setSecrets } from "./core/redact";
 import { clearAccount, loadCreds, readOsFields } from "./core/storage";
 import type { Creds } from "./core/utils";
@@ -57,6 +57,8 @@ export class App {
     secrets.push({ value: os.apiKey, label: "<api key>" }, { value: os.username, label: "<os user>" }, { value: os.password, label: "<os password>" });
     const sync = syncConfig();
     if (sync) secrets.push({ value: sync.key, label: "<sync key>" });
+    const helper = transcoderConfig();
+    if (helper) secrets.push({ value: helper.key, label: "<helper key>" });
     setSecrets(secrets);
   }
 

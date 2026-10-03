@@ -49,3 +49,35 @@ describe("a personal build", () => {
     expect(progressList().length).toBe(1);
   });
 });
+
+describe("the helper on a computer at home", () => {
+  beforeEach(() => useStore(new MemoryStore()));
+  afterEach(() => usePersonal(null));
+
+  it("is set up by personal.json", async () => {
+    const { helperOn, transcoderConfig } = await import("../src/core/personal");
+    expect(helperOn()).toBe(false);
+    usePersonal({ transcoder: { url: "http://192.168.1.50:8090/", key: "abc" } });
+    expect(transcoderConfig()).toEqual({ url: "http://192.168.1.50:8090", key: "abc" });
+    expect(helperOn()).toBe(true);
+    usePersonal({ transcoder: { url: "http://192.168.1.50:8090" } });
+    expect(helperOn()).toBe(false);
+  });
+
+  it("is asked for a title from a time, and remembers what worked", async () => {
+    const { helperStreamUrl, learnedMode, learnMode, needsHelper, rememberNeedsHelper } = await import("../src/data/transcoder");
+    const { makeItem } = await import("../src/core/items");
+    usePersonal({ transcoder: { url: "http://192.168.1.50:8090", key: "k y" } });
+    const episode = makeItem({ kind: "episode", itemId: "77", ext: "AVI" });
+    expect(helperStreamUrl(episode, 754.6, "convert")).toBe("http://192.168.1.50:8090/v1/stream?key=k%20y&kind=series&id=77&ext=avi&start=754&video=convert");
+    expect(learnedMode("mpeg4")).toBe("");
+    learnMode("mpeg4", "copy");
+    expect(learnedMode("mpeg4")).toBe("copy");
+    expect(needsHelper("m:1")).toBe(false);
+    rememberNeedsHelper("m:1");
+    rememberNeedsHelper("m:2");
+    rememberNeedsHelper("m:1");
+    expect(needsHelper("m:1")).toBe(true);
+    expect(needsHelper("m:2")).toBe(true);
+  });
+});

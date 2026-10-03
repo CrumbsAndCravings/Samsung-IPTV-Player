@@ -5,6 +5,7 @@
 // while a row loads. Category and See all cards are the name on a tinted card.
 
 import { playCheck } from "../core/compat";
+import { helperOn } from "../core/personal";
 import type { Item } from "../core/items";
 import { h } from "./dom";
 
@@ -17,10 +18,11 @@ export function itemKey(item: Item): string {
   return (item.kind === "episode" ? "e:" : "m:") + item.itemId;
 }
 
-// Movies can be judged from the list; series only once their episodes are known.
+// Movies can be judged from the list; series only once their episodes are known. With
+// the helper on your computer, everything plays (it converts what the TV can't).
 export function isBlocked(item: Item): boolean {
   if (item.kind !== "movie" && item.kind !== "episode") return false;
-  if (item.placeholder) return false;
+  if (item.placeholder || helperOn()) return false;
   return playCheck({ key: itemKey(item), ext: item.ext, videoCodec: item.videoCodec, videoProfile: item.videoProfile, audioCodec: item.audioCodec }).verdict === "blocked";
 }
 

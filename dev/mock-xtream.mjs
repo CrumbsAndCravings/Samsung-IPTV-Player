@@ -332,22 +332,30 @@ export function playerApi(params) {
   }
 }
 
-function sampleMedia() {
+// dev/media/sample.<ext> for the file type asked for (sample.avi, to try the helper in
+// helper/), otherwise sample.mp4 or sample.webm.
+function sampleMedia(ext) {
   if (!existsSync(MEDIA)) return null;
-  const file = readdirSync(MEDIA).find((f) => /^sample\.(mp4|webm)$/.test(f));
+  const files = readdirSync(MEDIA);
+  const own = "sample." + ext;
+  if (ext && files.indexOf(own) >= 0) return path.join(MEDIA, own);
+  const file = files.find((f) => /^sample\.(mp4|webm)$/.test(f));
   return file ? path.join(MEDIA, file) : null;
 }
 
-// Streams play dev/media/sample.mp4 (or .webm) when it exists, with Range support.
+const TYPES = { webm: "video/webm", avi: "video/x-msvideo", mkv: "video/x-matroska" };
+
+// Streams play a sample from dev/media when there is one, with Range support.
 function serveStream(req, res) {
-  const file = sampleMedia();
+  const ext = (/\.([a-z0-9]+)$/i.exec(new URL(req.url, "http://localhost").pathname) || ["", ""])[1].toLowerCase();
+  const file = sampleMedia(ext);
   if (!file) {
     res.writeHead(404, { "Content-Type": "text/plain" });
     res.end("No sample video. Put one at dev/media/sample.mp4.");
     return;
   }
   const size = statSync(file).size;
-  const type = file.endsWith(".webm") ? "video/webm" : "video/mp4";
+  const type = TYPES[path.extname(file).slice(1)] || "video/mp4";
   const range = /bytes=(\d*)-(\d*)/.exec(req.headers.range || "");
   if (!range) {
     res.writeHead(200, { "Content-Type": type, "Content-Length": size, "Accept-Ranges": "bytes" });

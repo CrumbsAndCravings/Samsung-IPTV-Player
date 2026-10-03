@@ -28,6 +28,7 @@ export function readPersonal({ dev = false } = {}) {
   if (data.server && data.username && data.password) parts.push("a login");
   if (Array.isArray(data.languages)) parts.push("languages " + data.languages.join(", "));
   if (data.sync && data.sync.url && data.sync.key) parts.push("sync");
+  if (data.transcoder && data.transcoder.url && data.transcoder.key) parts.push("the helper at " + data.transcoder.url);
   console.log(`personal build: ${path.basename(file)} with ${parts.join(", ") || "nothing usable"}`);
   return data;
 }
