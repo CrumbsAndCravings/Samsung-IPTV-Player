@@ -46,6 +46,9 @@ export function vodArgs(options: {
   seconds?: number;
 }): string[];
 export function mergeVtt(texts: string[]): string;
+export function wantsGzip(header: string | undefined): boolean;
+export function compressible(type: string | undefined): boolean;
+export function hashedAsset(name: string): boolean;
 export function playlistState(text: string): { segments: number; ended: boolean };
 export function sessionFile(name: string): boolean;
 export function sessionFileType(name: string): string;

@@ -45,11 +45,15 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+import { gzip as gzipCallback } from "node:zlib";
 import {
   ENCODERS,
   MAX_SUBTITLES,
   audioPlan,
+  compressible,
   ffmpegArgs,
+  hashedAsset,
   hlsArgs,
   hlsVideoPlan,
   mergeVtt,
@@ -67,6 +71,7 @@ import {
   vodPieces,
   vodPlaylist,
   VOD_SECONDS,
+  wantsGzip,
   xtreamQuery,
   fetchAllowed,
 } from "./plan.mjs";
@@ -348,6 +353,23 @@ function sendJson(res, code, body) {
   res.end(JSON.stringify(body));
 }
 
+const gzip = promisify(gzipCallback);
+
+// A whole answer, gzipped when it's text the phone takes that way.
+async function sendBody(req, res, code, headers, body) {
+  const type = headers["Content-Type"] || headers["content-type"];
+  if (body.length > 1024 && compressible(type)) {
+    headers.Vary = "Accept-Encoding";
+    if (wantsGzip(req.headers["accept-encoding"])) {
+      body = await gzip(body);
+      headers["Content-Encoding"] = "gzip";
+    }
+  }
+  headers["Content-Length"] = body.length;
+  res.writeHead(code, headers);
+  res.end(body);
+}
+
 function keyMatches(given) {
   const a = Buffer.from(String(given || ""));
   const b = Buffer.from(key);
@@ -480,25 +502,64 @@ function sendHelperError(res, code, message) {
   res.end(JSON.stringify({ error: redact(message) }));
 }
 
-async function xtream(res, url) {
-  const target = xtreamQuery(login, url.searchParams);
-  if (!target) return sendJson(res, 400, { error: "Odd request." });
-  let answer;
-  let body;
-  try {
-    answer = await fetch(target, { headers: { "User-Agent": fetchAgent, Accept: "application/json" }, signal: AbortSignal.timeout(API_TIMEOUT_MS), redirect: "follow" });
-    body = Buffer.from(await answer.arrayBuffer());
-  } catch (err) {
-    return sendHelperError(res, 504, providerFailure(err));
+// The provider's lists, kept for a few minutes: the phone asks for some twice (Home, then
+// Search's library), and a list kept here skips the provider's own wait. A request
+// already on its way is shared, not sent again.
+const LIST_KEEP_MS = 10 * 60000;
+const LIST_KEEP_BYTES = 200 * 1024 * 1024;
+const lists = new Map(); // provider address -> { at, status, headers, body }
+const listsAsked = new Map(); // provider address -> its answer, on its way
+let listBytes = 0;
+
+function keepList(target, answer) {
+  // An empty answer may be the provider having a bad moment; it isn't kept.
+  if (answer.status !== 200 || answer.body.length <= 2) return;
+  const old = lists.get(target);
+  if (old) listBytes -= old.body.length;
+  lists.delete(target);
+  lists.set(target, answer);
+  listBytes += answer.body.length;
+  for (const [key, kept] of lists) {
+    if (listBytes <= LIST_KEEP_BYTES) break;
+    lists.delete(key);
+    listBytes -= kept.body.length;
   }
-  const headers = { "Cache-Control": "no-store", ...CORS };
+}
+
+async function askProvider(target) {
+  const answer = await fetch(target, { headers: { "User-Agent": fetchAgent, Accept: "application/json" }, signal: AbortSignal.timeout(API_TIMEOUT_MS), redirect: "follow" });
+  const body = Buffer.from(await answer.arrayBuffer());
+  const headers = {};
   for (const name of PASSED_HEADERS) {
     const value = answer.headers.get(name);
     if (value) headers[name] = value;
   }
   if (!headers["content-type"]) headers["content-type"] = "application/json";
-  res.writeHead(answer.status, headers);
-  res.end(body);
+  return { at: Date.now(), status: answer.status, headers, body };
+}
+
+async function xtream(req, res, url) {
+  const target = xtreamQuery(login, url.searchParams);
+  if (!target) return sendJson(res, 400, { error: "Odd request." });
+  let answer = lists.get(target);
+  if (!answer || Date.now() - answer.at > LIST_KEEP_MS) {
+    let asked = listsAsked.get(target);
+    if (!asked) {
+      asked = askProvider(target);
+      listsAsked.set(target, asked);
+      asked.then(
+        (got) => keepList(target, got),
+        () => undefined,
+      );
+      asked.finally(() => listsAsked.delete(target)).catch(() => undefined);
+    }
+    try {
+      answer = await asked;
+    } catch (err) {
+      return sendHelperError(res, 504, providerFailure(err));
+    }
+  }
+  await sendBody(req, res, answer.status, { "Cache-Control": "no-store", ...CORS, ...answer.headers }, answer.body);
 }
 
 const FILE_TYPES = { mp4: "video/mp4", m4v: "video/x-m4v", mov: "video/quicktime", mkv: "video/x-matroska", avi: "video/x-msvideo", ts: "video/mp2t" };
@@ -892,35 +953,50 @@ async function startVod(q) {
     if (found >= 0) audioTrack = found;
   }
   const start = Math.min(q.start, Math.max(0, described.duration - 1));
-  const id = randomBytes(16).toString("hex");
-  const session = {
-    id,
-    dir: path.join(HLS_ROOT, id),
-    vod: true,
-    q,
-    described,
-    audioTrack,
-    start,
-    count: vodPieces(described.duration),
-    done: new Map(), // piece number -> the file holding it
-    run: null,
-    runs: 0,
-    lastUsed: Date.now(),
-    opened: false,
-    playing: false,
-  };
-  mkdirSync(session.dir, { recursive: true });
-  sessions.set(id, session);
+  // Back to a film played a moment ago (resuming after leaving the player, another sound
+  // track and back): the pieces made then are still good, so its session carries on.
+  const same = [q.kind, q.id, q.ext, audioTrack, q.height, q.subs ? 1 : 0].join(":");
+  let session = [...sessions.values()].find((s) => s.vod && s.same === same);
+  const kept = !!session;
+  if (session) {
+    session.start = start;
+    session.lastUsed = Date.now();
+    session.opened = false;
+    session.playing = false;
+  } else {
+    const id = randomBytes(16).toString("hex");
+    session = {
+      id,
+      same,
+      dir: path.join(HLS_ROOT, id),
+      vod: true,
+      q,
+      described,
+      audioTrack,
+      start,
+      count: vodPieces(described.duration),
+      done: new Map(), // piece number -> the file holding it
+      run: null,
+      runs: 0,
+      lastUsed: Date.now(),
+      opened: false,
+      playing: false,
+    };
+    mkdirSync(session.dir, { recursive: true });
+    sessions.set(id, session);
+  }
+  const id = session.id;
   newestSession = id;
   const sound = described.audio[audioTrack];
   const soundText = !sound ? "no sound" : sound.codec === "aac" && sound.channels <= 2 ? "aac kept as AAC" : sound.codec + " to AAC";
-  say(`Playing ${q.kind} ${q.id}.${q.ext} for the phone from ${clock(start)}: picture ${described.video.codec} converted to H.264 with ${ENCODER_NAMES[encoder]}; sound ${soundText}`);
+  const keptText = kept ? ` (${session.done.size} pieces kept from before)` : "";
+  say(`Playing ${q.kind} ${q.id}.${q.ext} for the phone from ${clock(start)}: picture ${described.video.codec} converted to H.264 with ${ENCODER_NAMES[encoder]}; sound ${soundText}${keptText}`);
   const first = Math.floor(start / VOD_SECONDS);
   const tally = startTally();
   try {
     await pieceFile(session, first, { quiet: true });
   } catch (err) {
-    dropSession(session);
+    if (!kept) dropSession(session);
     throw err;
   }
   say(`Ready to play after ${((Date.now() - tally.at) / 1000).toFixed(1)} s (${tallySince(tally)}).`);
@@ -1163,7 +1239,10 @@ const NO_APP_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <p>On the computer, put the <code>web-iptv-player</code> repo next to the <code>Samsung-IPTV-Player</code> folder, and in it run:</p>
 <p><code>npm install</code><br><code>npm run build</code></p><p>Then reload this page; the helper needn't restart. (Or set <code>"webApp"</code> under <code>"transcoder"</code> in personal.json to the app's <code>dist</code> folder.)</p></body></html>`;
 
-function serveApp(res, pathname) {
+// The app's files, gzipped once per version.
+const zippedApp = new Map(); // file -> { tag, body }
+
+async function serveApp(req, res, pathname) {
   if (!webApp) {
     webApp = findWebApp();
     if (webApp) console.log("Found the iPhone app in " + webApp);
@@ -1184,8 +1263,26 @@ function serveApp(res, pathname) {
     res.writeHead(404, { "Content-Type": "text/plain" });
     return res.end("Not found");
   }
-  // Small files on the home network: always check for a newer build.
-  res.writeHead(200, { "Content-Type": APP_TYPES[path.extname(file).toLowerCase()] || "application/octet-stream", "Cache-Control": "no-cache" });
+  // Files named with their hash never change; the rest are checked against the phone's
+  // copy each time (an answer of a few bytes when it's the same).
+  const stat = statSync(file);
+  const tag = 'W/"' + stat.size.toString(16) + "-" + Math.floor(stat.mtimeMs).toString(16) + '"';
+  const type = APP_TYPES[path.extname(file).toLowerCase()] || "application/octet-stream";
+  const headers = { "Content-Type": type, "Cache-Control": hashedAsset(path.basename(file)) ? "public, max-age=31536000, immutable" : "no-cache", ETag: tag };
+  if (req.headers["if-none-match"] === tag) {
+    res.writeHead(304, headers);
+    return res.end();
+  }
+  if (compressible(type) && wantsGzip(req.headers["accept-encoding"])) {
+    let zipped = zippedApp.get(file);
+    if (!zipped || zipped.tag !== tag) {
+      zipped = { tag, body: await gzip(readFileSync(file)) };
+      zippedApp.set(file, zipped);
+    }
+    res.writeHead(200, { ...headers, "Content-Encoding": "gzip", Vary: "Accept-Encoding", "Content-Length": zipped.body.length });
+    return res.end(zipped.body);
+  }
+  res.writeHead(200, { ...headers, "Content-Length": stat.size });
   createReadStream(file).pipe(res);
 }
 
@@ -1229,13 +1326,13 @@ const server = http.createServer((req, res) => {
     res.writeHead(301, { Location: "/app/" + url.search });
     return res.end();
   }
-  if (pathname.startsWith("/app/")) return serveApp(res, pathname);
+  if (pathname.startsWith("/app/")) return serveApp(req, res, pathname).catch((err) => failed(res, err));
   const piece = /^\/v1\/hls\/s\/([0-9a-f]{32})\/([^/]+)$/.exec(pathname);
   if (piece) return serveSessionFile(res, piece[1], piece[2]).catch((err) => failed(res, err));
   if (!keyMatches(url.searchParams.get("key"))) return sendHelperError(res, 401, "Wrong or missing key.");
   if (pathname === "/v1/last-error") return sendJson(res, 200, lastError);
   if (pathname === "/v1/app") return sendJson(res, 200, appSettings());
-  if (pathname === "/v1/xtream") return xtream(res, url).catch((err) => failed(res, err));
+  if (pathname === "/v1/xtream") return xtream(req, res, url).catch((err) => failed(res, err));
   if (pathname === "/v1/fetch") return passFetch(req, res, url).catch((err) => failed(res, err));
   if (pathname === "/v1/stop") {
     stopFor(/^[0-9a-f]{32}$/.test(url.searchParams.get("session") || "") ? url.searchParams.get("session") : "");
@@ -1272,7 +1369,12 @@ const server = http.createServer((req, res) => {
     return (q.vod ? startVod(q) : startHls(q)).then(
       (started) => {
         const session = sessions.get(started.session);
-        if (gone && session) return dropSession(session);
+        if (gone && session) {
+          // A whole-film session keeps its pieces for when the phone comes back.
+          if (session.vod) stopVodRun(session);
+          else dropSession(session);
+          return;
+        }
         sendJson(res, 200, started);
       },
       (err) => failed(res, err),

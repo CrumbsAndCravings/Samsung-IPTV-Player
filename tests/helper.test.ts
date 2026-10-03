@@ -3,8 +3,10 @@
 import { describe, expect, it } from "vitest";
 import {
   audioPlan,
+  compressible,
   fetchAllowed,
   ffmpegArgs,
+  hashedAsset,
   hlsArgs,
   hlsVideoPlan,
   mergeVtt,
@@ -21,6 +23,7 @@ import {
   vodArgs,
   vodPieces,
   vodPlaylist,
+  wantsGzip,
   xtreamQuery,
 } from "../helper/plan.mjs";
 
@@ -195,6 +198,20 @@ describe("the helper", () => {
       "WEBVTT\n\n00:00:20.006 --> 00:00:24.006\nTwenty\nseconds in.\n\n00:01:10.006 --> 00:01:14.006\nSeventy seconds in.\n\n00:02:00.000 --> 00:02:01.000\nLater.\n\n",
     );
     expect(mergeVtt([])).toBe("WEBVTT\n\n");
+  });
+
+  it("sends the phone less: text gzipped, built files kept", () => {
+    expect(wantsGzip("gzip, deflate, br")).toBe(true);
+    expect(wantsGzip("br, gzip;q=0")).toBe(false);
+    expect(wantsGzip("gzip;q=0.5")).toBe(true);
+    expect(wantsGzip("deflate")).toBe(false);
+    expect(wantsGzip(undefined)).toBe(false);
+    expect(compressible("application/json")).toBe(true);
+    expect(compressible("text/javascript; charset=utf-8")).toBe(true);
+    expect(compressible("font/ttf")).toBe(false);
+    expect(compressible("video/mp2t")).toBe(false);
+    expect(hashedAsset("Nunito-SemiBold-YSI2M6QZ.ttf")).toBe(true);
+    expect(hashedAsset("app.js")).toBe(false);
   });
 
   it("asks the provider only what the app needs", () => {

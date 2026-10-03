@@ -319,6 +319,28 @@ function vttSeconds(text) {
   return parts.reduce((total, part) => total * 60 + part, 0) || 0;
 }
 
+// --- Sending less ------------------------------------------------------------------------
+//
+// Over Tailscale on 5G every byte counts: text (the app, the provider's lists, which are
+// JSON) is sent gzipped when the phone takes it, and the app's files are checked rather
+// than sent again.
+
+// Whether an Accept-Encoding header takes gzip.
+export function wantsGzip(header) {
+  return /(^|,)\s*gzip\s*(;\s*q\s*=\s*(0*\.?0*[1-9]|1)[\d.]*)?\s*(,|$)/i.test(String(header || ""));
+}
+
+// Whether a Content-Type is text worth compressing (pictures, fonts and video already are).
+export function compressible(type) {
+  return /^(text\/|application\/(json|javascript|manifest\+json|vnd\.apple\.mpegurl)|image\/svg)/i.test(String(type || ""));
+}
+
+// The build's files named with their content's hash ("Nunito-Bold-AB12CD34.ttf") never
+// change, so the phone may keep them for good.
+export function hashedAsset(name) {
+  return /-[A-Z0-9]{8}\.[a-z0-9]+$/.test(name);
+}
+
 // OpenSubtitles' moviehash: the file's size plus the 64-bit little-endian words of its
 // first and last 64 KB, wrapping at 64 bits; 16 hex digits.
 export function movieHash(head, tail, size) {
