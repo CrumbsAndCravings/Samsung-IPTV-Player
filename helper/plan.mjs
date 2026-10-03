@@ -188,11 +188,21 @@ export function hlsArgs({ url, start, video, encoder, probe, dir, audioTrack = 0
   return args;
 }
 
-// The playlist as FFmpeg writes it, made ready for the player: start at the beginning
-// (a growing playlist otherwise starts at its end, like live TV).
+// Pieces cut where the file's own keyframes fall (the picture kept as it is) can run
+// past HLS_SECONDS; the playlist promises this much, so its promise needn't change.
+export const TARGET_SECONDS = 12;
+
+// The playlist as FFmpeg writes it, made ready for the player: start at the beginning (a
+// growing playlist otherwise starts at its end, like live TV), and keep the longest-piece
+// promise (EXT-X-TARGETDURATION) the same as the playlist grows, as Apple's players
+// expect; FFmpeg raises it whenever a longer piece arrives.
 export function playlistForPlayer(text) {
-  if (text.indexOf("#EXT-X-START:") >= 0) return text;
-  return text.replace(/^#EXTM3U[^\n]*\n/, (first) => first + "#EXT-X-START:TIME-OFFSET=0,PRECISE=YES\n");
+  let longest = 0;
+  for (const match of text.matchAll(/^#EXTINF:([\d.]+)/gm)) longest = Math.max(longest, Math.ceil(Number(match[1])));
+  const target = Math.max(TARGET_SECONDS, longest);
+  let out = text.replace(/^#EXT-X-TARGETDURATION:\d+/m, "#EXT-X-TARGETDURATION:" + target);
+  if (out.indexOf("#EXT-X-START:") < 0) out = out.replace(/^#EXTM3U[^\n]*\n/, (first) => first + "#EXT-X-START:TIME-OFFSET=0,PRECISE=YES\n");
+  return out;
 }
 
 // How many pieces a playlist lists, and whether FFmpeg has finished it.
@@ -205,7 +215,8 @@ export function sessionFile(name) {
   return /^(index\.m3u8|init\.mp4|seg\d{5}\.(?:m4s|ts)|sub\d\.vtt)$/.test(name);
 }
 
-const CONTENT_TYPES = { m3u8: "application/vnd.apple.mpegurl", mp4: "video/mp4", m4s: "video/iso.segment", ts: "video/mp2t", vtt: "text/vtt; charset=utf-8" };
+// fMP4 pieces as plain MP4, the type Apple's own tools serve them with.
+const CONTENT_TYPES = { m3u8: "application/vnd.apple.mpegurl", mp4: "video/mp4", m4s: "video/mp4", ts: "video/mp2t", vtt: "text/vtt; charset=utf-8" };
 
 export function sessionFileType(name) {
   return CONTENT_TYPES[name.slice(name.lastIndexOf(".") + 1)] || "application/octet-stream";

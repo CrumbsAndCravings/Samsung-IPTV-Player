@@ -42,7 +42,6 @@ import { createReadStream, existsSync, mkdirSync, readFileSync, rmSync, statSync
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import {
   ENCODERS,
@@ -63,6 +62,7 @@ import {
   xtreamQuery,
   fetchAllowed,
 } from "./plan.mjs";
+import { parseRange, SourceFiles } from "./source.mjs";
 
 const VERSION = "1.1";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -74,7 +74,7 @@ const FREE_SLOT_MS = 1200; // lets the provider notice the last connection close
 const INFO_TTL_MS = 6 * 3600 * 1000;
 const API_TIMEOUT_MS = 45000;
 const HLS_ROOT = path.join(os.tmpdir(), "aranplus-helper");
-const HLS_READY_SEGMENTS = 2; // pieces in the playlist before the phone is told to play
+const HLS_READY_SEGMENTS = 1; // pieces in the playlist before the phone is told to play
 const SESSION_IDLE_MS = 2 * 60000; // an older session nobody asks for any more
 const SESSION_KEEP_MS = 3 * 3600000; // the newest one, kept through long pauses
 // How the helper introduces itself when it asks the provider for lists and files
@@ -152,6 +152,45 @@ const key = String(settings.key);
 const redact = redactor(login, key);
 const ffmpegAgent = String(settings.userAgent || "").trim();
 const fetchAgent = ffmpegAgent || BROWSER_UA;
+
+// --- The provider's files ----------------------------------------------------------------
+//
+// FFmpeg reads the provider's files through the helper itself (/v1/source, helper/source.mjs),
+// which keeps the start and the end of each file and the provider's redirect, so a jump
+// costs one request to the provider instead of four or five. The window says how long
+// the provider takes to answer, the usual reason a video is slow to start.
+
+const requestTally = { count: 0, slowest: 0 };
+
+const sources = new SourceFiles({
+  fetch,
+  userAgent: fetchAgent,
+  onRequest: ({ ms }) => {
+    requestTally.count++;
+    requestTally.slowest = Math.max(requestTally.slowest, ms);
+  },
+});
+
+function sourceFile(q) {
+  return sources.file(q.kind + ":" + q.id + "." + q.ext, providerUrl(login, q.kind, q.id, q.ext));
+}
+
+// The address FFmpeg reads a file from: the helper itself, on this computer only.
+function sourceUrl(q) {
+  return "http://127.0.0.1:" + port + "/v1/source/" + q.kind + "/" + encodeURIComponent(q.id) + "." + q.ext + "?key=" + encodeURIComponent(key);
+}
+
+// "2 requests to the provider, the slowest answered in 4.1 s" since `since`.
+function tallySince(since) {
+  const count = requestTally.count - since.count;
+  if (count <= 0) return "nothing asked of the provider";
+  return count + (count === 1 ? " request" : " requests") + " to the provider, the slowest answered in " + (requestTally.slowest / 1000).toFixed(1) + " s";
+}
+
+function startTally() {
+  requestTally.slowest = 0;
+  return { count: requestTally.count, at: Date.now() };
+}
 
 function say(...parts) {
   const time = new Date().toLocaleTimeString();
@@ -261,7 +300,9 @@ async function info(q) {
   const cached = infoCache.get(cacheKey);
   if (cached && Date.now() - cached.at < INFO_TTL_MS) return cached.info;
   await takeSlot();
-  const result = await probe(providerUrl(login, q.kind, q.id, q.ext));
+  const tally = startTally();
+  const result = await probe(sourceUrl(q));
+  say(`Read what ${q.kind} ${q.id}.${q.ext} holds in ${((Date.now() - tally.at) / 1000).toFixed(1)} s (${tallySince(tally)}).`);
   const described = {
     duration: result.duration,
     video: result.video,
@@ -339,10 +380,11 @@ async function stream(req, res, q) {
   if (res.destroyed) return;
   // Pictures that can't be repackaged are converted whatever the TV asked for.
   const video = q.video === "convert" || described.videoPlan === "convert" ? "convert" : "copy";
-  const args = ffmpegArgs({ url: providerUrl(login, q.kind, q.id, q.ext), start: q.start, video, encoder, probe: described });
+  const args = ffmpegArgs({ url: sourceUrl(q), start: q.start, video, encoder, probe: described });
   await takeSlot();
   if (res.destroyed) return;
   say(`Playing ${q.kind} ${q.id}.${q.ext} from ${clock(q.start)}: ${describePlan(described, video)}`);
+  const tally = startTally();
   const child = spawn(ffmpeg.path, args, { windowsHide: true });
   active = child;
   const started = Date.now();
@@ -360,6 +402,7 @@ async function stream(req, res, q) {
   child.stdout.once("data", (chunk) => {
     sending = true;
     clearTimeout(waiting);
+    say(`Sending to the TV after ${((Date.now() - tally.at) / 1000).toFixed(1)} s (${tallySince(tally)}).`);
     // A plain stream with no length, the way IPTV servers send live video.
     res.removeHeader("Transfer-Encoding");
     res.writeHead(200, { "Content-Type": "video/mp2t", Connection: "close", "Cache-Control": "no-store", ...CORS });
@@ -447,38 +490,75 @@ async function passFile(req, res, q) {
   const abort = new AbortController();
   const run = { title, abort };
   fileRuns.add(run);
-  res.on("close", () => {
-    abort.abort();
-    fileRuns.delete(run);
-  });
-  const headers = { "User-Agent": fetchAgent, "Accept-Encoding": "identity" };
-  if (req.headers.range) headers.Range = req.headers.range;
-  let answer;
-  try {
-    answer = await fetch(providerUrl(login, q.kind, q.id, q.ext), { method: req.method === "HEAD" ? "HEAD" : "GET", headers, signal: abort.signal, redirect: "follow" });
-  } catch (err) {
-    fileRuns.delete(run);
-    if (!res.headersSent && !res.destroyed) sendHelperError(res, 504, providerFailure(err));
-    return;
-  }
-  const out = { "Cache-Control": "no-store", ...CORS };
+  res.on("close", () => fileRuns.delete(run));
   // Safari decides what a file is from its type, which providers often leave vague.
-  out["Content-Type"] = FILE_TYPES[q.ext] || answer.headers.get("content-type") || "application/octet-stream";
-  for (const name of ["content-length", "content-range", "accept-ranges", "last-modified", "etag"]) {
-    const value = answer.headers.get(name);
-    if (value) out[name] = value;
+  await serveSource(req, res, sourceFile(q), { exclusive: false, abort, type: FILE_TYPES[q.ext] || "application/octet-stream", what: q.kind + " " + q.id + "." + q.ext });
+}
+
+function writeChunk(res, chunk) {
+  if (res.destroyed) return Promise.resolve(false);
+  if (res.write(chunk)) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const done = () => {
+      res.off("drain", done);
+      res.off("close", done);
+      resolve(!res.destroyed);
+    };
+    res.once("drain", done);
+    res.once("close", done);
+  });
+}
+
+// A provider file with ranges, from what the helper keeps where it can (helper/source.mjs).
+// For FFmpeg (`exclusive`: one request to the provider at a time) and Safari's MP4s.
+async function serveSource(req, res, file, { exclusive, abort = new AbortController(), type, what }) {
+  res.on("close", () => abort.abort());
+  const asked = parseRange(req.headers.range);
+  try {
+    let start = 0;
+    let end = -1;
+    if (asked && "suffix" in asked) start = Math.max(0, (await sources.size(file, abort.signal)) - asked.suffix);
+    else if (asked) ({ start, end } = asked);
+    if (req.method === "HEAD") {
+      const size = await sources.size(file, abort.signal);
+      res.writeHead(200, { "Content-Type": type, "Content-Length": size, "Accept-Ranges": "bytes", ...CORS });
+      return res.end();
+    }
+    if (file.size > 0 && start >= file.size) {
+      res.writeHead(416, { "Content-Range": "bytes */" + file.size, ...CORS });
+      return res.end();
+    }
+    const chunks = sources.bytes(file, start, end, abort.signal, { exclusive });
+    const first = await chunks.next();
+    const size = file.size;
+    const last = end >= 0 ? Math.min(end, size - 1) : size - 1;
+    const headers = { "Content-Type": type, "Accept-Ranges": "bytes", "Cache-Control": "no-store", ...CORS };
+    if (size > 0) {
+      headers["Content-Length"] = last - start + 1;
+      if (asked) headers["Content-Range"] = "bytes " + start + "-" + last + "/" + size;
+    }
+    res.writeHead(asked && size > 0 ? 206 : 200, headers);
+    let sent = 0;
+    if (!first.done) {
+      sent += first.value.length;
+      if (!(await writeChunk(res, first.value))) return chunks.return();
+    }
+    for await (const chunk of chunks) {
+      sent += chunk.length;
+      if (!(await writeChunk(res, chunk))) break;
+    }
+    // Cut short (the provider's connection dropped): say so, so the reader asks again.
+    if (size > 0 && sent < last - start + 1) res.destroy();
+    else res.end();
+  } catch (err) {
+    if (abort.signal.aborted) return; // the reader went away (a jump, or Back)
+    const status = err && err.status >= 400 ? err.status : 502;
+    if (status >= 400 && err.status) noteError("The provider refused " + what + ": HTTP " + err.status);
+    if (!res.headersSent) {
+      res.writeHead(status, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", ...CORS });
+      res.end(redact(err && err.message ? err.message : providerFailure(err)));
+    } else res.destroy();
   }
-  if (answer.status >= 400) {
-    const text = await answer.text().catch(() => "");
-    noteError("The provider refused " + q.kind + " " + q.id + "." + q.ext + ": HTTP " + answer.status);
-    res.writeHead(answer.status, { "Content-Type": answer.headers.get("content-type") || "text/plain", "Cache-Control": "no-store", ...CORS });
-    return res.end(text.slice(0, 4000));
-  }
-  res.writeHead(answer.status, out);
-  if (!answer.body || req.method === "HEAD") return res.end();
-  Readable.fromWeb(answer.body)
-    .on("error", () => res.destroy())
-    .pipe(res);
 }
 
 // --- The file's fingerprint, for OpenSubtitles -------------------------------------------
@@ -486,28 +566,26 @@ async function passFile(req, res, q) {
 const CHUNK = 65536;
 const hashes = new Map();
 
-async function rangeOf(url, from, to) {
-  const answer = await fetch(url, { headers: { "User-Agent": fetchAgent, Range: "bytes=" + from + "-" + to, "Accept-Encoding": "identity" }, signal: AbortSignal.timeout(15000), redirect: "follow" });
-  if (answer.status !== 206) {
-    await answer.body?.cancel();
-    return null;
-  }
-  const total = Number((/\/(\d+)\s*$/.exec(answer.headers.get("content-range") || "") || [])[1] || 0);
-  const bytes = new Uint8Array(await answer.arrayBuffer());
-  return bytes.byteLength === to - from + 1 ? { bytes, total } : null;
+// Bytes `from` to `to` of a file, through what the helper keeps (the start and the end of
+// a file are kept, so FFmpeg won't ask for these again).
+async function rangeOf(file, from, to) {
+  const parts = [];
+  for await (const chunk of sources.bytes(file, from, to, AbortSignal.timeout(15000), { exclusive: true })) parts.push(chunk);
+  const bytes = Buffer.concat(parts);
+  return bytes.length === to - from + 1 ? bytes : null;
 }
 
 async function fileHash(q) {
   const cacheKey = q.kind + ":" + q.id;
   if (hashes.has(cacheKey)) return hashes.get(cacheKey);
   await takeSlot();
-  const url = providerUrl(login, q.kind, q.id, q.ext);
+  const file = sourceFile(q);
   let result = { hash: "", size: 0 };
   try {
-    const head = await rangeOf(url, 0, CHUNK - 1);
-    if (head && head.total >= CHUNK * 2) {
-      const tail = await rangeOf(url, head.total - CHUNK, head.total - 1);
-      if (tail) result = { hash: movieHash(head.bytes, tail.bytes, head.total), size: head.total };
+    const head = await rangeOf(file, 0, CHUNK - 1);
+    if (head && file.size >= CHUNK * 2) {
+      const tail = await rangeOf(file, file.size - CHUNK, file.size - 1);
+      if (tail) result = { hash: movieHash(head, tail, file.size), size: file.size };
     }
   } catch {
     // No fingerprint; the search goes on without it.
@@ -630,7 +708,7 @@ async function startHls(q) {
     if (found >= 0) audioTrack = found;
   }
   const args = hlsArgs({
-    url: providerUrl(login, q.kind, q.id, q.ext),
+    url: sourceUrl(q),
     start: q.start,
     video,
     encoder,
@@ -648,6 +726,7 @@ async function startHls(q) {
   const soundText = !sound ? "no sound" : soundPlan === "copy" ? sound.codec + " kept" : sound.codec + " to " + soundPlan.toUpperCase();
   const picture = !described.video ? "no picture" : video === "convert" ? `picture ${described.video.codec} converted to H.264 with ${ENCODER_NAMES[encoder]}` : `picture ${described.video.codec} kept`;
   say(`Playing ${q.kind} ${q.id}.${q.ext} for the phone from ${clock(q.start)}: ${picture}; sound ${soundText}`);
+  const tally = startTally();
   const child = spawn(ffmpeg.path, args, { windowsHide: true });
   active = child;
   const session = { id, dir, child, lastUsed: Date.now(), ended: false, error: "", stderr: "", started: Date.now() };
@@ -687,6 +766,7 @@ async function startHls(q) {
     }
     await wait(300);
   }
+  say(`Ready to play after ${((Date.now() - tally.at) / 1000).toFixed(1)} s (${tallySince(tally)}).`);
   const base = "/v1/hls/s/" + id + "/";
   const subtitles = [];
   described.subtitles.slice(0, MAX_SUBTITLES).forEach((sub, n) => {
@@ -886,6 +966,13 @@ const server = http.createServer((req, res) => {
   if (pathname === "/v1/stop") {
     stopFor(/^[0-9a-f]{32}$/.test(url.searchParams.get("session") || "") ? url.searchParams.get("session") : "");
     return sendJson(res, 200, { ok: true });
+  }
+  const source = /^\/v1\/source\/(movie|series)\/([0-9A-Za-z_-]{1,40})\.([0-9a-z]{1,5})$/.exec(pathname);
+  if (source) {
+    // For FFmpeg on this computer only.
+    if (!/^(::1|127\.0\.0\.1|::ffff:127\.0\.0\.1)$/.test(req.socket.remoteAddress || "")) return sendHelperError(res, 403, "Only for this computer.");
+    const q = { kind: source[1], id: source[2], ext: source[3] };
+    return serveSource(req, res, sourceFile(q), { exclusive: true, type: FILE_TYPES[q.ext] || "application/octet-stream", what: q.kind + " " + q.id + "." + q.ext }).catch((err) => failed(res, err));
   }
   const file = /^\/v1\/file\/(movie|series)\/([0-9A-Za-z_-]{1,40})\.([0-9a-z]{1,5})$/.exec(pathname);
   if (file) return passFile(req, res, { kind: file[1], id: file[2], ext: file[3] }).catch((err) => failed(res, err));

@@ -125,6 +125,10 @@ describe("the helper", () => {
     const served = playlistForPlayer(written);
     expect(served.split("\n").slice(0, 3)).toEqual(["#EXTM3U", "#EXT-X-START:TIME-OFFSET=0,PRECISE=YES", "#EXT-X-VERSION:7"]);
     expect(playlistForPlayer(served)).toBe(served);
+    // The longest-piece promise stays put as the playlist grows, unless a piece outruns it.
+    const growing = "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:6\n#EXTINF:6.000000,\nseg00000.m4s\n";
+    expect(playlistForPlayer(growing)).toContain("#EXT-X-TARGETDURATION:12\n");
+    expect(playlistForPlayer(growing.replace("6.000000", "14.500000").replace("DURATION:6", "DURATION:15"))).toContain("#EXT-X-TARGETDURATION:15\n");
     expect(playlistState(written)).toEqual({ segments: 2, ended: false });
     expect(playlistState(written + "#EXT-X-ENDLIST\n")).toEqual({ segments: 2, ended: true });
     expect(playlistState("")).toEqual({ segments: 0, ended: false });
