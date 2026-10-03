@@ -29,6 +29,23 @@ export function hlsArgs(options: {
   userAgent?: string;
 }): string[];
 export function playlistForPlayer(text: string): string;
+export const VOD_SECONDS: number;
+export function vodPieces(duration: number, seconds?: number): number;
+export function pieceName(n: number): string;
+export function vodPlaylist(options: { duration: number; start?: number; seconds?: number }): string;
+export function vodArgs(options: {
+  url: string;
+  piece: number;
+  encoder: string;
+  probe: ProbeResult | null;
+  dir: string;
+  audioTrack?: number;
+  height?: number;
+  subtitles?: boolean;
+  userAgent?: string;
+  seconds?: number;
+}): string[];
+export function mergeVtt(texts: string[]): string;
 export function playlistState(text: string): { segments: number; ended: boolean };
 export function sessionFile(name: string): boolean;
 export function sessionFileType(name: string): string;

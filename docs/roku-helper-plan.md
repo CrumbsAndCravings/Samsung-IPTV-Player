@@ -150,6 +150,11 @@ A2 now exists. What's there, and how it differs from the plan below:
   stops one. A start the player gives up on is dropped.
 - Not done: `-hwaccel auto` (A2) and a default browser user agent for FFmpeg (A3);
   `transcoder.userAgent` sets one when needed.
+- The phone now asks for `vod=1`: a playlist for the whole film (`#EXT-X-PLAYLIST-TYPE:VOD`,
+  6 s pieces at fixed places), with pieces made when asked for and FFmpeg started again
+  for a jump (`helper/plan.mjs`, "Whole films"). Safari didn't start the growing (EVENT)
+  playlists on a real iPhone. The Roku may well want the same; `/v1/hls/index.m3u8`
+  still gives the growing kind.
 
 ### A1. HLS output
 

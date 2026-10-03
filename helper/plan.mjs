@@ -222,6 +222,103 @@ export function sessionFileType(name) {
   return CONTENT_TYPES[name.slice(name.lastIndexOf(".") + 1)] || "application/octet-stream";
 }
 
+// --- Whole films, for the iPhone ----------------------------------------------------------
+//
+// Safari is at its best with a playlist for the whole film from the start, as for any
+// film online: it knows the length, starts at once, and jumps by itself. Every piece is
+// six seconds of the film at a fixed place (piece n starts at 6n s), whether or not
+// FFmpeg has made it yet; the helper makes pieces as they're asked for, and a jump past
+// where FFmpeg has got to starts FFmpeg again from there. That works because every run
+// cuts at the same places and keeps the film's own timestamps, so pieces from different
+// runs fit together. The picture is always converted to H.264 (only a picture made here
+// has keyframes exactly every six seconds) and the sound to AAC, in MPEG-TS pieces, the
+// HLS Apple's players have played longest.
+
+export const VOD_SECONDS = 6;
+
+// How many pieces a film of `duration` seconds has.
+export function vodPieces(duration, seconds = VOD_SECONDS) {
+  return Math.max(1, Math.ceil(duration / seconds));
+}
+
+export function pieceName(n) {
+  return "seg" + String(n).padStart(5, "0") + ".ts";
+}
+
+// The whole film's playlist; with `start`, where the player begins (resuming).
+export function vodPlaylist({ duration, start = 0, seconds = VOD_SECONDS }) {
+  const count = vodPieces(duration, seconds);
+  const lines = ["#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-TARGETDURATION:" + seconds, "#EXT-X-MEDIA-SEQUENCE:0", "#EXT-X-PLAYLIST-TYPE:VOD", "#EXT-X-INDEPENDENT-SEGMENTS"];
+  if (start > 0) lines.push("#EXT-X-START:TIME-OFFSET=" + start + ",PRECISE=YES");
+  for (let n = 0; n < count; n++) {
+    const length = n < count - 1 ? seconds : Math.max(0.1, duration - seconds * (count - 1));
+    lines.push("#EXTINF:" + length.toFixed(3) + ",", pieceName(n));
+  }
+  lines.push("#EXT-X-ENDLIST");
+  return lines.join("\n") + "\n";
+}
+
+// Keyframes asked for must start a piece cleanly (IDR), which graphics cards only do
+// when told.
+const IDR = { h264_nvenc: ["-forced-idr", "1"], h264_qsv: ["-forced_idr", "1"] };
+
+// The FFmpeg arguments for a run from piece `piece` on, into `dir`: the pieces
+// (seg<n>.ts, numbered as in the playlist) and, with `subtitles`, each text subtitle
+// track as WebVTT (sub<n>.vtt, with the film's own times).
+export function vodArgs({ url, piece, encoder, probe, dir, audioTrack = 0, height = 0, subtitles = false, userAgent = "", seconds = VOD_SECONDS }) {
+  const args = ["-hide_banner", "-nostdin", "-loglevel", "error"];
+  // The film's own timestamps (from 0 at its start), so every run's pieces fit together.
+  args.push("-copyts", "-start_at_zero");
+  if (userAgent) args.push("-user_agent", userAgent);
+  args.push("-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5");
+  args.push("-fflags", "+genpts");
+  if (piece > 0) args.push("-ss", String(piece * seconds));
+  const tracks = probe ? probe.audio : [];
+  const track = audioTrack >= 0 && audioTrack < tracks.length ? audioTrack : 0;
+  args.push("-i", url, "-map", "0:V:0", "-map", "0:a:" + track + "?");
+  args.push(...(ENCODERS[encoder] || ENCODERS.libx264), ...(IDR[encoder] || []));
+  const size = height > 0 ? "scale=-2:min(ih\\," + Math.floor(height) + ")" : "scale=trunc(iw/2)*2:trunc(ih/2)*2";
+  // A keyframe every `seconds` from where this run starts, which is on a piece's start.
+  args.push("-vf", size, "-force_key_frames", "expr:gte(t,n_forced*" + seconds + ")");
+  args.push("-c:a", "aac", "-b:a", "192k", "-ac", "2", "-sn", "-dn");
+  args.push("-avoid_negative_ts", "disabled", "-max_muxing_queue_size", "2048");
+  // Each piece is its own MPEG-TS file, left with the timestamps it has: by default the
+  // first piece of a run from the start would be shifted a frame or two later.
+  args.push("-f", "segment", "-segment_format", "mpegts", "-segment_format_options", "avoid_negative_ts=disabled");
+  args.push("-segment_time", String(seconds), "-segment_time_delta", "0.05");
+  args.push("-segment_start_number", String(piece), path.join(dir, "seg%05d.ts"));
+  if (subtitles && probe) {
+    probe.subtitles.slice(0, MAX_SUBTITLES).forEach((sub, n) => {
+      if (sub.text) args.push("-map", "0:s:" + n, "-c:s", "webvtt", "-flush_packets", "1", "-f", "webvtt", path.join(dir, "sub" + n + ".vtt"));
+    });
+  }
+  return args;
+}
+
+// WebVTT files from several runs as one: each line once, in order of time.
+export function mergeVtt(texts) {
+  const cues = new Map();
+  for (const text of texts) {
+    for (const block of text.replace(/\r\n?/g, "\n").split(/\n{2,}/)) {
+      const lines = block.split("\n").filter((line) => line !== "");
+      const at = lines.findIndex((line) => line.indexOf("-->") >= 0);
+      if (at < 0) continue;
+      const timing = lines[at].trim();
+      const body = lines.slice(at + 1).join("\n");
+      const key = timing + "\n" + body;
+      if (!cues.has(key)) cues.set(key, { start: vttSeconds(timing.split("-->")[0]), text: key });
+    }
+  }
+  const sorted = [...cues.values()].sort((a, b) => a.start - b.start);
+  return "WEBVTT\n\n" + sorted.map((cue) => cue.text + "\n\n").join("");
+}
+
+// "01:02:03.500" or "02:03.500" in seconds.
+function vttSeconds(text) {
+  const parts = text.trim().split(":").map(Number);
+  return parts.reduce((total, part) => total * 60 + part, 0) || 0;
+}
+
 // OpenSubtitles' moviehash: the file's size plus the 64-bit little-endian words of its
 // first and last 64 KB, wrapping at 64 bits; 16 hex digits.
 export function movieHash(head, tail, size) {

@@ -26,9 +26,11 @@
 //                                 the file as the provider sends it (MP4s play as they are)
 //   GET /v1/hash?key&kind&id&ext  the file's OpenSubtitles moviehash
 //   GET|POST /v1/fetch?key&url    OpenSubtitles, which a web page can't call itself
-//   GET /v1/hls/start?key&kind&id&ext&start&video&hevc&a|alang&audio&height&format&subs
+//   GET /v1/hls/start?key&kind&id&ext&start&video&hevc&a|alang&audio&height&format&subs&vod
 //                                 starts HLS from `start` seconds; answers once the first
-//                                 pieces are ready, with the playlist's address
+//                                 pieces are ready, with the playlist's address. With
+//                                 vod=1, the playlist is the whole film's (see "Whole
+//                                 films, for the phone" below)
 //   GET /v1/hls/index.m3u8?...    the same, answered with a redirect to the playlist
 //   GET /v1/hls/s/<session>/<file> the playlist, its pieces and subtitle files (the
 //                                 session's random name is its key)
@@ -50,8 +52,10 @@ import {
   ffmpegArgs,
   hlsArgs,
   hlsVideoPlan,
+  mergeVtt,
   movieHash,
   parseProbe,
+  pieceName,
   playlistForPlayer,
   playlistState,
   providerUrl,
@@ -59,13 +63,17 @@ import {
   sessionFile,
   sessionFileType,
   videoPlan,
+  vodArgs,
+  vodPieces,
+  vodPlaylist,
+  VOD_SECONDS,
   xtreamQuery,
   fetchAllowed,
 } from "./plan.mjs";
 import { httpGet } from "./http-get.mjs";
 import { parseRange, SourceFiles } from "./source.mjs";
 
-const VERSION = "1.1";
+const VERSION = "1.2";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const personalPath = process.env.ARANPLUS_PERSONAL || path.join(root, "personal.json");
 const DEFAULT_PORT = 8090;
@@ -351,6 +359,8 @@ function readQuery(url) {
     subs: p.get("subs") === "1",
     // Whether the player decodes HEVC; without it, HEVC is converted too.
     hevc: p.get("hevc") !== "0",
+    // A playlist for the whole film, its pieces made as they're asked for.
+    vod: p.get("vod") === "1",
   };
   if (!/^[0-9A-Za-z_-]{1,40}$/.test(q.id) || !/^[0-9a-z]{1,5}$/.test(q.ext) || q.start > 86400 || q.audioTrack > 50 || q.height > 4320) return null;
   if (q.audioLanguage && !/^[a-z]{2,3}$/.test(q.audioLanguage)) return null;
@@ -660,6 +670,7 @@ function dropSession(session) {
     if (active === session.child) active = null;
     stopRun(session.child);
   }
+  if (session.run) stopVodRun(session);
   // Windows keeps a file FFmpeg still has open, so wait for it to go.
   setTimeout(() => {
     try {
@@ -791,6 +802,7 @@ async function serveSessionFile(res, id, name) {
   const session = sessions.get(id);
   if (!session || !sessionFile(name)) return sendJson(res, 404, { error: "That stream has ended. Play it again." });
   session.lastUsed = Date.now();
+  if (session.vod) return serveVodFile(res, session, name);
   const file = path.join(session.dir, name);
   const type = sessionFileType(name);
   const headers = { "Content-Type": type, "Cache-Control": "no-store", ...CORS };
@@ -826,6 +838,7 @@ function stopFor(id) {
       if (active === session.child) active = null;
       stopRun(session.child);
     }
+    if (session && session.run) stopVodRun(session);
     return;
   }
   for (const run of fileRuns) run.abort.abort();
@@ -833,6 +846,252 @@ function stopFor(id) {
     stopRun(active);
     active = null;
   }
+}
+
+// --- Whole films, for the phone ---------------------------------------------------------
+//
+// The playlist lists the whole film in six-second pieces from the start (plan.mjs,
+// "Whole films"), and Safari asks for the pieces it wants. FFmpeg makes them in order
+// from where it was started, each run in a folder of its own; a piece already made is
+// sent at once, one FFmpeg will reach shortly is waited for, and any other (a jump)
+// starts FFmpeg again from that piece. Every run cuts the film at the same places, so a
+// piece is good whichever run made it.
+
+const VOD_AHEAD = 4; // pieces past FFmpeg's latest that are worth waiting for
+const PIECE_WAIT_MS = 60000; // the longest a piece is waited for
+
+// Starts a phone session: what the file holds, the first run from the piece holding
+// `start`, and an answer once that piece is ready.
+async function startVod(q) {
+  let described;
+  try {
+    described = await info(q);
+  } catch (err) {
+    noteError("Couldn't read " + q.kind + " " + q.id + "." + q.ext + " from the provider: " + err.message);
+    throw new Error(lastError.error, { cause: err });
+  }
+  // A film of unknown length, or sound alone, plays the older way.
+  if (!described.video || !(described.duration > 0)) return startHls({ ...q, vod: false });
+  let audioTrack = q.audioTrack < described.audio.length ? q.audioTrack : 0;
+  if (q.audioLanguage) {
+    const found = described.audio.findIndex((a) => a.language === q.audioLanguage);
+    if (found >= 0) audioTrack = found;
+  }
+  const start = Math.min(q.start, Math.max(0, described.duration - 1));
+  const id = randomBytes(16).toString("hex");
+  const session = {
+    id,
+    dir: path.join(HLS_ROOT, id),
+    vod: true,
+    q,
+    described,
+    audioTrack,
+    start,
+    count: vodPieces(described.duration),
+    done: new Map(), // piece number -> the file holding it
+    run: null,
+    runs: 0,
+    lastUsed: Date.now(),
+    opened: false,
+    playing: false,
+  };
+  mkdirSync(session.dir, { recursive: true });
+  sessions.set(id, session);
+  newestSession = id;
+  const sound = described.audio[audioTrack];
+  const soundText = !sound ? "no sound" : sound.codec === "aac" && sound.channels <= 2 ? "aac kept as AAC" : sound.codec + " to AAC";
+  say(`Playing ${q.kind} ${q.id}.${q.ext} for the phone from ${clock(start)}: picture ${described.video.codec} converted to H.264 with ${ENCODER_NAMES[encoder]}; sound ${soundText}`);
+  const first = Math.floor(start / VOD_SECONDS);
+  const tally = startTally();
+  try {
+    await pieceFile(session, first, { quiet: true });
+  } catch (err) {
+    dropSession(session);
+    throw err;
+  }
+  say(`Ready to play after ${((Date.now() - tally.at) / 1000).toFixed(1)} s (${tallySince(tally)}).`);
+  const base = "/v1/hls/s/" + id + "/";
+  const subtitles = [];
+  described.subtitles.slice(0, MAX_SUBTITLES).forEach((sub, n) => {
+    if (sub.text && q.subs) subtitles.push({ index: n, language: sub.language, title: sub.title || "", forced: sub.forced, url: base + "sub" + n + ".vtt" });
+  });
+  return {
+    session: id,
+    url: base + "index.m3u8",
+    vod: true,
+    start: 0, // the stream's clock is the film's
+    from: start, // where the playlist starts playing
+    duration: described.duration,
+    video: "convert",
+    videoCodec: described.video.codec,
+    audioTrack,
+    audioPlan: "aac",
+    audio: described.audio.map((a) => ({ codec: a.codec, channels: a.channels, language: a.language, title: a.title || "" })),
+    subtitles,
+  };
+}
+
+// FFmpeg from piece `n` on. Replaces this session's run (and stops anything else using
+// the provider's connection).
+async function startVodRun(session, n) {
+  const hadRun = stopVodRun(session);
+  // ended: FFmpeg has stopped, for whatever reason; finished: it got to the film's end.
+  const run = { no: ++session.runs, first: n, next: n, child: null, ended: false, finished: false, failed: "", stderr: "", timer: 0 };
+  run.dir = path.join(session.dir, "r" + run.no);
+  session.run = run;
+  await takeSlot();
+  // The last run's connection to the provider needs a moment to close, as in takeSlot.
+  if (hadRun) await wait(FREE_SLOT_MS);
+  if (session.run !== run || !sessions.has(session.id)) return;
+  mkdirSync(run.dir, { recursive: true });
+  const args = vodArgs({
+    url: sourceUrl(session.q),
+    piece: n,
+    encoder,
+    probe: session.described,
+    dir: run.dir,
+    audioTrack: session.audioTrack,
+    height: session.q.height,
+    subtitles: session.q.subs,
+    userAgent: ffmpegAgent,
+  });
+  const child = spawn(ffmpeg.path, args, { windowsHide: true });
+  run.child = child;
+  active = child;
+  child.stderr.on("data", (d) => {
+    run.stderr = (run.stderr + d).slice(-20000);
+  });
+  child.on("error", (err) => {
+    run.failed = "FFmpeg didn't start: " + err.message;
+    run.ended = true;
+  });
+  child.on("close", (code) => {
+    if (active === child) active = null;
+    clearInterval(run.timer);
+    notePieces(session, run);
+    // Finished: the last piece is done too.
+    if (code === 0 && !child.stoppedByHelper) {
+      if (existsSync(path.join(run.dir, pieceName(run.next)))) {
+        session.done.set(run.next, path.join(run.dir, pieceName(run.next)));
+        run.next++;
+      }
+      run.finished = true;
+    }
+    run.ended = true;
+    if (code !== 0 && !child.stoppedByHelper) {
+      run.failed = lastLines(run.stderr) || "FFmpeg stopped (" + code + ").";
+      noteError(run.failed + " (" + session.q.kind + " " + session.q.id + "." + session.q.ext + ")");
+    }
+  });
+  run.timer = setInterval(() => notePieces(session, run), 200);
+}
+
+// A piece is finished once FFmpeg has started the next one.
+function notePieces(session, run) {
+  while (existsSync(path.join(run.dir, pieceName(run.next + 1)))) {
+    session.done.set(run.next, path.join(run.dir, pieceName(run.next)));
+    run.next++;
+  }
+}
+
+// Stops this session's FFmpeg; true when one was running.
+function stopVodRun(session) {
+  const run = session.run;
+  if (!run) return false;
+  session.run = null;
+  clearInterval(run.timer);
+  run.ended = true;
+  if (run.child && run.child.exitCode === null) {
+    if (active === run.child) active = null;
+    stopRun(run.child);
+    return true;
+  }
+  return false;
+}
+
+// The file holding piece `n`, made first if need be: waited for when FFmpeg will reach
+// it shortly, otherwise FFmpeg starts again from it. Null past the end of the film.
+async function pieceFile(session, n, { quiet = false } = {}) {
+  const deadline = Date.now() + PIECE_WAIT_MS;
+  let restarted = 0;
+  let mine = null; // the run this request started
+  for (;;) {
+    const file = session.done.get(n);
+    if (file) {
+      if (restarted && !quiet) say(`Jumped to ${clock(n * VOD_SECONDS)}: ready after ${((Date.now() - restarted) / 1000).toFixed(1)} s (${tallySince(mine.tally)}).`);
+      return file;
+    }
+    const run = session.run;
+    if (run && run.first <= n && n <= run.next) {
+      if (run.failed) throw new Error(run.failed);
+      if (run.finished) return null; // FFmpeg reached the end before this piece: the film is shorter
+    }
+    const coming = run && !run.ended && run.first <= n && n <= run.next + VOD_AHEAD;
+    if (!coming) {
+      // Asked for elsewhere since (the player moved on), or stopped (the TV took over).
+      if (mine && run !== mine) throw new Error("Another part of the film was asked for.");
+      if (mine) throw new Error(mine.failed || "FFmpeg stopped before " + clock(n * VOD_SECONDS) + ".");
+      restarted = Date.now();
+      if (!quiet) say(`Jumping to ${clock(n * VOD_SECONDS)} in ${session.q.kind} ${session.q.id}.${session.q.ext}.`);
+      const tally = startTally();
+      await startVodRun(session, n);
+      mine = session.run || { failed: "", tally };
+      mine.tally = tally;
+      continue;
+    }
+    if (Date.now() > deadline) throw new Error("The piece at " + clock(n * VOD_SECONDS) + " took over " + PIECE_WAIT_MS / 1000 + " seconds; the provider may be slow.");
+    await wait(150);
+  }
+}
+
+async function serveVodFile(res, session, name) {
+  const headers = { "Content-Type": sessionFileType(name), "Cache-Control": "no-store", ...CORS };
+  if (name === "index.m3u8") {
+    if (!session.opened) {
+      session.opened = true;
+      say("The phone opened the stream.");
+    }
+    res.writeHead(200, headers);
+    return res.end(vodPlaylist({ duration: session.described.duration, start: session.start }));
+  }
+  const sub = /^sub(\d)\.vtt$/.exec(name);
+  if (sub) {
+    // Each run writes the lines from where it started; together they're the film's.
+    const texts = [];
+    for (let r = 1; r <= session.runs; r++) {
+      try {
+        texts.push(readFileSync(path.join(session.dir, "r" + r, name), "utf8"));
+      } catch {
+        // That run has none (yet).
+      }
+    }
+    res.writeHead(200, headers);
+    return res.end(mergeVtt(texts));
+  }
+  const piece = /^seg(\d{5})\.ts$/.exec(name);
+  const n = piece ? Number(piece[1]) : -1;
+  if (n < 0 || n >= session.count) return sendJson(res, 404, { error: "No such piece." });
+  let file;
+  try {
+    file = await pieceFile(session, n);
+  } catch (err) {
+    return sendHelperError(res, 502, err.message);
+  }
+  if (!file) return sendJson(res, 404, { error: "The film ends before this." });
+  if (!session.playing) {
+    session.playing = true;
+    say(`The phone is playing (from ${clock(n * VOD_SECONDS)}).`);
+  }
+  let size;
+  try {
+    size = statSync(file).size;
+  } catch {
+    return sendJson(res, 404, { error: "No such piece." });
+  }
+  res.writeHead(200, { ...headers, "Content-Length": size });
+  createReadStream(file)
+    .on("error", () => res.destroy())
+    .pipe(res);
 }
 
 // --- The web app -------------------------------------------------------------------------
@@ -996,7 +1255,7 @@ const server = http.createServer((req, res) => {
     res.on("close", () => {
       if (!res.writableEnded) gone = true;
     });
-    return startHls(q).then(
+    return (q.vod ? startVod(q) : startHls(q)).then(
       (started) => {
         const session = sessions.get(started.session);
         if (gone && session) return dropSession(session);

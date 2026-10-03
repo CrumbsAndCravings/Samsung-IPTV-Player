@@ -7,8 +7,10 @@ import {
   ffmpegArgs,
   hlsArgs,
   hlsVideoPlan,
+  mergeVtt,
   movieHash,
   parseProbe,
+  pieceName,
   playlistForPlayer,
   playlistState,
   providerUrl,
@@ -16,6 +18,9 @@ import {
   sessionFile,
   sessionFileType,
   videoPlan,
+  vodArgs,
+  vodPieces,
+  vodPlaylist,
   xtreamQuery,
 } from "../helper/plan.mjs";
 
@@ -138,6 +143,58 @@ describe("the helper", () => {
     expect(sessionFile("index.m3u8.tmp")).toBe(false);
     expect(sessionFileType("index.m3u8")).toBe("application/vnd.apple.mpegurl");
     expect(sessionFileType("seg00001.ts")).toBe("video/mp2t");
+  });
+
+  it("lists the whole film for the phone, in six-second pieces", () => {
+    expect(vodPieces(3481.5)).toBe(581);
+    expect(vodPieces(12)).toBe(2);
+    expect(pieceName(37)).toBe("seg00037.ts");
+    const list = vodPlaylist({ duration: 15.5, start: 217 }).split("\n");
+    expect(list.slice(0, 7)).toEqual([
+      "#EXTM3U",
+      "#EXT-X-VERSION:3",
+      "#EXT-X-TARGETDURATION:6",
+      "#EXT-X-MEDIA-SEQUENCE:0",
+      "#EXT-X-PLAYLIST-TYPE:VOD",
+      "#EXT-X-INDEPENDENT-SEGMENTS",
+      "#EXT-X-START:TIME-OFFSET=217,PRECISE=YES",
+    ]);
+    expect(list.slice(7)).toEqual(["#EXTINF:6.000,", "seg00000.ts", "#EXTINF:6.000,", "seg00001.ts", "#EXTINF:3.500,", "seg00002.ts", "#EXT-X-ENDLIST", ""]);
+    expect(vodPlaylist({ duration: 6 })).not.toContain("EXT-X-START");
+  });
+
+  it("makes the phone's pieces at the same places whichever run makes them", () => {
+    const probe = parseProbe(MKV);
+    const args = vodArgs({ url: "http://127.0.0.1:8090/v1/source/movie/7.mkv?key=k", piece: 36, encoder: "h264_nvenc", probe, dir: "/tmp/s/r2", audioTrack: 1, height: 1080, subtitles: true });
+    const text = args.join(" ");
+    // The film's own clock, from where piece 36 starts.
+    expect(text).toContain("-copyts -start_at_zero");
+    expect(text).toContain("-ss 216 -i http://127.0.0.1:8090/v1/source/movie/7.mkv?key=k -map 0:V:0 -map 0:a:1?");
+    // Converted, with an IDR keyframe every six seconds, sound to AAC stereo.
+    expect(text).toContain("-c:v h264_nvenc");
+    expect(text).toContain("-forced-idr 1");
+    expect(text).toContain("-force_key_frames expr:gte(t,n_forced*6)");
+    expect(text).toContain("-c:a aac -b:a 192k -ac 2");
+    // Pieces numbered as in the playlist.
+    expect(text).toContain("-f segment -segment_format mpegts -segment_format_options avoid_negative_ts=disabled -segment_time 6");
+    expect(text).toContain("-segment_start_number 36 /tmp/s/r2/seg%05d.ts");
+    // Text subtitles only (not the PGS one), with their own times.
+    expect(text).toContain("-map 0:s:0 -c:s webvtt -flush_packets 1 -f webvtt /tmp/s/r2/sub0.vtt");
+    expect(text).toContain("/tmp/s/r2/sub2.vtt");
+    expect(text).not.toContain("sub1.vtt");
+    const first = vodArgs({ url: "u", piece: 0, encoder: "libx264", probe, dir: "/d" });
+    expect(first).not.toContain("-ss");
+    expect(first).not.toContain("-forced-idr");
+    expect(first.join(" ")).not.toContain("webvtt");
+  });
+
+  it("puts the subtitle lines of several runs together", () => {
+    const one = "WEBVTT\n\n00:01:10.006 --> 00:01:14.006\nSeventy seconds in.\n\n00:00:20.006 --> 00:00:24.006\nTwenty\nseconds in.\n";
+    const two = "WEBVTT\r\n\r\n00:01:10.006 --> 00:01:14.006\r\nSeventy seconds in.\r\n\r\n00:02:00.000 --> 00:02:01.000\r\nLater.\r\n";
+    expect(mergeVtt([one, two])).toBe(
+      "WEBVTT\n\n00:00:20.006 --> 00:00:24.006\nTwenty\nseconds in.\n\n00:01:10.006 --> 00:01:14.006\nSeventy seconds in.\n\n00:02:00.000 --> 00:02:01.000\nLater.\n\n",
+    );
+    expect(mergeVtt([])).toBe("WEBVTT\n\n");
   });
 
   it("asks the provider only what the app needs", () => {
