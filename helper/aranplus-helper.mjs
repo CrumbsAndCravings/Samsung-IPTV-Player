@@ -20,6 +20,9 @@
 //   GET /v1/hls/s/<session>/<file>
 //                                 a session's playlist and segments (no key needed:
 //                                 the session's name is a random 32-digit secret)
+//   GET /v1/subtitles.srt?key&src&start
+//                                 an OpenSubtitles file (src) with its times moved
+//                                 `start` seconds earlier, for a Roku stream from there
 //   GET /v1/stop?key              the TV left: stop converting, free the provider
 //   GET /v1/last-error?key        why the last stream failed, for the TV's error screen
 //
@@ -50,6 +53,8 @@ import {
   redactor,
   rewritePlaylist,
   sessionFile,
+  shiftSubtitles,
+  subtitleSource,
   videoPlan,
 } from "./plan.mjs";
 
@@ -629,6 +634,29 @@ function stopAll() {
   forgetNewestSession();
 }
 
+// --- Subtitles, for the Roku ----------------------------------------------------------
+
+const SUBTITLE_MAX_BYTES = 4 * 1024 * 1024;
+
+// Roku times online subtitles from where the helper's stream starts, so they come
+// through here, moved to match.
+async function subtitles(res, params) {
+  const src = params.get("src") || "";
+  const start = Math.max(0, Math.floor(Number(params.get("start")) || 0));
+  if (!subtitleSource(src)) return sendJson(res, 400, { error: "Only subtitle files from OpenSubtitles come through the helper." });
+  let text;
+  try {
+    const answer = await fetch(src, { redirect: "follow", signal: AbortSignal.timeout(15000), headers: { "User-Agent": BROWSER_USER_AGENT } });
+    if (!answer.ok) return sendJson(res, 502, { error: "OpenSubtitles answered HTTP " + answer.status + " for the subtitle file." });
+    text = await answer.text();
+  } catch (err) {
+    return sendJson(res, 502, { error: "Couldn't fetch the subtitle file from OpenSubtitles: " + err.message });
+  }
+  if (text.length > SUBTITLE_MAX_BYTES) return sendJson(res, 502, { error: "The subtitle file is too big." });
+  res.writeHead(200, { "Content-Type": "application/x-subrip; charset=utf-8", "Cache-Control": "no-store", ...CORS });
+  res.end(shiftSubtitles(text, start));
+}
+
 // --- Server ---------------------------------------------------------------------------
 
 const server = http.createServer((req, res) => {
@@ -642,6 +670,11 @@ const server = http.createServer((req, res) => {
   if (sessionPath) return serveSessionFile(req, res, sessionPath[1], sessionPath[2]);
   if (!keyMatches(url.searchParams.get("key"))) return sendJson(res, 401, { error: "Wrong or missing key." });
   if (url.pathname === "/v1/last-error") return sendJson(res, 200, lastError);
+  if (url.pathname === "/v1/subtitles.srt") {
+    return subtitles(res, url.searchParams).catch((err) => {
+      if (!res.headersSent) sendJson(res, 500, { error: err.message });
+    });
+  }
   if (url.pathname === "/v1/stop") {
     stopAll();
     return sendJson(res, 200, { ok: true });

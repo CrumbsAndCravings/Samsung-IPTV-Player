@@ -15,6 +15,8 @@ import {
   rewritePlaylist,
   scaleFilter,
   sessionFile,
+  shiftSubtitles,
+  subtitleSource,
   videoPlan,
 } from "../helper/plan.mjs";
 
@@ -113,7 +115,7 @@ describe("the helper", () => {
     const text = args.join(" ");
     expect(text).toContain("-force_key_frames expr:gte(t,n_forced*6) -forced-idr 1");
     expect(text).not.toContain("-g 50");
-    expect(text).toContain("-f hls -hls_time 6 -hls_list_size 0 -hls_playlist_type event");
+    expect(text).toContain("-muxdelay 0 -muxpreload 0 -f hls -hls_time 6 -hls_list_size 0 -hls_playlist_type event");
     expect(text).toContain("-hls_flags independent_segments+temp_file -hls_segment_filename /tmp/aranplus-helper/abc/seg%05d.ts");
     expect(args[args.length - 1]).toBe("/tmp/aranplus-helper/abc/index.m3u8");
     expect(text).not.toContain("pipe:1");
@@ -160,6 +162,19 @@ describe("the helper", () => {
     expect(outputSize({ width: 3840, height: 1600 }, "convert", 720)).toEqual({ width: 1728, height: 720 });
     expect(outputSize({ width: 1920, height: 1080 }, "copy", 720)).toEqual({ width: 1920, height: 1080 });
     expect(masterPlaylist("abc", outputSize(null, "copy", 0))).toContain("BANDWIDTH=4000000\ns/abc/index.m3u8");
+  });
+
+  it("moves online subtitles to match a Roku stream that starts later", () => {
+    const srt = "\uFEFF1\r\n00:00:05,000 --> 00:00:07,500\r\nGone before\r\n\r\n2\r\n00:00:09,000 --> 00:00:12,250\r\nStraddles\r\n\r\n3\r\n01:02:03,004 --> 01:02:05,000\r\nLater\r\n";
+    expect(shiftSubtitles(srt, 10)).toBe("1\n00:00:00,000 --> 00:00:02,250\nStraddles\n\n2\n01:01:53,004 --> 01:01:55,000\nLater\n");
+    expect(shiftSubtitles("WEBVTT\n\n00:15.500 --> 00:17.000 align:start\nHi\n", 10)).toBe("WEBVTT\n\n00:00:05.500 --> 00:00:07.000 align:start\nHi\n");
+    expect(shiftSubtitles("1\n00:00:01,000 --> 00:00:02,000\nSame\n", 0)).toBe("1\n00:00:01,000 --> 00:00:02,000\nSame\n");
+    expect(subtitleSource("https://www.opensubtitles.com/download/abc/subfile/x.srt")).toBe(true);
+    expect(subtitleSource("https://dl.opensubtitles.org/x.srt")).toBe(true);
+    expect(subtitleSource("https://evil.example/opensubtitles.com")).toBe(false);
+    expect(subtitleSource("https://xopensubtitles.com/a.srt")).toBe(false);
+    expect(subtitleSource("file:///etc/passwd")).toBe(false);
+    expect(subtitleSource("not a url")).toBe(false);
   });
 
   it("builds the provider's address and hides the login", () => {

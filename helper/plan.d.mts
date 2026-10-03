@@ -41,4 +41,6 @@ export function rewritePlaylist(text: string, prefix: string): string;
 export function playlistState(text: string): { segments: number; ended: boolean };
 export function sessionFile(session: string, file: string): boolean;
 export function outputSize(source: { width: number; height: number } | null, video: string, height: number): { width: number; height: number };
+export function subtitleSource(src: string): boolean;
+export function shiftSubtitles(text: string, seconds: number): string;
 export function redactor(login: { server: string; username: string; password: string }, key: string): (text: string) => string;

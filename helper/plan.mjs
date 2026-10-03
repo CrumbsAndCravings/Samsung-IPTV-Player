@@ -156,6 +156,8 @@ export function ffmpegArgs({ url, start, video, encoder, probe, height = 0, audi
   }
   if (hls) {
     const dir = hls.dir.replace(/[\\/]+$/, "");
+    // Timestamps from 0, so Roku's clock and the subtitles line up with the file's.
+    args.push("-muxdelay", "0", "-muxpreload", "0");
     args.push("-f", "hls", "-hls_time", String(HLS_SEGMENT_SECS), "-hls_list_size", "0", "-hls_playlist_type", "event");
     args.push("-hls_flags", "independent_segments+temp_file", "-hls_segment_filename", dir + "/seg%05d.ts", dir + "/index.m3u8");
   } else {
@@ -236,6 +238,67 @@ export function outputSize(source, video, height) {
   let w = Math.round((source.width * h) / source.height);
   w -= w % 2;
   return { width: w, height: h };
+}
+
+// --- Subtitles ------------------------------------------------------------------------
+//
+// Roku times online subtitles against its own clock, which starts at 0 where the
+// helper's stream starts. So for a stream from 40:00 the helper fetches the subtitle
+// file and moves every line 40 minutes earlier.
+
+// Only OpenSubtitles' files are fetched, so the helper can't be used to reach anything
+// else.
+export function subtitleSource(src) {
+  let url;
+  try {
+    url = new URL(String(src));
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return false;
+  return /(^|\.)opensubtitles\.(com|org)$/i.test(url.hostname);
+}
+
+function subtitleMs(text) {
+  const m = /^(?:(\d{1,2}):)?(\d{1,2}):(\d{2})[,.](\d{1,3})$/.exec(text);
+  if (!m) return -1;
+  return ((Number(m[1] || 0) * 60 + Number(m[2])) * 60 + Number(m[3])) * 1000 + Number(m[4].padEnd(3, "0"));
+}
+
+function subtitleTime(ms, separator) {
+  const two = (n) => String(n).padStart(2, "0");
+  const h = Math.floor(ms / 3600000);
+  const m = Math.floor((ms % 3600000) / 60000);
+  const s = Math.floor((ms % 60000) / 1000);
+  return two(h) + ":" + two(m) + ":" + two(s) + separator + String(ms % 1000).padStart(3, "0");
+}
+
+// An SRT or WebVTT file with every line `seconds` earlier. Lines that would end before
+// 0 are dropped, and SRT's numbers start again at 1.
+export function shiftSubtitles(text, seconds) {
+  const shift = Math.round(Number(seconds) * 1000) || 0;
+  const source = String(text).replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
+  if (shift === 0) return source;
+  const blocks = [];
+  let number = 0;
+  for (const raw of source.split(/\n{2,}/)) {
+    const block = raw.replace(/\n+$/, "");
+    const lines = block.split("\n");
+    const at = lines.findIndex((line) => line.indexOf("-->") >= 0);
+    const timing = at >= 0 ? /^\s*(\S+)\s*-->\s*(\S+)(.*)$/.exec(lines[at]) : null;
+    const from = timing ? subtitleMs(timing[1]) : -1;
+    const to = timing ? subtitleMs(timing[2]) : -1;
+    if (!timing || from < 0 || to < 0) {
+      if (block.trim() !== "") blocks.push(block);
+      continue;
+    }
+    if (to - shift <= 0) continue;
+    const separator = timing[1].indexOf(",") >= 0 ? "," : ".";
+    lines[at] = subtitleTime(Math.max(0, from - shift), separator) + " --> " + subtitleTime(to - shift, separator) + timing[3];
+    if (at === 1 && /^\d+$/.test(lines[0].trim())) lines[0] = String(++number);
+    blocks.push(lines.join("\n"));
+  }
+  return blocks.join("\n\n") + "\n";
 }
 
 // Hides the login and the helper's key in anything printed or sent back.

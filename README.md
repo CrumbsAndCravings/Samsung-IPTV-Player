@@ -113,6 +113,7 @@ Roku doesn't play an endless MPEG-TS stream, so for the Roku the helper writes t
 
 - **What the Roku asks for:** the picture converted when this Roku can't decode it (always for DivX and Xvid, and for HEVC on most Roku TVs), scaled down to the Roku's screen (720 lines on a 720p TV, which saves the computer most of the work on 1080p and 4K files), and stereo AAC sound when the Roku can't decode AC-3. The sound track in your language comes first.
 - **Jumping** within what is already converted is instant; a jump further on starts the helper again at the new time.
+- **Online subtitles** are timed by the Roku from where the helper's stream starts, so when it starts partway (a resume or a jump), the Roku fetches them through the helper, which moves every line to match. Only OpenSubtitles' files come through.
 - **When you leave a video,** the Roku tells the helper to stop, so the provider's one connection is free for whatever plays next. Anything not asked for in 2 minutes stops by itself.
 - **Disk:** the segments take about 1 GB an hour at 720p (more when a picture is only repackaged). A video's files go 2 minutes after you leave it (30 minutes for the one you were last watching, so a long pause can pick up again), and all of them when the helper starts.
 - **Setup:** after the helper has written `transcoder` into `personal.json`, copy that `"transcoder": { "url": ..., "key": ... }` into the Roku repo's `src/source/account.json` and build the Roku app again. The Roku repo's README has the steps.
