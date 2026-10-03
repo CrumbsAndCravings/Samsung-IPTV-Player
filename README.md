@@ -81,13 +81,13 @@ A build can carry settings of your own in `personal.json` at the top of the repo
 - **`sync`:** the address and key of your sync Worker, set up once with the Roku repo's [sync guide](https://github.com/CrumbsAndCravings/roku-iptv-player/blob/main/sync/README.md). Use the same key as the Roku build. Without it nothing syncs.
 - **`server`, `username`, `password`:** a login the TV signs in with by itself. Leave them out to type the login on the TV as usual. With them, the signed `.wgt` holds your login, so keep that file to yourself. When a newer build carries a different login, the TV replaces the saved one and clears Continue Watching (its titles belong to the old provider). A login typed on the TV for the same account is kept, Continue Watching and all.
 
-- **`transcoder`:** where [the helper on your computer](#the-helper-on-your-computer) is, and its key. The helper writes this itself the first time it runs.
+- **`transcoder`:** where [the helper on your computer](#the-helper-on-your-computer) is, and its key. The helper writes this itself the first time it runs. Two optional settings change how the helper works: `"userAgent"` is how it introduces itself to the provider (a desktop web browser unless you set it; `""` means FFmpeg's own name), and `"hwaccel": false` keeps decoding on the processor even when there is a graphics card.
 
 `npm run install:tv` (and `npm run build`) picks the file up and prints which parts it found, never their values. The desktop harness ignores it unless `ARANPLUS_PERSONAL` names a file, so `npm run dev` never talks to your provider by accident.
 
 ## The helper on your computer
 
-The TV plays MKV and MP4 files with H.264 or HEVC pictures, but not AVI files (old DivX and Xvid movies, about 1 in 60 of the provider's), and not DTS or TrueHD sound. The helper fixes that: a small program on a computer at home, switched on while you watch, that uses [FFmpeg](https://ffmpeg.org) to turn those files into a stream the TV plays.
+The TV plays MKV and MP4 files with H.264 or HEVC pictures, but not AVI files (old DivX and Xvid movies, about 1 in 60 of the provider's), and not DTS or TrueHD sound. The helper fixes that: a small program on a computer at home, switched on while you watch, that uses [FFmpeg](https://ffmpeg.org) to turn those files into a stream the TV plays. The Roku app ([CrumbsAndCravings/roku-iptv-player](https://github.com/CrumbsAndCravings/roku-iptv-player)) uses the same helper, for AVI files, DTS sound, and HEVC pictures on a Roku that can't decode them (see [For the Roku too](#for-the-roku-too)).
 
 **How it works.** When a title can't play on the TV (an AVI, sound the TV can't decode, or a file that failed before), ARAN+ asks the helper instead of the provider. The helper fetches the file with your login (from `personal.json`, so the login never travels from the TV), and FFmpeg sends it on as an MPEG-TS stream:
 
@@ -104,6 +104,19 @@ The TV plays MKV and MP4 files with H.264 or HEVC pictures, but not AVI files (o
 4. Run `npm run install:tv` once more, so the TV knows where the helper is.
 
 From then on, start the helper before you watch (or put a shortcut to `helper\start-helper.cmd` in the Startup folder: press Win+R, type `shell:startup`). Its window shows what it is converting. If the TV says the helper didn't answer, check that the computer is on and the window is open. Give the computer a fixed address in your router, or the TV may lose it; the helper says when the address in `personal.json` no longer matches.
+
+**Hardware decoding.** When the helper converts a picture, it also lets the graphics card or Quick Sync decode it (`-hwaccel auto`), which matters for HEVC. If that fails for a picture format, it tries again on the processor and keeps using the processor for that format until it restarts.
+
+### For the Roku too
+
+Roku doesn't play an endless MPEG-TS stream, so for the Roku the helper writes the same stream as **HLS**: 6-second segments and a playlist that grows while FFmpeg works, in a folder of its own under the computer's temp folder.
+
+- **What the Roku asks for:** the picture converted when this Roku can't decode it (always for DivX and Xvid, and for HEVC on most Roku TVs), scaled down to the Roku's screen (720 lines on a 720p TV, which saves the computer most of the work on 1080p and 4K files), and stereo AAC sound when the Roku can't decode AC-3. The sound track in your language comes first.
+- **Jumping** within what is already converted is instant; a jump further on starts the helper again at the new time.
+- **When you leave a video,** the Roku tells the helper to stop, so the provider's one connection is free for whatever plays next. Anything not asked for in 2 minutes stops by itself.
+- **Disk:** the segments take about 1 GB an hour at 720p (more when a picture is only repackaged). A video's files go 2 minutes after you leave it (30 minutes for the one you were last watching, so a long pause can pick up again), and all of them when the helper starts.
+- **Setup:** after the helper has written `transcoder` into `personal.json`, copy that `"transcoder": { "url": ..., "key": ... }` into the Roku repo's `src/source/account.json` and build the Roku app again. The Roku repo's README has the steps.
+- **One at a time:** the provider allows one connection, so the Samsung TV and the Roku can't both watch at once, with or without the helper; the newer request stops the older one.
 
 ## Setup checks on the TV
 

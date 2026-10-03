@@ -1,6 +1,7 @@
 // What the helper does to each file, kept free of I/O so it is tested
 // (tests/helper.test.ts). FFmpeg reads the provider's file and writes an MPEG-TS
-// stream the TV plays: H.264 or HEVC video, AAC or AC-3 sound.
+// stream the TV plays: H.264 or HEVC video, AAC or AC-3 sound. For the Roku the same
+// stream is cut into HLS segments, since Roku doesn't play an endless MPEG-TS stream.
 
 // Picture formats the TV plays inside MPEG-TS, so they are only repackaged.
 const VIDEO_COPY = ["h264", "hevc", "mpeg2video"];
@@ -8,6 +9,13 @@ const VIDEO_COPY = ["h264", "hevc", "mpeg2video"];
 const VIDEO_TRY = ["mpeg4", "mpeg1video", "vc1"];
 // Sound formats the TV plays; the rest (DTS, TrueHD, MP3 in AVI, ...) is converted.
 const AUDIO_COPY = ["aac", "ac3", "eac3"];
+
+// Seconds of video in each HLS segment.
+export const HLS_SEGMENT_SECS = 6;
+
+// The Roku app's desktop-browser identity (BrowserUserAgent), so the provider sees the
+// helper the way it sees a web browser rather than as FFmpeg ("Lavf/...").
+export const BROWSER_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
 // Reads FFmpeg's own description of a file (the text `ffmpeg -i <file>` prints), which
 // every FFmpeg build has, unlike ffprobe.
@@ -49,7 +57,10 @@ export function videoPlan(codec) {
 }
 
 // What happens to each sound track: kept, or converted to AC-3 (surround) or AAC.
-export function audioPlan(stream) {
+// With `audio` "aac" (a Roku that can't decode AC-3), all but stereo AAC becomes
+// stereo AAC.
+export function audioPlan(stream, audio = "") {
+  if (audio === "aac") return stream.codec === "aac" && stream.channels <= 2 ? "copy" : "aac";
   if (AUDIO_COPY.indexOf(stream.codec) >= 0) return "copy";
   return stream.channels > 2 ? "ac3" : "aac";
 }
@@ -62,41 +73,169 @@ export const ENCODERS = {
   libx264: ["-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p", "-profile:v", "high", "-level:v", "4.1"],
 };
 
-// The FFmpeg arguments for one stream. `start` in seconds; `video` "copy" or "convert".
-export function ffmpegArgs({ url, start, video, encoder, probe }) {
+// Makes the keyframes forced at segment boundaries full restarts (IDR), so each HLS
+// segment plays on its own. Not every AMF build has the switch, so AMF is left alone.
+const FORCED_IDR = {
+  h264_nvenc: ["-forced-idr", "1"],
+  h264_qsv: ["-forced_idr", "1"],
+  libx264: ["-forced-idr", "1"],
+};
+
+// The picture's filter: even sizes (H.264 needs them) and, with `height`, no taller than
+// that, keeping the shape. Converting 1080p or 4K down to a 720p screen saves the
+// computer most of the work.
+export function scaleFilter(height) {
+  if (height > 0) return "scale=-2:trunc(min(ih\\," + height + ")/2)*2";
+  return "scale=trunc(iw/2)*2:trunc(ih/2)*2";
+}
+
+// The FFmpeg arguments for one run.
+//   start      seconds into the file
+//   video      "copy" or "convert"
+//   encoder    a key of ENCODERS
+//   probe      parseProbe's result, or null
+//   height     when converting, the tallest picture wanted (0: as it is)
+//   audio      "aac" for stereo AAC only (a Roku without AC-3), otherwise ""
+//   track      the sound track to put first (the viewer's language), or -1
+//   hwaccel    when converting, let a graphics card or Quick Sync decode too
+//   userAgent  how FFmpeg introduces itself to the provider ("" for FFmpeg's own)
+//   hls        { dir } to write HLS segments and a playlist there instead of a stream
+export function ffmpegArgs({ url, start, video, encoder, probe, height = 0, audio = "", track = -1, hwaccel = false, userAgent = "", hls = null }) {
   const args = ["-hide_banner", "-nostdin", "-loglevel", "error"];
   // Picks up again if the provider's connection drops for a moment.
   args.push("-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5");
+  if (userAgent) args.push("-user_agent", userAgent);
   // AVI files often lack timestamps; make them up so the stream stays in step.
   args.push("-fflags", "+genpts");
+  if (video === "convert" && hwaccel) args.push("-hwaccel", "auto");
   if (start > 0) args.push("-ss", String(start));
   // "V" leaves out cover pictures, which some files carry as a second video stream.
-  args.push("-i", url, "-map", "0:V:0?", "-map", "0:a?", "-sn", "-dn");
+  args.push("-i", url, "-map", "0:V:0?");
+  const tracks = probe ? probe.audio : [];
+  // Every sound track, in the file's order unless one is asked for first.
+  const order = [];
+  if (track >= 0 && track < tracks.length) {
+    order.push(track);
+    tracks.forEach((_, i) => {
+      if (i !== track) order.push(i);
+    });
+    order.forEach((i) => args.push("-map", "0:a:" + i + "?"));
+  } else {
+    tracks.forEach((_, i) => order.push(i));
+    args.push("-map", "0:a?");
+  }
+  args.push("-sn", "-dn");
   const codec = probe && probe.video ? probe.video.codec : "";
   if (video === "convert") {
     args.push(...(ENCODERS[encoder] || ENCODERS.libx264));
-    // Even sizes (H.264 needs them) and a keyframe every two seconds or so.
-    args.push("-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-g", "50");
+    args.push("-vf", scaleFilter(height));
+    if (hls) {
+      // A keyframe at every segment boundary, so the segments come out even.
+      args.push("-force_key_frames", "expr:gte(t,n_forced*" + HLS_SEGMENT_SECS + ")", ...(FORCED_IDR[encoder] || []));
+    } else {
+      // A keyframe every two seconds or so.
+      args.push("-g", "50");
+    }
   } else {
     args.push("-c:v", "copy");
     // DivX often packs frames together, which MPEG-TS can't carry as they are.
     if (codec === "mpeg4") args.push("-bsf:v", "mpeg4_unpack_bframes");
   }
-  const audio = probe ? probe.audio : [];
-  audio.forEach((stream, i) => {
-    const plan = audioPlan(stream);
+  order.forEach((source, i) => {
+    const plan = audioPlan(tracks[source], audio);
     if (plan === "copy") args.push("-c:a:" + i, "copy");
     else if (plan === "ac3") args.push("-c:a:" + i, "ac3", "-b:a:" + i, "448k");
-    else args.push("-c:a:" + i, "aac", "-b:a:" + i, "192k");
+    else {
+      args.push("-c:a:" + i, "aac", "-b:a:" + i, "192k");
+      if (audio === "aac") args.push("-ac:a:" + i, "2");
+    }
   });
-  if (audio.length === 0) args.push("-c:a", "aac", "-b:a", "192k");
-  args.push("-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0", "pipe:1");
+  if (order.length === 0) {
+    args.push("-c:a", "aac", "-b:a", "192k");
+    if (audio === "aac") args.push("-ac", "2");
+  }
+  if (hls) {
+    const dir = hls.dir.replace(/[\\/]+$/, "");
+    args.push("-f", "hls", "-hls_time", String(HLS_SEGMENT_SECS), "-hls_list_size", "0", "-hls_playlist_type", "event");
+    args.push("-hls_flags", "independent_segments+temp_file", "-hls_segment_filename", dir + "/seg%05d.ts", dir + "/index.m3u8");
+  } else {
+    args.push("-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0", "pipe:1");
+  }
   return args;
 }
 
 // The provider's address for a file, as the app builds it (src/core/utils.ts streamUrl).
 export function providerUrl(login, kind, id, ext) {
   return login.server + "/" + (kind === "series" ? "series" : "movie") + "/" + encodeURIComponent(login.username) + "/" + encodeURIComponent(login.password) + "/" + id + "." + ext;
+}
+
+// What the TV asked for, from a request's query string; null when it makes no sense.
+export function readQuery(params) {
+  const height = Math.floor(Number(params.get("height")) || 0);
+  const track = params.get("track") || "";
+  const q = {
+    kind: params.get("kind") === "series" ? "series" : "movie",
+    id: params.get("id") || "",
+    ext: (params.get("ext") || "").toLowerCase(),
+    start: Math.max(0, Math.floor(Number(params.get("start")) || 0)),
+    video: params.get("video") === "convert" ? "convert" : "copy",
+    height: height >= 144 && height <= 4320 ? height : 0,
+    audio: params.get("audio") === "aac" ? "aac" : "",
+    track: /^\d{1,2}$/.test(track) ? Number(track) : -1,
+  };
+  if (!/^[0-9A-Za-z_-]{1,40}$/.test(q.id) || !/^[0-9a-z]{1,5}$/.test(q.ext) || q.start > 86400) return null;
+  return q;
+}
+
+// --- HLS ------------------------------------------------------------------------------
+//
+// The Roku asks for /v1/hls/index.m3u8 and gets a small master playlist naming the
+// session's own playlist (s/<session>/index.m3u8). Roku re-reads that one while it
+// plays, and it grows as FFmpeg goes, so re-reading never starts FFmpeg again. The
+// session name is 32 random hex digits, so it works as the key for its own files.
+
+// The master playlist for a session. `size` is the picture's size once converted.
+export function masterPlaylist(session, size) {
+  const width = size && size.width > 0 ? size.width : 0;
+  const height = size && size.height > 0 ? size.height : 0;
+  let attributes = "BANDWIDTH=" + (height > 720 ? 8000000 : 4000000);
+  if (width > 0 && height > 0) attributes += ",RESOLUTION=" + width + "x" + height;
+  return "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-STREAM-INF:" + attributes + "\ns/" + session + "/index.m3u8\n";
+}
+
+// FFmpeg's playlist with each segment named by its file name alone, after `prefix`,
+// whatever folder FFmpeg wrote. Tags (#EXT...) stay as they are.
+export function rewritePlaylist(text, prefix) {
+  return String(text)
+    .split(/\r?\n/)
+    .map((line) => {
+      const trimmed = line.trim();
+      if (trimmed === "" || trimmed.charAt(0) === "#") return line;
+      return prefix + trimmed.split(/[\\/]/).pop();
+    })
+    .join("\n");
+}
+
+// How many segments a playlist lists so far, and whether FFmpeg has finished it.
+export function playlistState(text) {
+  const segments = (String(text).match(/^#EXTINF:/gm) || []).length;
+  return { segments, ended: /^#EXT-X-ENDLIST/m.test(String(text)) };
+}
+
+// A file a session may serve: its playlist or one of its segments, nothing else.
+export function sessionFile(session, file) {
+  return /^[0-9a-f]{32}$/.test(session) && /^(index\.m3u8|seg\d{5,6}\.ts)$/.test(file);
+}
+
+// The picture's size as it comes out, for the master playlist.
+export function outputSize(source, video, height) {
+  if (!source || !source.width || !source.height) return { width: 0, height: 0 };
+  if (video !== "convert") return { width: source.width, height: source.height };
+  let h = height > 0 && source.height > height ? height : source.height;
+  h -= h % 2;
+  let w = Math.round((source.width * h) / source.height);
+  w -= w % 2;
+  return { width: w, height: h };
 }
 
 // Hides the login and the helper's key in anything printed or sent back.
