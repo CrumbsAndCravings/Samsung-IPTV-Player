@@ -26,13 +26,13 @@
 //                                 the file as the provider sends it (MP4s play as they are)
 //   GET /v1/hash?key&kind&id&ext  the file's OpenSubtitles moviehash
 //   GET|POST /v1/fetch?key&url    OpenSubtitles, which a web page can't call itself
-//   GET /v1/hls/start?key&kind&id&ext&start&video&a|alang&audio&height&format&subs
+//   GET /v1/hls/start?key&kind&id&ext&start&video&hevc&a|alang&audio&height&format&subs
 //                                 starts HLS from `start` seconds; answers once the first
 //                                 pieces are ready, with the playlist's address
 //   GET /v1/hls/index.m3u8?...    the same, answered with a redirect to the playlist
 //   GET /v1/hls/s/<session>/<file> the playlist, its pieces and subtitle files (the
 //                                 session's random name is its key)
-//   GET /v1/stop?key              stops FFmpeg (the phone left the player)
+//   GET /v1/stop?key&session      stops that session's FFmpeg (the phone left the player)
 //
 // The provider allows one connection at a time, so a new request stops the one before.
 
@@ -307,6 +307,8 @@ function readQuery(url) {
     height: Math.max(0, Math.floor(Number(p.get("height")) || 0)),
     format: p.get("format") === "ts" ? "ts" : "fmp4",
     subs: p.get("subs") === "1",
+    // Whether the player decodes HEVC; without it, HEVC is converted too.
+    hevc: p.get("hevc") !== "0",
   };
   if (!/^[0-9A-Za-z_-]{1,40}$/.test(q.id) || !/^[0-9a-z]{1,5}$/.test(q.ext) || q.start > 86400 || q.audioTrack > 50 || q.height > 4320) return null;
   if (q.audioLanguage && !/^[a-z]{2,3}$/.test(q.audioLanguage)) return null;
@@ -616,7 +618,8 @@ async function startHls(q) {
     throw new Error(lastError.error, { cause: err });
   }
   const plan = q.format === "fmp4" ? described.hlsVideoPlan : described.videoPlan;
-  const video = q.video === "convert" || plan === "convert" ? "convert" : "copy";
+  const hevcRefused = !q.hevc && described.video && described.video.codec === "hevc";
+  const video = q.video === "convert" || plan === "convert" || hevcRefused ? "convert" : "copy";
   await takeSlot();
   const id = randomBytes(16).toString("hex");
   const dir = path.join(HLS_ROOT, id);
@@ -733,7 +736,17 @@ async function serveSessionFile(res, id, name) {
     .pipe(res);
 }
 
-function stopAll() {
+// The phone left the player. With its session's name, only that session's FFmpeg stops
+// (the TV may have started something since); without, everything does.
+function stopFor(id) {
+  if (id) {
+    const session = sessions.get(id);
+    if (session && session.child) {
+      if (active === session.child) active = null;
+      stopRun(session.child);
+    }
+    return;
+  }
   for (const run of fileRuns) run.abort.abort();
   if (active) {
     stopRun(active);
@@ -844,7 +857,7 @@ const server = http.createServer((req, res) => {
   if (pathname === "/v1/xtream") return xtream(res, url).catch((err) => failed(res, err));
   if (pathname === "/v1/fetch") return passFetch(req, res, url).catch((err) => failed(res, err));
   if (pathname === "/v1/stop") {
-    stopAll();
+    stopFor(/^[0-9a-f]{32}$/.test(url.searchParams.get("session") || "") ? url.searchParams.get("session") : "");
     return sendJson(res, 200, { ok: true });
   }
   const file = /^\/v1\/file\/(movie|series)\/([0-9A-Za-z_-]{1,40})\.([0-9a-z]{1,5})$/.exec(pathname);
@@ -861,7 +874,22 @@ const server = http.createServer((req, res) => {
     );
   }
   if (pathname === "/v1/hash") return fileHash(q).then((result) => sendJson(res, 200, result), (err) => failed(res, err));
-  if (pathname === "/v1/hls/start") return startHls(q).then((started) => sendJson(res, 200, started), (err) => failed(res, err));
+  if (pathname === "/v1/hls/start") {
+    // The phone may give up before the first pieces are ready (it left the player): then
+    // the session it never heard about is stopped, not left converting the whole film.
+    let gone = false;
+    res.on("close", () => {
+      if (!res.writableEnded) gone = true;
+    });
+    return startHls(q).then(
+      (started) => {
+        const session = sessions.get(started.session);
+        if (gone && session) return dropSession(session);
+        sendJson(res, 200, started);
+      },
+      (err) => failed(res, err),
+    );
+  }
   if (pathname === "/v1/hls/index.m3u8") {
     // For players that take a playlist's address and nothing else (the Roku): MPEG-TS
     // pieces unless asked otherwise, then a redirect to the playlist.
