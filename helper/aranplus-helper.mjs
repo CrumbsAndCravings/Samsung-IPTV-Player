@@ -757,12 +757,34 @@ function stopFor(id) {
 // --- The web app -------------------------------------------------------------------------
 //
 // Served from the web-iptv-player repo's build: "webApp" under "transcoder" in
-// personal.json, or the dist folder of a web-iptv-player checkout next to this repo.
+// personal.json, or the dist folder of a web-iptv-player checkout next to this repo
+// (or inside it, where a clone made from this folder lands).
+
+function webAppPlaces() {
+  const places = [process.env.ARANPLUS_WEB_APP, settings.webApp ? path.resolve(root, String(settings.webApp)) : ""];
+  places.push(path.resolve(root, "..", "web-iptv-player", "dist"), path.resolve(root, "web-iptv-player", "dist"));
+  return places.filter((dir) => dir);
+}
 
 function findWebApp() {
-  const candidates = [process.env.ARANPLUS_WEB_APP, settings.webApp ? path.resolve(root, String(settings.webApp)) : "", path.resolve(root, "..", "web-iptv-player", "dist")];
-  for (const dir of candidates) if (dir && existsSync(path.join(dir, "index.html"))) return dir;
+  for (const dir of webAppPlaces()) if (existsSync(path.join(dir, "index.html"))) return dir;
   return "";
+}
+
+// Where the helper looked, in its window: a checkout that isn't built yet says so.
+let lastMissingNote = 0;
+function explainMissingWebApp() {
+  if (Date.now() - lastMissingNote < 60000) return;
+  lastMissingNote = Date.now();
+  console.log("");
+  console.log("The iPhone app isn't built where the helper looks. It looked in:");
+  for (const dir of webAppPlaces()) {
+    const repo = path.dirname(dir);
+    const state = existsSync(path.join(repo, "package.json")) ? "the repo is there, but not built: run npm install, then npm run build, in " + repo : "nothing there";
+    console.log("  " + dir + "  (" + state + ")");
+  }
+  console.log('Build it in one of those places, or set "webApp" under "transcoder" in personal.json to its dist folder.');
+  console.log("");
 }
 
 let webApp = findWebApp();
@@ -783,12 +805,17 @@ const APP_TYPES = {
 
 const NO_APP_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>ARAN+</title>
 <style>body{font:17px/1.5 -apple-system,system-ui,sans-serif;background:#151028;color:#F7F3FF;padding:24px;max-width:640px;margin:auto}code{color:#FFD98A}</style></head>
-<body><h1>ARAN+ isn't on this computer yet</h1><p>The helper is running, but it can't find the iPhone app. On this computer, put the <code>web-iptv-player</code> repo next to this one and build it:</p>
-<p><code>npm install</code><br><code>npm run build</code></p><p>Then reload this page. (Or set <code>"webApp"</code> under <code>"transcoder"</code> in personal.json to the app's <code>dist</code> folder.)</p></body></html>`;
+<body><h1>ARAN+ isn't on this computer yet</h1><p>The helper is running and this phone reached it, but the helper can't find the iPhone app's build. The helper's window on the computer now lists the folders it looked in.</p>
+<p>On the computer, put the <code>web-iptv-player</code> repo next to the <code>Samsung-IPTV-Player</code> folder, and in it run:</p>
+<p><code>npm install</code><br><code>npm run build</code></p><p>Then reload this page; the helper needn't restart. (Or set <code>"webApp"</code> under <code>"transcoder"</code> in personal.json to the app's <code>dist</code> folder.)</p></body></html>`;
 
 function serveApp(res, pathname) {
-  if (!webApp) webApp = findWebApp();
   if (!webApp) {
+    webApp = findWebApp();
+    if (webApp) console.log("Found the iPhone app in " + webApp);
+  }
+  if (!webApp) {
+    explainMissingWebApp();
     res.writeHead(200, { "Content-Type": APP_TYPES[".html"], "Cache-Control": "no-store" });
     return res.end(NO_APP_PAGE);
   }
@@ -982,8 +1009,9 @@ server.listen(port, "0.0.0.0", async () => {
   console.log("at the code. Then Share > Add to Home Screen. The link holds the helper's key, so");
   console.log("keep it to yourself.");
   console.log(`  ${phoneLink}`);
-  if (!webApp) console.log("  (The iPhone app isn't built on this computer yet; the link explains how.)");
+  if (webApp) console.log("  (The iPhone app is in " + webApp + ")");
   for (const line of await qrLines(phoneLink)) console.log(line);
+  if (!webApp) explainMissingWebApp();
   console.log("");
   console.log("Leave this window open while you watch. Ctrl+C stops the helper.");
   console.log("");
