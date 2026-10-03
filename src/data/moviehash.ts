@@ -38,20 +38,24 @@ export function knownHash(key: string): string {
   return remembered()[key] || "";
 }
 
+// Keeps a title's hash, newest last, for the titles played last.
+export function rememberHash(key: string, hash: string): void {
+  if (!hash) return;
+  const all = remembered();
+  delete all[key];
+  all[key] = hash;
+  const keys = Object.keys(all);
+  for (const old of keys.slice(0, Math.max(0, keys.length - KEEP))) delete all[old];
+  writeJson("oshash", "items", all);
+}
+
 export function movieHash(key: string, url: string): Promise<string> {
   const known = knownHash(key);
   if (known) return Promise.resolve(known);
   return computeHash(url)
     .catch(() => "")
     .then((hash) => {
-      if (hash) {
-        const all = remembered();
-        delete all[key];
-        all[key] = hash;
-        const keys = Object.keys(all);
-        for (const old of keys.slice(0, Math.max(0, keys.length - KEEP))) delete all[old];
-        writeJson("oshash", "items", all);
-      }
+      rememberHash(key, hash);
       return hash;
     });
 }

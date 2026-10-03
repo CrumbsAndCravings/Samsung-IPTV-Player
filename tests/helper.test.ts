@@ -1,7 +1,8 @@
 // The helper's conversion plan (helper/plan.mjs): what FFmpeg is told for each kind of
 // file. The text below is what `ffmpeg -i` prints for real files.
 import { describe, expect, it } from "vitest";
-import { audioPlan, ffmpegArgs, parseProbe, providerUrl, redactor, videoPlan } from "../helper/plan.mjs";
+import { askedRange, audioPlan, ffmpegArgs, osHash, parseProbe, providerUrl, redactor, sizeFromAnswer, videoPlan } from "../helper/plan.mjs";
+import { osHashHex } from "../src/core/oshash";
 
 const AVI = `Input #0, avi, from 'http://host.example/movie/u/p/1.avi':
   Duration: 01:42:13.04, start: 0.000000, bitrate: 1191 kb/s
@@ -42,17 +43,17 @@ describe("the helper", () => {
 
   it("tells FFmpeg where to start and what to do with each track", () => {
     const mkv = parseProbe(MKV);
-    const copy = ffmpegArgs({ url: "http://p/1.mkv", start: 754, video: "copy", encoder: "libx264", probe: mkv });
+    const copy = ffmpegArgs({ input: "http://p/1.mkv", start: 754, video: "copy", encoder: "libx264", probe: mkv });
     const text = copy.join(" ");
     expect(text).toContain("-ss 754 -i http://p/1.mkv -map 0:V:0? -map 0:a?");
     expect(text).toContain("-c:v copy");
     expect(text).toContain("-c:a:0 ac3 -b:a:0 448k -c:a:1 copy");
     expect(text).toContain("-f mpegts");
     expect(copy[copy.length - 1]).toBe("pipe:1");
-    const avi = ffmpegArgs({ url: "http://p/1.avi", start: 0, video: "copy", encoder: "libx264", probe: parseProbe(AVI) }).join(" ");
+    const avi = ffmpegArgs({ input: "http://p/1.avi", start: 0, video: "copy", encoder: "libx264", probe: parseProbe(AVI) }).join(" ");
     expect(avi).not.toContain("-ss");
     expect(avi).toContain("-bsf:v mpeg4_unpack_bframes");
-    const converted = ffmpegArgs({ url: "http://p/1.avi", start: 0, video: "convert", encoder: "h264_qsv", probe: parseProbe(AVI) }).join(" ");
+    const converted = ffmpegArgs({ input: "http://p/1.avi", start: 0, video: "convert", encoder: "h264_qsv", probe: parseProbe(AVI) }).join(" ");
     expect(converted).toContain("-c:v h264_qsv");
     expect(converted).toContain("-c:a:0 aac");
   });
@@ -62,5 +63,29 @@ describe("the helper", () => {
     const url = providerUrl(login, "series", "77", "mkv");
     expect(url).toBe("http://host.example:8080/series/jane%20doe/pw%2F1/77.mkv");
     expect(redactor(login, "k3y123")(url + "?key=k3y123")).toBe("<server>/series/<user>/<password>/77.mkv?key=<key>");
+  });
+});
+
+describe("the helper's own reads", () => {
+  it("knows a file's size from the provider's answer", () => {
+    expect(sizeFromAnswer(206, { "content-range": "bytes 0-1048575/734003200" })).toBe(734003200);
+    expect(sizeFromAnswer(200, { "content-length": "1234" })).toBe(1234);
+    expect(sizeFromAnswer(206, {})).toBe(0);
+  });
+
+  it("reads the ranges FFmpeg asks for", () => {
+    expect(askedRange("bytes=100-", 1000)).toEqual({ start: 100, end: 999, partial: true });
+    expect(askedRange("bytes=100-199", 1000)).toEqual({ start: 100, end: 199, partial: true });
+    expect(askedRange("bytes=-200", 1000)).toEqual({ start: 800, end: 999, partial: true });
+    expect(askedRange(undefined, 1000)).toEqual({ start: 0, end: 999, partial: false });
+    expect(askedRange("bytes=900-5000", 1000).end).toBe(999);
+  });
+
+  it("fingerprints a file the way the app does", () => {
+    const head = new Uint8Array(65536).map((_, i) => (i * 37 + 11) % 256);
+    const tail = new Uint8Array(65536).map((_, i) => (i * 101 + 7) % 256);
+    for (const size of [131072, 5368709120, 734003200]) expect(osHash(size, head, tail)).toBe(osHashHex(head, tail, size));
+    const ff = new Uint8Array(64).fill(255);
+    expect(osHash(12884901895, ff, ff)).toBe("00000002fffffff7");
   });
 });

@@ -19,18 +19,18 @@ import { spawn, spawnSync } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import http from "node:http";
+import https from "node:https";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { ENCODERS, audioPlan, ffmpegArgs, parseProbe, providerUrl, redactor, videoPlan } from "./plan.mjs";
+import { ENCODERS, askedRange, audioPlan, ffmpegArgs, osHash, parseProbe, providerUrl, redactor, sizeFromAnswer, videoPlan } from "./plan.mjs";
 
-const VERSION = "1.0";
+const VERSION = "1.1";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const personalPath = process.env.ARANPLUS_PERSONAL || path.join(root, "personal.json");
 const DEFAULT_PORT = 8090;
 const PROBE_TIMEOUT_MS = 30000;
 const FIRST_BYTES_MS = 45000; // the provider can be slow to start a file
-const FREE_SLOT_MS = 1200; // lets the provider notice the last connection closed
 const INFO_TTL_MS = 6 * 3600 * 1000;
 const ENCODER_NAMES = {
   h264_nvenc: "the NVIDIA graphics card",
@@ -148,10 +148,259 @@ function pickEncoder() {
 
 const encoder = settings.encoder && ENCODERS[settings.encoder] ? settings.encoder : pickEncoder();
 
-// --- One connection at a time ---------------------------------------------------------
+// --- The provider's file ---------------------------------------------------------------
+//
+// FFmpeg never talks to the provider itself. Opening an AVI costs it six requests (the
+// start, the index at the end, back again, ...), and a provider takes a moment to start
+// each one, so the helper fetches the file itself:
+// - from the start, on one connection: the first 4 MB are read once, inspected, then
+//   fed to FFmpeg, followed by the rest of the same connection;
+// - from anywhere else, through a local address (/p/<token>) that answers FFmpeg's
+//   requests from a memory cache of the parts it keeps going back to (the start, the
+//   index) and asks the provider only for the rest.
+// There is never more than one provider connection open.
 
-let active = null; // the FFmpeg run using the provider's connection
+const BLOCK = 1 << 20;
+const HEAD_BYTES = 4 * BLOCK;
+const HEAD_WAIT_MS = 20000;
+const PROVIDER_WAIT_MS = 30000;
+const CACHE_PER_READ = 8 * BLOCK; // an index sits within the first few MB of a read
+const CACHE_PER_FILE = 32 * BLOCK;
+const FILES_KEPT = 3;
+const WARM_MS = 20000; // how long the connection that read the start waits for the stream
+const SETTLE_MS = 300; // after closing a connection, before the next
+const HASH_BYTES = 65536;
+const USER_AGENT = String(settings.userAgent || "Lavf/61.1.100"); // as FFmpeg introduces itself
+
+const files = new Map(); // "movie:123.avi" -> what the helper knows about the file
+const byToken = new Map();
+let provider = null; // the one provider connection
+let active = null; // the FFmpeg run
+let warmTimer = 0;
 let lastError = { error: "", at: 0 };
+
+function seconds(since) {
+  return ((Date.now() - since) / 1000).toFixed(1) + " s";
+}
+
+function fileFor(q) {
+  const id = q.kind + ":" + q.id + "." + q.ext;
+  let file = files.get(id);
+  if (file) files.delete(id); // most recent last
+  else {
+    file = { id, name: q.kind + " " + q.id + "." + q.ext, url: providerUrl(login, q.kind, q.id, q.ext), size: 0, blocks: new Map(), cached: 0, token: randomBytes(16).toString("hex"), info: null, infoAt: 0, pipeOk: false };
+    byToken.set(file.token, file);
+  }
+  files.set(id, file);
+  while (files.size > FILES_KEPT) {
+    const [oldest, old] = files.entries().next().value;
+    files.delete(oldest);
+    byToken.delete(old.token);
+  }
+  return file;
+}
+
+// The local address FFmpeg reads a file through (the provider's own when its size is
+// unknown, since the cache needs it).
+function localUrl(file) {
+  return file.size > 0 ? `http://127.0.0.1:${port}/p/${file.token}` : file.url;
+}
+
+// Keeps whole blocks (or the file's last one) of what was read, within the budget.
+function storeBlocks(file, offset, buf, always) {
+  for (let at = 0; at < buf.length; at += BLOCK) {
+    const piece = buf.subarray(at, at + BLOCK);
+    const index = (offset + at) / BLOCK;
+    const whole = piece.length === BLOCK || (file.size > 0 && offset + at + piece.length === file.size);
+    if (!whole || file.blocks.has(index)) continue;
+    if (!always && file.cached + piece.length > CACHE_PER_FILE) return;
+    file.blocks.set(index, Buffer.from(piece));
+    file.cached += piece.length;
+  }
+}
+
+function closeProvider() {
+  clearTimeout(warmTimer);
+  if (!provider) return;
+  provider.req.destroy();
+  provider = null;
+}
+
+// Opens the file at `start` (or with the given `range`), following redirects; any
+// other provider connection is closed first. `pos` is where the next byte from the
+// provider sits in the file.
+function openAt(file, start, range) {
+  closeProvider();
+  return new Promise((resolve, reject) => {
+    let hops = 0;
+    const go = (target) => {
+      const lib = target.startsWith("https:") ? https : http;
+      const conn = { file, req: null, res: null, pos: start, skip: 0, pending: null, next: start };
+      const req = lib.get(target, { headers: { "User-Agent": USER_AGENT, Accept: "*/*", Range: range || "bytes=" + start + "-" } }, (res) => {
+        clearTimeout(timer);
+        if (provider !== conn) {
+          req.destroy();
+          return reject(new Error("closed"));
+        }
+        const status = res.statusCode || 0;
+        res.on("error", () => undefined);
+        if (status >= 300 && status < 400 && res.headers.location && hops < 5) {
+          hops++;
+          req.destroy();
+          provider = null;
+          return go(new URL(res.headers.location, target).toString());
+        }
+        if (status !== 200 && status !== 206) {
+          req.destroy();
+          provider = null;
+          return reject(new Error("The provider answered HTTP " + status + (res.statusMessage ? " " + res.statusMessage : "") + "."));
+        }
+        const size = sizeFromAnswer(status, res.headers);
+        if (size > 0) file.size = size;
+        // A provider that ignores the range sends the whole file: skip to `start`.
+        if (status === 200) conn.skip = start;
+        conn.res = res;
+        resolve(conn);
+      });
+      conn.req = req;
+      provider = conn;
+      const timer = setTimeout(() => req.destroy(new Error("no answer in " + PROVIDER_WAIT_MS / 1000 + " seconds")), PROVIDER_WAIT_MS);
+      req.on("error", (err) => {
+        clearTimeout(timer);
+        if (provider === conn) provider = null;
+        reject(new Error("Couldn't reach the provider: " + err.message));
+      });
+    };
+    go(file.url);
+  });
+}
+
+// Sends what a provider connection brings to `out`, from byte `from` to byte `to` of
+// the file, caching up to `cacheBytes` of it on the way. `done(ok)` when it ends.
+function forward(conn, out, from, to, cacheBytes, done) {
+  const file = conn.file;
+  let blockStart = conn.pos;
+  let acc = [];
+  let accBytes = 0;
+  let cachedHere = 0;
+  const caching = cacheBytes > 0 && conn.pos % BLOCK === 0;
+  let finished = false;
+  const finish = (ok) => {
+    if (finished) return;
+    finished = true;
+    conn.res.off("data", onData);
+    done(ok);
+  };
+  function onData(data) {
+    let chunk = data;
+    if (conn.skip > 0) {
+      if (chunk.length <= conn.skip) {
+        conn.skip -= chunk.length;
+        return;
+      }
+      chunk = chunk.subarray(conn.skip);
+      conn.skip = 0;
+    }
+    const at = conn.pos;
+    conn.pos += chunk.length;
+    if (caching && cachedHere < cacheBytes) {
+      acc.push(chunk);
+      accBytes += chunk.length;
+      while (accBytes >= BLOCK || (file.size > 0 && accBytes > 0 && blockStart + accBytes >= file.size)) {
+        const all = Buffer.concat(acc);
+        const take = Math.min(BLOCK, all.length);
+        storeBlocks(file, blockStart, all.subarray(0, take), false);
+        blockStart += take;
+        cachedHere += take;
+        acc = take < all.length ? [all.subarray(take)] : [];
+        accBytes = all.length - take;
+        if (take < BLOCK) break;
+      }
+    }
+    const first = Math.max(0, from - at);
+    const last = Math.min(chunk.length, to - at + 1);
+    if (last > first && !out.write(chunk.subarray(first, last))) {
+      conn.res.pause();
+      out.once("drain", () => conn.res.resume());
+    }
+    if (conn.pos > to) finish(true);
+  }
+  conn.res.on("data", onData);
+  conn.res.once("end", () => finish(true));
+  conn.res.once("error", () => finish(false));
+  conn.res.resume();
+}
+
+// Waits until `stream` takes more, or goes away.
+function drained(stream) {
+  return new Promise((resolve) => {
+    const done = () => {
+      stream.off("drain", done);
+      stream.off("close", done);
+      resolve();
+    };
+    stream.once("drain", done);
+    stream.once("close", done);
+  });
+}
+
+// Reads the first 4 MB into the cache. The connection stays open just after them, so a
+// stream from the start carries on with it.
+async function readHead(file) {
+  const since = Date.now();
+  const conn = await openAt(file, 0);
+  const chunks = [];
+  let got = 0;
+  let firstAt = 0;
+  await new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      conn.res.off("data", onData);
+      resolve();
+    };
+    const onData = (chunk) => {
+      if (!firstAt) firstAt = Date.now();
+      chunks.push(chunk);
+      got += chunk.length;
+      if (got >= HEAD_BYTES) {
+        conn.res.pause();
+        done();
+      }
+    };
+    const timer = setTimeout(() => {
+      conn.res.pause();
+      done();
+    }, HEAD_WAIT_MS);
+    conn.res.on("data", onData);
+    conn.res.once("end", done);
+    conn.res.once("error", done);
+  });
+  const all = Buffer.concat(chunks);
+  const head = all.subarray(0, Math.min(all.length, HEAD_BYTES));
+  storeBlocks(file, 0, head, true);
+  conn.pos = all.length;
+  conn.next = head.length;
+  conn.pending = all.subarray(head.length);
+  say(`Opening ${file.name}: the provider started sending after ${firstAt ? seconds(since) : "-"}, the first ${(head.length / BLOCK).toFixed(1)} MB took ${seconds(since)}.`);
+  return head;
+}
+
+// The last 64 KB, for the OpenSubtitles fingerprint the TV would otherwise fetch itself
+// (two more requests before the video starts). Best effort.
+async function readTail(file) {
+  const conn = await openAt(file, 0, "bytes=-" + HASH_BYTES);
+  if (conn.res.statusCode !== 206) return closeProvider(); // the whole file: not worth it
+  const chunks = [];
+  await new Promise((resolve) => {
+    conn.res.on("data", (chunk) => chunks.push(chunk));
+    conn.res.once("end", resolve);
+    conn.res.once("error", resolve);
+    conn.res.resume();
+  });
+  closeProvider();
+  const tail = Buffer.concat(chunks);
+  if (tail.length === HASH_BYTES) file.tail = tail;
+}
 
 // Stops FFmpeg on purpose, so its exit isn't reported as a problem.
 function stopRun(child) {
@@ -159,12 +408,16 @@ function stopRun(child) {
   child.kill();
 }
 
+// Frees the provider's one connection for something new.
 async function takeSlot() {
-  if (!active) return;
-  const old = active;
-  active = null;
-  stopRun(old);
-  await new Promise((resolve) => setTimeout(resolve, FREE_SLOT_MS));
+  const busy = !!active || !!provider;
+  if (active) {
+    const old = active;
+    active = null;
+    stopRun(old);
+  }
+  closeProvider();
+  if (busy) await new Promise((resolve) => setTimeout(resolve, SETTLE_MS));
 }
 
 function lastLines(text) {
@@ -183,43 +436,155 @@ function noteError(message) {
 
 // --- What a file holds ----------------------------------------------------------------
 
-const infoCache = new Map();
-
-function probe(url) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(ffmpeg.path, ["-hide_banner", "-nostdin", "-i", url], { windowsHide: true });
-    active = child;
+// FFmpeg's description of a file: from bytes handed to it, or from an address.
+function probe(input, bytes) {
+  return new Promise((resolve) => {
+    const args = bytes ? ["-hide_banner", "-i", "pipe:0"] : ["-hide_banner", "-nostdin", "-i", input];
+    const child = spawn(ffmpeg.path, args, { windowsHide: true });
     let text = "";
     child.stderr.on("data", (d) => {
       text = (text + d).slice(-200000);
     });
     const timer = setTimeout(() => child.kill(), PROBE_TIMEOUT_MS);
-    child.on("error", (err) => reject(err));
+    child.on("error", (err) => {
+      text += "\n" + err.message;
+    });
     child.on("close", (code, signal) => {
       clearTimeout(timer);
-      if (active === child) active = null;
-      const result = parseProbe(text);
-      if (!result.video && result.audio.length === 0) reject(new Error(lastLines(text) || "FFmpeg stopped without saying why (" + (signal || "code " + code) + ")."));
-      else resolve(result);
+      if (!/Stream #/.test(text)) text += "\nFFmpeg stopped without saying why (" + (signal || "code " + code) + ").";
+      resolve(text);
     });
+    if (bytes) {
+      child.stdin.on("error", () => undefined);
+      child.stdin.end(bytes);
+    }
   });
 }
 
 async function info(q) {
-  const cacheKey = q.kind + ":" + q.id;
-  const cached = infoCache.get(cacheKey);
-  if (cached && Date.now() - cached.at < INFO_TTL_MS) return cached.info;
+  const file = fileFor(q);
+  if (file.info && Date.now() - file.infoAt < INFO_TTL_MS && file.blocks.has(0)) return { ...file.info, hash: file.hash || "" };
   await takeSlot();
-  const result = await probe(providerUrl(login, q.kind, q.id, q.ext));
-  const described = {
+  // The fingerprint's end first, so the connection that reads the start can stay open.
+  if (q.hash && !file.tail) {
+    try {
+      await readTail(file);
+    } catch (err) {
+      say("  No fingerprint for online subtitles: " + err.message);
+    }
+  }
+  const head = await readHead(file);
+  if (file.tail && head.length >= HASH_BYTES && file.size >= 2 * HASH_BYTES) file.hash = osHash(file.size, head.subarray(0, HASH_BYTES), file.tail);
+  let text = await probe("", head);
+  let result = parseProbe(text);
+  file.pipeOk = !!(result.video || result.audio.length);
+  if (!file.pipeOk) {
+    // Some files (MP4 with its index at the end) can't be read from their start alone.
+    closeProvider();
+    text = await probe(localUrl(file), null);
+    result = parseProbe(text);
+    if (!result.video && !result.audio.length) throw new Error(lastLines(text) || "FFmpeg couldn't read the file.");
+  }
+  file.info = {
     duration: result.duration,
     video: result.video,
     audio: result.audio.map((a) => ({ ...a, plan: audioPlan(a) })),
     videoPlan: result.video ? videoPlan(result.video.codec) : "copy",
     encoder,
   };
-  infoCache.set(cacheKey, { at: Date.now(), info: described });
-  return described;
+  file.infoAt = Date.now();
+  // Keep the connection for a stream from the start, but not for long.
+  if (q.start > 0 || !file.pipeOk) closeProvider();
+  else {
+    clearTimeout(warmTimer);
+    const warm = provider;
+    warmTimer = setTimeout(() => {
+      if (provider === warm && !warm.inUse) closeProvider();
+    }, WARM_MS);
+  }
+  return { ...file.info, hash: file.hash || "" };
+}
+
+// Feeds a file to FFmpeg from the start: the cached first blocks, then the rest from
+// the provider (on the connection that read them, when it's still open).
+async function feedFromStart(child, file) {
+  const stdin = child.stdin;
+  stdin.on("error", () => undefined);
+  let gone = false;
+  child.once("close", () => {
+    gone = true;
+  });
+  let pos = 0;
+  for (;;) {
+    const block = file.blocks.get(pos / BLOCK);
+    if (!block) break;
+    pos += block.length;
+    if (!stdin.write(block)) await drained(stdin);
+    if (gone) return;
+  }
+  if (file.size > 0 && pos >= file.size) return stdin.end();
+  let conn = provider && provider.file === file && provider.next === pos ? provider : null;
+  if (!conn) conn = await openAt(file, pos);
+  if (gone) return closeProvider();
+  conn.inUse = true;
+  clearTimeout(warmTimer);
+  if (conn.pending && conn.pending.length) stdin.write(conn.pending);
+  conn.pending = null;
+  const ownConn = conn;
+  child.once("close", () => {
+    if (provider === ownConn) closeProvider();
+  });
+  forward(conn, stdin, conn.pos, file.size > 0 ? file.size - 1 : Infinity, 0, () => stdin.end());
+}
+
+// The local address: answers FFmpeg's range requests from the cache, and the rest from
+// the provider. Only this computer may ask.
+async function serveFile(req, res, file) {
+  const remote = req.socket.remoteAddress || "";
+  if (!/^(127\.|::1$|::ffff:127\.)/.test(remote)) {
+    res.writeHead(403);
+    return res.end();
+  }
+  const want = askedRange(req.headers.range, file.size);
+  if (want.start >= file.size) {
+    res.writeHead(416, { "Content-Range": "bytes */" + file.size });
+    return res.end();
+  }
+  const headers = { "Content-Type": "application/octet-stream", "Accept-Ranges": "bytes", "Content-Length": String(want.end - want.start + 1) };
+  if (want.partial) headers["Content-Range"] = `bytes ${want.start}-${want.end}/${file.size}`;
+  res.writeHead(want.partial ? 206 : 200, headers);
+  if (req.method === "HEAD") return res.end();
+  let closed = false;
+  let conn = null;
+  res.on("close", () => {
+    closed = true;
+    if (conn && provider === conn) closeProvider();
+  });
+  let pos = want.start;
+  while (pos <= want.end && !closed) {
+    const index = Math.floor(pos / BLOCK);
+    const block = file.blocks.get(index);
+    if (!block) break;
+    const from = pos - index * BLOCK;
+    const piece = block.subarray(from, Math.min(block.length, from + (want.end - pos + 1)));
+    pos += piece.length;
+    if (!res.write(piece)) await drained(res);
+  }
+  if (closed) return;
+  if (pos > want.end) return res.end();
+  // From the start of the block, so the whole block can be cached too.
+  const aligned = Math.floor(pos / BLOCK) * BLOCK;
+  try {
+    conn = await openAt(file, aligned);
+  } catch (err) {
+    if (err.message !== "closed") noteError("Couldn't read " + file.name + " from the provider: " + err.message);
+    return res.destroy();
+  }
+  if (closed) return closeProvider();
+  forward(conn, res, pos, want.end, CACHE_PER_READ, () => {
+    if (provider === conn) closeProvider();
+    res.end();
+  });
 }
 
 // --- Requests -------------------------------------------------------------------------
@@ -245,6 +610,7 @@ function readQuery(url) {
     ext: (p.get("ext") || "").toLowerCase(),
     start: Math.max(0, Math.floor(Number(p.get("start")) || 0)),
     video: p.get("video") === "convert" ? "convert" : "copy",
+    hash: p.get("hash") === "1",
   };
   if (!/^[0-9A-Za-z_-]{1,40}$/.test(q.id) || !/^[0-9a-z]{1,5}$/.test(q.ext) || q.start > 86400) return null;
   return q;
@@ -264,6 +630,7 @@ function describePlan(described, video) {
 }
 
 async function stream(req, res, q) {
+  const since = Date.now();
   let described;
   try {
     described = await info(q);
@@ -272,14 +639,31 @@ async function stream(req, res, q) {
     return sendJson(res, 502, { error: lastError.error });
   }
   if (res.destroyed) return;
+  const file = fileFor(q);
   // Pictures that can't be repackaged are converted whatever the TV asked for.
   const video = q.video === "convert" || described.videoPlan === "convert" ? "convert" : "copy";
-  const args = ffmpegArgs({ url: providerUrl(login, q.kind, q.id, q.ext), start: q.start, video, encoder, probe: described });
-  await takeSlot();
+  // From the start, the helper feeds FFmpeg itself; elsewhere FFmpeg reads the local
+  // address, which can jump.
+  const piped = q.start === 0 && file.pipeOk && file.blocks.has(0);
+  if (piped && provider && provider.file === file && !provider.inUse) {
+    if (active) {
+      const old = active;
+      active = null;
+      stopRun(old);
+    }
+  } else await takeSlot();
   if (res.destroyed) return;
-  say(`Playing ${q.kind} ${q.id}.${q.ext} from ${clock(q.start)}: ${describePlan(described, video)}`);
+  const args = ffmpegArgs({ input: piped ? "pipe:0" : localUrl(file), start: q.start, video, encoder, probe: described });
+  say(`Playing ${file.name} from ${clock(q.start)}: ${describePlan(described, video)}`);
+  if (process.env.ARANPLUS_HELPER_DEBUG) say("  reading " + (piped ? "from the start, fed by the helper" : localUrl(file)));
   const child = spawn(ffmpeg.path, args, { windowsHide: true });
   active = child;
+  if (piped) {
+    feedFromStart(child, file).catch((err) => {
+      noteError("Couldn't read " + file.name + " from the provider: " + err.message);
+      stopRun(child);
+    });
+  }
   const started = Date.now();
   let stderr = "";
   let sending = false;
@@ -295,6 +679,7 @@ async function stream(req, res, q) {
   child.stdout.once("data", (chunk) => {
     sending = true;
     clearTimeout(waiting);
+    say(`  Sending to the TV after ${seconds(since)}.`);
     // A plain stream with no length, the way IPTV servers send live video.
     res.removeHeader("Transfer-Encoding");
     res.writeHead(200, { "Content-Type": "video/mp2t", Connection: "close", "Cache-Control": "no-store", ...CORS });
@@ -307,13 +692,13 @@ async function stream(req, res, q) {
     if (active === child) active = null;
     const secs = Math.round((Date.now() - started) / 1000);
     if (!sending) {
-      noteError((lastLines(stderr) || "FFmpeg stopped (" + code + ").") + " (" + q.kind + " " + q.id + "." + q.ext + ")");
+      noteError((lastLines(stderr) || "FFmpeg stopped (" + code + ").") + " (" + file.name + ")");
       if (!res.headersSent) sendJson(res, 502, { error: lastError.error });
       else res.end();
       return;
     }
     if (code !== 0 && !child.stoppedByHelper && stderr.trim() !== "") noteError(lastLines(stderr));
-    say(`Stopped after ${clock(secs)}.`);
+    say(`  Stopped after ${clock(secs)}.`);
     res.end();
   });
   // The TV went away (Back, a jump, another title): free the provider's connection.
@@ -321,6 +706,7 @@ async function stream(req, res, q) {
     if (!res.writableEnded && active === child) {
       active = null;
       stopRun(child);
+      closeProvider();
     }
   });
 }
@@ -332,6 +718,11 @@ const server = http.createServer((req, res) => {
     return res.end();
   }
   if (url.pathname === "/") return sendJson(res, 200, { ok: true, service: "aranplus-helper", version: VERSION, encoder });
+  if (url.pathname.indexOf("/p/") === 0) {
+    const file = byToken.get(url.pathname.slice(3));
+    if (!file || !file.size) return sendJson(res, 404, { error: "Nothing here." });
+    return serveFile(req, res, file).catch(() => res.destroy());
+  }
   if (!keyMatches(url.searchParams.get("key"))) return sendJson(res, 401, { error: "Wrong or missing key." });
   if (url.pathname === "/v1/last-error") return sendJson(res, 200, lastError);
   const q = readQuery(url);
@@ -387,5 +778,6 @@ server.listen(port, "0.0.0.0", () => {
 
 process.on("SIGINT", () => {
   if (active) stopRun(active);
+  closeProvider();
   process.exit(0);
 });

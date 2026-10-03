@@ -62,16 +62,19 @@ export const ENCODERS = {
   libx264: ["-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p", "-profile:v", "high", "-level:v", "4.1"],
 };
 
-// The FFmpeg arguments for one stream. `start` in seconds; `video` "copy" or "convert".
-export function ffmpegArgs({ url, start, video, encoder, probe }) {
+// The FFmpeg arguments for one stream. `input` is a URL, or "pipe:0" when the helper
+// feeds the file to FFmpeg itself (from the start, on one provider connection);
+// `start` in seconds; `video` "copy" or "convert".
+export function ffmpegArgs({ input, start, video, encoder, probe }) {
   const args = ["-hide_banner", "-nostdin", "-loglevel", "error"];
-  // Picks up again if the provider's connection drops for a moment.
-  args.push("-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5");
+  const piped = input === "pipe:0";
+  // Picks up again if a connection drops for a moment.
+  if (!piped) args.push("-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5");
   // AVI files often lack timestamps; make them up so the stream stays in step.
   args.push("-fflags", "+genpts");
-  if (start > 0) args.push("-ss", String(start));
+  if (start > 0 && !piped) args.push("-ss", String(start));
   // "V" leaves out cover pictures, which some files carry as a second video stream.
-  args.push("-i", url, "-map", "0:V:0?", "-map", "0:a?", "-sn", "-dn");
+  args.push("-i", input, "-map", "0:V:0?", "-map", "0:a?", "-sn", "-dn");
   const codec = probe && probe.video ? probe.video.codec : "";
   if (video === "convert") {
     args.push(...(ENCODERS[encoder] || ENCODERS.libx264));
@@ -118,4 +121,35 @@ export function redactor(login, key) {
     for (const [value, label] of secrets) out = out.split(value).join(label);
     return out;
   };
+}
+
+// The file's full size from a provider's answer: Content-Range "bytes 0-99/12345" for
+// a range, Content-Length for the whole file; 0 when it doesn't say.
+export function sizeFromAnswer(status, headers) {
+  const range = /\/(\d+)\s*$/.exec(String(headers["content-range"] || ""));
+  if (status === 206 && range) return Number(range[1]);
+  if (status === 200 && headers["content-length"]) return Number(headers["content-length"]) || 0;
+  return 0;
+}
+
+// The byte range a request asks for ("bytes=100-" or "bytes=100-199"), within `size`.
+export function askedRange(header, size) {
+  const match = /bytes=(\d*)-(\d*)/.exec(String(header || ""));
+  if (!match || (match[1] === "" && match[2] === "")) return { start: 0, end: size - 1, partial: false };
+  if (match[1] === "") return { start: Math.max(0, size - Number(match[2])), end: size - 1, partial: true };
+  const start = Number(match[1]);
+  const end = match[2] === "" ? size - 1 : Math.min(Number(match[2]), size - 1);
+  return { start, end, partial: true };
+}
+
+// OpenSubtitles' fingerprint of a file (the app's src/core/oshash.ts): its size plus
+// the first and last 64 KB read as little-endian 64-bit words, summed modulo 2^64.
+export function osHash(size, head, tail) {
+  const mask = (1n << 64n) - 1n;
+  let sum = BigInt(size);
+  for (const part of [head, tail]) {
+    const buf = Buffer.from(part);
+    for (let i = 0; i + 8 <= buf.length; i += 8) sum = (sum + buf.readBigUInt64LE(i)) & mask;
+  }
+  return sum.toString(16).padStart(16, "0");
 }

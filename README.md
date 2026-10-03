@@ -93,7 +93,8 @@ The TV plays MKV and MP4 files with H.264 or HEVC pictures, but not AVI files (o
 
 - **The picture** is kept as it is when the TV plays it (H.264, HEVC). DivX and Xvid are first just repackaged, which takes almost no computing power; if the TV still refuses, they are converted to H.264, and ARAN+ remembers which way worked. Conversion uses the graphics card or Intel Quick Sync when the computer has one, otherwise the processor (fine for standard definition).
 - **The sound** is kept when it is AAC, AC-3 or E-AC-3; DTS and TrueHD become AC-3 (surround stays surround), and the rest AAC.
-- **Jumping** starts the helper's stream again at the new time, so a jump takes a few seconds. Resuming works the same way.
+- **Few requests to the provider,** since it takes a moment to start each one. FFmpeg never asks the provider itself (opening an AVI would cost it six requests): the helper reads the file with one connection at a time and hands FFmpeg the bytes. A title from the beginning takes one request, two with online subtitles set up (the helper also fingerprints the file for OpenSubtitles, so the TV doesn't have to). For resuming and jumping, the helper keeps the start of the file and its index in memory, so a jump costs one request.
+- **Jumping** starts the helper's stream again at the new time, so a jump takes about as long as the provider takes to start sending. Resuming works the same way.
 - The file's own subtitle tracks don't come through; online subtitles still work.
 
 **Set it up on Windows (once):**
