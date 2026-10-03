@@ -114,6 +114,8 @@ The helper also serves ARAN+ for the iPhone, a web app in [CrumbsAndCravings/web
 - **converts the rest into HLS,** the streaming format Safari plays, the way Safari likes it best: a playlist for the whole film from the start, in six-second pieces, so the phone knows the length, starts at once and jumps by itself. The helper makes each piece when the phone asks for it: FFmpeg converts the picture to H.264 (with the graphics card when there is one) and the sound to AAC, as fast as it can from where it was started, into MPEG-TS pieces in the computer's temp folder; a piece it has made is sent at once, and a jump elsewhere starts FFmpeg again from there (a few seconds). Every run cuts the film at the same places and keeps its own timestamps, so pieces from different runs play as one. The file's own text subtitles are written out as WebVTT alongside. Old pieces are deleted a couple of minutes after the phone stops asking for them, and all of them when the helper starts. The window says when the phone opened the stream and started playing, and how long each jump took;
 - **passes OpenSubtitles requests on,** and reads a file's moviehash for "matches this file" results.
 
+With [Tailscale](https://tailscale.com) on the computer and the phone, the helper also shows a link at its Tailscale address, which the phone reaches on 5G and on any Wi-Fi (the iPhone app's README has the steps).
+
 The TV's way of using the helper hasn't changed. The phone and the TV share the provider's one connection, so starting a video on one stops the other.
 
 ## Setup checks on the TV

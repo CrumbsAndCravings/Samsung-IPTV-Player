@@ -148,6 +148,20 @@ function lanAddress() {
 }
 
 const address = lanAddress();
+
+// This computer's Tailscale address (100.64.0.0 to 100.127.255.255), when Tailscale is on:
+// a private network of your own devices, so the phone reaches the helper from anywhere
+// (5G, another Wi-Fi) at one address. "" without it.
+function tailscaleAddress() {
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const a of list || []) {
+      if (a.family !== "IPv4" && a.family !== 4) continue;
+      const parts = a.address.split(".").map(Number);
+      if (parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127) return a.address;
+    }
+  }
+  return "";
+}
 let settings = personal.transcoder && typeof personal.transcoder === "object" ? personal.transcoder : null;
 let addedSettings = false;
 if (!settings || !settings.url || !settings.key) {
@@ -1350,14 +1364,27 @@ server.listen(port, "0.0.0.0", async () => {
     console.log("  private networks.");
   }
   // The phone needs this computer's address now, not the one the TV was built with.
-  const phoneLink = `http://${address}:${port}/app/?key=${encodeURIComponent(key)}`;
+  const linkAt = (host) => `http://${host}:${port}/app/?key=${encodeURIComponent(key)}`;
+  const tailscale = tailscaleAddress();
   console.log("");
-  console.log("On your iPhone (on the same Wi-Fi), open this link in Safari, or point the camera");
-  console.log("at the code. Then Share > Add to Home Screen. The link holds the helper's key, so");
-  console.log("keep it to yourself.");
-  console.log(`  ${phoneLink}`);
+  if (tailscale) {
+    // One address for every network the phone is on, so it's the one to add.
+    console.log("On your iPhone, with Tailscale on, open this link in Safari, or point the camera at");
+    console.log("the code. It works on 5G and on any Wi-Fi. Then Share > Add to Home Screen. The");
+    console.log("link holds the helper's key, so keep it to yourself.");
+    console.log(`  ${linkAt(tailscale)}`);
+    for (const line of await qrLines(linkAt(tailscale))) console.log(line);
+    console.log(`  Without Tailscale, on this computer's Wi-Fi only: ${linkAt(address)}`);
+  } else {
+    console.log("On your iPhone (on the same Wi-Fi), open this link in Safari, or point the camera");
+    console.log("at the code. Then Share > Add to Home Screen. The link holds the helper's key, so");
+    console.log("keep it to yourself.");
+    console.log(`  ${linkAt(address)}`);
+    for (const line of await qrLines(linkAt(address))) console.log(line);
+    console.log("  To watch on 5G or another Wi-Fi too, put Tailscale (tailscale.com) on this computer");
+    console.log("  and the phone, and start the helper again: it then shows a link that works anywhere.");
+  }
   if (webApp) console.log("  (The iPhone app is in " + webApp + ")");
-  for (const line of await qrLines(phoneLink)) console.log(line);
   if (!webApp) explainMissingWebApp();
   console.log("");
   console.log("Leave this window open while you watch. Ctrl+C stops the helper.");
