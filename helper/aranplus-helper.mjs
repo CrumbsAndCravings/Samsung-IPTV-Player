@@ -669,7 +669,8 @@ const server = http.createServer((req, res) => {
   const sessionPath = /^\/v1\/hls\/s\/([^/]+)\/([^/]+)$/.exec(url.pathname);
   if (sessionPath) return serveSessionFile(req, res, sessionPath[1], sessionPath[2]);
   if (!keyMatches(url.searchParams.get("key"))) return sendJson(res, 401, { error: "Wrong or missing key." });
-  if (url.pathname === "/v1/last-error") return sendJson(res, 200, lastError);
+  // "ago" (seconds) lets a TV tell a fresh reason from an old one.
+  if (url.pathname === "/v1/last-error") return sendJson(res, 200, { ...lastError, ago: lastError.at ? Math.round((Date.now() - lastError.at) / 1000) : -1 });
   if (url.pathname === "/v1/subtitles.srt") {
     return subtitles(res, url.searchParams).catch((err) => {
       if (!res.headersSent) sendJson(res, 500, { error: err.message });

@@ -14,6 +14,30 @@ repositories.
 The session needs both repositories: Part A changes the helper in the Samsung repo,
 Part B changes the Roku app.
 
+## Status
+
+Parts A and B are built and tested off the device (helper 1.1 here, Roku app 0.5.0 on
+the Roku repo's `claude/new-session-700kir` branch); the checks on the Roku itself (6)
+are still to do. Where the build differs from the plan below:
+
+- **A1:** `/v1/hls/index.m3u8` answers with a small master playlist naming the
+  session's own playlist (`s/<session>/index.m3u8`), rather than the playlist itself.
+  Roku re-reads the playlist it plays, and re-reading the first address would start
+  FFmpeg again. An identical request also gets the running session back.
+- **A1:** a session not asked for in 2 minutes stops FFmpeg; its files go then, or
+  after 30 minutes for the newest one (a long pause). A stopped session's playlist is
+  marked complete, and the Roku opens the stream again from where it ended.
+- **New:** `/v1/stop`, sent by the Roku when it leaves a helper video: with HLS no
+  connection closes when the TV goes away, and FFmpeg would keep the provider's one
+  connection busy.
+- **New:** `track=<n>` puts the sound track in the viewer's language first;
+  `/v1/subtitles.srt` re-times online subtitles for a stream that starts partway (Roku
+  times them against its own clock); `/v1/last-error` reports `ago`.
+- **A2:** `audio=aac` keeps stereo AAC as it is; the Roku asks for it unless it decodes
+  both AC-3 and E-AC-3. HLS segments start at timestamp 0 (`-muxdelay 0`).
+- **B5:** the offset is the `start` asked for; the helper's timestamps start at 0 there.
+- Details: the Roku repo's `docs/features.md` §15.
+
 ## 1. Goal
 
 Titles the Roku can't play today should play on it through the helper on the user's
