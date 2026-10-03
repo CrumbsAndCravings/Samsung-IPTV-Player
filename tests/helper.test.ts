@@ -3,9 +3,11 @@
 import { describe, expect, it } from "vitest";
 import {
   BROWSER_USER_AGENT,
+  askedRange,
   audioPlan,
   ffmpegArgs,
   masterPlaylist,
+  osHash,
   outputSize,
   parseProbe,
   playlistState,
@@ -16,9 +18,11 @@ import {
   scaleFilter,
   sessionFile,
   shiftSubtitles,
+  sizeFromAnswer,
   subtitleSource,
   videoPlan,
 } from "../helper/plan.mjs";
+import { osHashHex } from "../src/core/oshash";
 
 const AVI = `Input #0, avi, from 'http://host.example/movie/u/p/1.avi':
   Duration: 01:42:13.04, start: 0.000000, bitrate: 1191 kb/s
@@ -59,24 +63,24 @@ describe("the helper", () => {
 
   it("tells FFmpeg where to start and what to do with each track", () => {
     const mkv = parseProbe(MKV);
-    const copy = ffmpegArgs({ url: "http://p/1.mkv", start: 754, video: "copy", encoder: "libx264", probe: mkv });
+    const copy = ffmpegArgs({ input: "http://p/1.mkv", start: 754, video: "copy", encoder: "libx264", probe: mkv });
     const text = copy.join(" ");
     expect(text).toContain("-ss 754 -i http://p/1.mkv -map 0:V:0? -map 0:a?");
     expect(text).toContain("-c:v copy");
     expect(text).toContain("-c:a:0 ac3 -b:a:0 448k -c:a:1 copy");
     expect(text).toContain("-f mpegts");
     expect(copy[copy.length - 1]).toBe("pipe:1");
-    const avi = ffmpegArgs({ url: "http://p/1.avi", start: 0, video: "copy", encoder: "libx264", probe: parseProbe(AVI) }).join(" ");
+    const avi = ffmpegArgs({ input: "http://p/1.avi", start: 0, video: "copy", encoder: "libx264", probe: parseProbe(AVI) }).join(" ");
     expect(avi).not.toContain("-ss");
     expect(avi).toContain("-bsf:v mpeg4_unpack_bframes");
-    const converted = ffmpegArgs({ url: "http://p/1.avi", start: 0, video: "convert", encoder: "h264_qsv", probe: parseProbe(AVI) }).join(" ");
+    const converted = ffmpegArgs({ input: "http://p/1.avi", start: 0, video: "convert", encoder: "h264_qsv", probe: parseProbe(AVI) }).join(" ");
     expect(converted).toContain("-c:v h264_qsv");
     expect(converted).toContain("-c:a:0 aac");
   });
 
   it("converts for the Roku: smaller pictures, stereo AAC, the viewer's track first", () => {
     const mkv = parseProbe(MKV);
-    const args = ffmpegArgs({ url: "http://p/1.mkv", start: 0, video: "convert", encoder: "libx264", probe: mkv, height: 720, audio: "aac", track: 1 });
+    const args = ffmpegArgs({ input: "http://p/1.mkv", start: 0, video: "convert", encoder: "libx264", probe: mkv, height: 720, audio: "aac", track: 1 });
     const text = args.join(" ");
     // Scaled to at most 720 lines, keeping the shape, sizes even.
     expect(args[args.indexOf("-vf") + 1]).toBe("scale=-2:trunc(min(ih\\,720)/2)*2");
@@ -88,30 +92,36 @@ describe("the helper", () => {
     expect(audioPlan({ codec: "aac", channels: 6 }, "aac")).toBe("aac");
     expect(audioPlan({ codec: "ac3", channels: 2 }, "aac")).toBe("aac");
     // Without the options, nothing changes for the Samsung TV.
-    const plain = ffmpegArgs({ url: "http://p/1.mkv", start: 0, video: "convert", encoder: "libx264", probe: mkv }).join(" ");
+    const plain = ffmpegArgs({ input: "http://p/1.mkv", start: 0, video: "convert", encoder: "libx264", probe: mkv }).join(" ");
     expect(plain).toContain("-map 0:a? -sn");
     expect(plain).toContain("-vf scale=trunc(iw/2)*2:trunc(ih/2)*2 -g 50");
     expect(plain).not.toContain("-hwaccel");
     expect(plain).not.toContain("-user_agent");
     // A track number the file doesn't have is ignored.
-    expect(ffmpegArgs({ url: "u", start: 0, video: "copy", encoder: "libx264", probe: mkv, track: 7 }).join(" ")).toContain("-map 0:a? -sn");
+    expect(ffmpegArgs({ input: "u", start: 0, video: "copy", encoder: "libx264", probe: mkv, track: 7 }).join(" ")).toContain("-map 0:a? -sn");
   });
 
-  it("decodes on the graphics card only when converting, and introduces itself as a browser", () => {
+  it("decodes on the graphics card only when converting, and introduces itself when it reads the provider", () => {
     const avi = parseProbe(AVI);
-    const converted = ffmpegArgs({ url: "http://p/1.avi", start: 30, video: "convert", encoder: "h264_nvenc", probe: avi, hwaccel: true, userAgent: BROWSER_USER_AGENT });
+    const converted = ffmpegArgs({ input: "http://p/1.avi", start: 30, video: "convert", encoder: "h264_nvenc", probe: avi, hwaccel: true, userAgent: BROWSER_USER_AGENT });
     // Both are input options, so they come before -i.
     expect(converted.indexOf("-hwaccel")).toBeGreaterThan(-1);
     expect(converted.indexOf("-hwaccel")).toBeLessThan(converted.indexOf("-i"));
     expect(converted[converted.indexOf("-user_agent") + 1]).toBe(BROWSER_USER_AGENT);
     expect(converted.indexOf("-user_agent")).toBeLessThan(converted.indexOf("-i"));
-    const copied = ffmpegArgs({ url: "http://p/1.mkv", start: 0, video: "copy", encoder: "h264_nvenc", probe: parseProbe(MKV), hwaccel: true });
+    const copied = ffmpegArgs({ input: "http://p/1.mkv", start: 0, video: "copy", encoder: "h264_nvenc", probe: parseProbe(MKV), hwaccel: true });
     expect(copied).not.toContain("-hwaccel");
+    // Fed by the helper from the start: FFmpeg doesn't talk to the provider at all.
+    const piped = ffmpegArgs({ input: "pipe:0", start: 30, video: "convert", encoder: "libx264", probe: avi, hwaccel: true, userAgent: BROWSER_USER_AGENT, hls: { dir: "d" } }).join(" ");
+    expect(piped).toContain("-hwaccel auto -i pipe:0");
+    expect(piped).not.toContain("-ss");
+    expect(piped).not.toContain("-reconnect");
+    expect(piped).not.toContain("-user_agent");
   });
 
   it("writes HLS for the Roku: 6-second segments, a keyframe at each boundary", () => {
     const avi = parseProbe(AVI);
-    const args = ffmpegArgs({ url: "http://p/1.avi", start: 0, video: "convert", encoder: "libx264", probe: avi, hls: { dir: "/tmp/aranplus-helper/abc/" } });
+    const args = ffmpegArgs({ input: "http://p/1.avi", start: 0, video: "convert", encoder: "libx264", probe: avi, hls: { dir: "/tmp/aranplus-helper/abc/" } });
     const text = args.join(" ");
     expect(text).toContain("-force_key_frames expr:gte(t,n_forced*6) -forced-idr 1");
     expect(text).not.toContain("-g 50");
@@ -120,15 +130,16 @@ describe("the helper", () => {
     expect(args[args.length - 1]).toBe("/tmp/aranplus-helper/abc/index.m3u8");
     expect(text).not.toContain("pipe:1");
     // Quick Sync spells the switch differently; copied pictures need none.
-    expect(ffmpegArgs({ url: "u", start: 0, video: "convert", encoder: "h264_qsv", probe: avi, hls: { dir: "d" } }).join(" ")).toContain("-forced_idr 1");
-    expect(ffmpegArgs({ url: "u", start: 0, video: "copy", encoder: "libx264", probe: parseProbe(MKV), hls: { dir: "d" } }).join(" ")).not.toContain("force_key_frames");
+    expect(ffmpegArgs({ input: "u", start: 0, video: "convert", encoder: "h264_qsv", probe: avi, hls: { dir: "d" } }).join(" ")).toContain("-forced_idr 1");
+    expect(ffmpegArgs({ input: "u", start: 0, video: "copy", encoder: "libx264", probe: parseProbe(MKV), hls: { dir: "d" } }).join(" ")).not.toContain("force_key_frames");
   });
 
   it("reads what the TV asked for", () => {
     const q = readQuery(new URLSearchParams("kind=series&id=77&ext=MKV&start=754.6&video=convert&height=720&audio=aac&track=1"));
-    expect(q).toEqual({ kind: "series", id: "77", ext: "mkv", start: 754, video: "convert", height: 720, audio: "aac", track: 1 });
+    expect(q).toEqual({ kind: "series", id: "77", ext: "mkv", start: 754, video: "convert", height: 720, audio: "aac", track: 1, hash: false });
     const plain = readQuery(new URLSearchParams("id=5&ext=avi"));
-    expect(plain).toEqual({ kind: "movie", id: "5", ext: "avi", start: 0, video: "copy", height: 0, audio: "", track: -1 });
+    expect(plain).toEqual({ kind: "movie", id: "5", ext: "avi", start: 0, video: "copy", height: 0, audio: "", track: -1, hash: false });
+    expect(readQuery(new URLSearchParams("id=5&ext=avi&hash=1"))).toMatchObject({ hash: true });
     expect(readQuery(new URLSearchParams("id=5&ext=avi&height=99999&audio=dts&track=x"))).toMatchObject({ height: 0, audio: "", track: -1 });
     expect(readQuery(new URLSearchParams("id=../x&ext=avi"))).toBeNull();
     expect(readQuery(new URLSearchParams("id=5&ext=a/b"))).toBeNull();
@@ -182,5 +193,29 @@ describe("the helper", () => {
     const url = providerUrl(login, "series", "77", "mkv");
     expect(url).toBe("http://host.example:8080/series/jane%20doe/pw%2F1/77.mkv");
     expect(redactor(login, "k3y123")(url + "?key=k3y123")).toBe("<server>/series/<user>/<password>/77.mkv?key=<key>");
+  });
+});
+
+describe("the helper's own reads", () => {
+  it("knows a file's size from the provider's answer", () => {
+    expect(sizeFromAnswer(206, { "content-range": "bytes 0-1048575/734003200" })).toBe(734003200);
+    expect(sizeFromAnswer(200, { "content-length": "1234" })).toBe(1234);
+    expect(sizeFromAnswer(206, {})).toBe(0);
+  });
+
+  it("reads the ranges FFmpeg asks for", () => {
+    expect(askedRange("bytes=100-", 1000)).toEqual({ start: 100, end: 999, partial: true });
+    expect(askedRange("bytes=100-199", 1000)).toEqual({ start: 100, end: 199, partial: true });
+    expect(askedRange("bytes=-200", 1000)).toEqual({ start: 800, end: 999, partial: true });
+    expect(askedRange(undefined, 1000)).toEqual({ start: 0, end: 999, partial: false });
+    expect(askedRange("bytes=900-5000", 1000).end).toBe(999);
+  });
+
+  it("fingerprints a file the way the app does", () => {
+    const head = new Uint8Array(65536).map((_, i) => (i * 37 + 11) % 256);
+    const tail = new Uint8Array(65536).map((_, i) => (i * 101 + 7) % 256);
+    for (const size of [131072, 5368709120, 734003200]) expect(osHash(size, head, tail)).toBe(osHashHex(head, tail, size));
+    const ff = new Uint8Array(64).fill(255);
+    expect(osHash(12884901895, ff, ff)).toBe("00000002fffffff7");
   });
 });

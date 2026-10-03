@@ -81,7 +81,7 @@ A build can carry settings of your own in `personal.json` at the top of the repo
 - **`sync`:** the address and key of your sync Worker, set up once with the Roku repo's [sync guide](https://github.com/CrumbsAndCravings/roku-iptv-player/blob/main/sync/README.md). Use the same key as the Roku build. Without it nothing syncs.
 - **`server`, `username`, `password`:** a login the TV signs in with by itself. Leave them out to type the login on the TV as usual. With them, the signed `.wgt` holds your login, so keep that file to yourself. When a newer build carries a different login, the TV replaces the saved one and clears Continue Watching (its titles belong to the old provider). A login typed on the TV for the same account is kept, Continue Watching and all.
 
-- **`transcoder`:** where [the helper on your computer](#the-helper-on-your-computer) is, and its key. The helper writes this itself the first time it runs. Two optional settings change how the helper works: `"userAgent"` is how it introduces itself to the provider (a desktop web browser unless you set it; `""` means FFmpeg's own name), and `"hwaccel": false` keeps decoding on the processor even when there is a graphics card.
+- **`transcoder`:** where [the helper on your computer](#the-helper-on-your-computer) is, and its key. The helper writes this itself the first time it runs. Two optional settings change how the helper works: `"userAgent"` is how it introduces itself to the provider (FFmpeg's own name, `Lavf/61.1.100`, unless you set it), and `"hwaccel": false` keeps decoding on the processor even when there is a graphics card.
 
 `npm run install:tv` (and `npm run build`) picks the file up and prints which parts it found, never their values. The desktop harness ignores it unless `ARANPLUS_PERSONAL` names a file, so `npm run dev` never talks to your provider by accident.
 
@@ -93,7 +93,8 @@ The TV plays MKV and MP4 files with H.264 or HEVC pictures, but not AVI files (o
 
 - **The picture** is kept as it is when the TV plays it (H.264, HEVC). DivX and Xvid are first just repackaged, which takes almost no computing power; if the TV still refuses, they are converted to H.264, and ARAN+ remembers which way worked. Conversion uses the graphics card or Intel Quick Sync when the computer has one, otherwise the processor (fine for standard definition).
 - **The sound** is kept when it is AAC, AC-3 or E-AC-3; DTS and TrueHD become AC-3 (surround stays surround), and the rest AAC.
-- **Jumping** starts the helper's stream again at the new time, so a jump takes a few seconds. Resuming works the same way.
+- **Few requests to the provider,** since it takes a moment to start each one. FFmpeg never asks the provider itself (opening an AVI would cost it six requests): the helper reads the file with one connection at a time and hands FFmpeg the bytes. A title from the beginning takes one request, two with online subtitles set up (the helper also fingerprints the file for OpenSubtitles, so the TV doesn't have to). For resuming and jumping, the helper keeps the start of the file and its index in memory, so a jump costs one request.
+- **Jumping** starts the helper's stream again at the new time, so a jump takes about as long as the provider takes to start sending. Resuming works the same way.
 - The file's own subtitle tracks don't come through; online subtitles still work.
 
 **Set it up on Windows (once):**
@@ -112,7 +113,7 @@ From then on, start the helper before you watch (or put a shortcut to `helper\st
 Roku doesn't play an endless MPEG-TS stream, so for the Roku the helper writes the same stream as **HLS**: 6-second segments and a playlist that grows while FFmpeg works, in a folder of its own under the computer's temp folder.
 
 - **What the Roku asks for:** the picture converted when this Roku can't decode it (always for DivX and Xvid, and for HEVC on most Roku TVs), scaled down to the Roku's screen (720 lines on a 720p TV, which saves the computer most of the work on 1080p and 4K files), and stereo AAC sound when the Roku can't decode AC-3. The sound track in your language comes first.
-- **Jumping** within what is already converted is instant; a jump further on starts the helper again at the new time.
+- **Jumping** within what is already converted is quick; a jump further on starts the helper again at the new time, which takes about as long as the provider takes to start sending (one request, as for the Samsung TV).
 - **Online subtitles** are timed by the Roku from where the helper's stream starts, so when it starts partway (a resume or a jump), the Roku fetches them through the helper, which moves every line to match. Only OpenSubtitles' files come through.
 - **When you leave a video,** the Roku tells the helper to stop, so the provider's one connection is free for whatever plays next. Anything not asked for in 2 minutes stops by itself.
 - **Disk:** the segments take about 1 GB an hour at 720p (more when a picture is only repackaged). A video's files go 2 minutes after you leave it (30 minutes for the one you were last watching, so a long pause can pick up again), and all of them when the helper starts.

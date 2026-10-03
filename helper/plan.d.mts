@@ -13,6 +13,7 @@ export interface HelperQuery {
   height: number;
   audio: "aac" | "";
   track: number;
+  hash: boolean;
 }
 export const HLS_SEGMENT_SECS: number;
 export const BROWSER_USER_AGENT: string;
@@ -22,7 +23,7 @@ export function audioPlan(stream: { codec: string; channels: number }, audio?: "
 export const ENCODERS: { [name: string]: string[] };
 export function scaleFilter(height: number): string;
 export function ffmpegArgs(options: {
-  url: string;
+  input: string;
   start: number;
   video: "copy" | "convert";
   encoder: string;
@@ -44,3 +45,6 @@ export function outputSize(source: { width: number; height: number } | null, vid
 export function subtitleSource(src: string): boolean;
 export function shiftSubtitles(text: string, seconds: number): string;
 export function redactor(login: { server: string; username: string; password: string }, key: string): (text: string) => string;
+export function sizeFromAnswer(status: number, headers: { [name: string]: string | string[] | undefined }): number;
+export function askedRange(header: string | undefined, size: number): { start: number; end: number; partial: boolean };
+export function osHash(size: number | string | bigint, head: ArrayLike<number>, tail: ArrayLike<number>): string;

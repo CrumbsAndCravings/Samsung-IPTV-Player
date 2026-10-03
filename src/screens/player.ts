@@ -25,7 +25,7 @@ import { activeSubtitle, audioPlan, freshOnline, NUDGE_MS, OnlineStatus, Subtitl
 import { audioNowText, audioOptions, audioRescue, fromAvplay, optionIndex, subtitleOptions, TrackOption } from "../core/tracks";
 import { codecLabel, describeCodecs, episodeCode, formatClock, streamUrl } from "../core/utils";
 import { currentOf, dueForSave, entryFor, finishedChange, hasNext, resumeFrom, saveAction, Watching } from "../core/watch";
-import { knownHash, movieHash } from "../data/moviehash";
+import { knownHash, movieHash, rememberHash } from "../data/moviehash";
 import { helperInfo, HelperInfo, helperLastError, helperStreamUrl, learnedMode, learnMode, needsHelper, rememberNeedsHelper, VideoMode } from "../data/transcoder";
 import { helperOn } from "../core/personal";
 import { OsClient } from "../data/opensubtitles";
@@ -137,6 +137,7 @@ export class PlayerScreen implements Screen {
   private helperFromStart = false; // it went to the helper without trying on its own
   private offsetMs = 0;
   private jumpTo = -1; // reopen the helper's stream here
+  private helperHash = false; // ask the helper for the moviehash
 
   private controlsVisible = false;
   private row: Row = "bar";
@@ -323,7 +324,9 @@ export class PlayerScreen implements Screen {
     const key = factsOf(this.item).key;
     this.hash = knownHash(key);
     const wanted = this.online.configured && loadPrefs().subtitles !== "off";
-    if (this.hash || !wanted || !api) {
+    // Through the helper, it fingerprints the file in the reads it makes anyway.
+    this.helperHash = wanted && !this.hash && this.route === "helper";
+    if (this.hash || !wanted || !api || this.route === "helper") {
       this.loadStream();
       return;
     }
@@ -390,10 +393,15 @@ export class PlayerScreen implements Screen {
     const item = this.item;
     if (this.helper) return this.openHelper(token);
     log("helper: asking about", factsOf(item).key);
-    helperInfo(item).then(
+    const from = this.jumpTo >= 0 ? this.jumpTo : resumeFrom(this.startSecs);
+    helperInfo(item, from, this.helperHash).then(
       (info) => {
         if (token !== this.streamToken || this.closing) return;
         this.helper = info;
+        if (info.hash) {
+          this.hash = info.hash;
+          rememberHash(factsOf(item).key, info.hash);
+        }
         if (info.duration > 0) this.durationMs = info.duration * 1000;
         const learned = learnedMode(info.videoCodec);
         this.helperVideo = info.videoPlan === "convert" ? "convert" : info.videoPlan === "copy" ? "copy" : learned || "copy";
