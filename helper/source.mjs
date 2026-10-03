@@ -11,7 +11,11 @@
 // server), saving a round trip per request, and keeps one request to the provider open
 // at a time, as providers allowing one connection need.
 //
-// No I/O of its own: the caller passes `fetch`, so tests can stand in for the provider.
+// When the provider drops a connection partway, the reader asks again from where it got
+// to, so FFmpeg and Safari don't notice.
+//
+// No I/O of its own: the caller passes `fetch` (helper/http-get.mjs), so tests can stand in
+// for the provider.
 
 // Up to 8 MB from each end of the last 4 files: enough for FFmpeg's first look at a
 // file and for the index of an MKV or MP4.
@@ -96,7 +100,7 @@ class SourceFile {
 }
 
 export class SourceFiles {
-  // fetch: the global fetch (or a stand-in); userAgent: how to introduce ourselves;
+  // fetch: httpGet from helper/http-get.mjs (or a stand-in); userAgent: how to introduce ourselves;
   // onRequest({ key, start, ms, status }): told about each request to the provider.
   constructor({ fetch, userAgent = "", onRequest = () => undefined }) {
     this.fetchImpl = fetch;
@@ -166,10 +170,12 @@ export class SourceFiles {
   // earlier call is stopped first.
   async *bytes(file, start, end, signal, { exclusive = false } = {}) {
     let pos = start;
+    let stalls = 0; // requests in a row that brought nothing
+    // The last byte wanted, once the provider has said how big the file is.
+    const lastByte = () => (end >= 0 ? end : file.size > 0 ? file.size - 1 : Infinity);
     for (;;) {
-      const last = end >= 0 ? end : file.size > 0 ? file.size - 1 : Infinity;
-      if (pos > last) return;
-      const cached = file.cachedAt(pos, last);
+      if (pos > lastByte()) return;
+      const cached = file.cachedAt(pos, lastByte());
       if (cached && cached.length > 0) {
         pos += cached.length;
         yield cached;
@@ -188,28 +194,41 @@ export class SourceFiles {
       try {
         const answer = await this.request(file, pos, end, abort.signal);
         const record = file.recorder(pos);
+        const from = pos;
         // A provider that ignores ranges sends the whole file: skip to `pos`.
         let skip = answer.status === 200 ? pos : 0;
         if (!answer.body) return;
-        for await (const raw of answer.body) {
-          let chunk = Buffer.from(raw);
-          if (skip > 0) {
-            if (chunk.length <= skip) {
-              skip -= chunk.length;
-              continue;
+        try {
+          for await (const raw of answer.body) {
+            let chunk = Buffer.from(raw);
+            if (skip > 0) {
+              if (chunk.length <= skip) {
+                skip -= chunk.length;
+                continue;
+              }
+              chunk = chunk.subarray(skip);
+              skip = 0;
             }
-            chunk = chunk.subarray(skip);
-            skip = 0;
+            const room = lastByte() - pos + 1;
+            if (chunk.length > room) chunk = chunk.subarray(0, room);
+            record(chunk);
+            pos += chunk.length;
+            yield chunk;
+            if (pos > lastByte()) break;
           }
-          const room = (end >= 0 ? end : (file.size || Infinity) - 1) - pos + 1;
-          if (chunk.length > room) chunk = chunk.subarray(0, room);
-          record(chunk);
-          pos += chunk.length;
-          yield chunk;
-          if (pos > last) break;
+        } catch (err) {
+          // Stopped on purpose (a jump, or the reader went away): pass that on.
+          if (abort.signal.aborted) throw err;
+          // Otherwise the provider dropped the connection; asked again below.
         }
         await cancel(answer);
-        return;
+        // All there, stopped on purpose, or no way to tell what's missing (no size given).
+        if (pos > lastByte() || abort.signal.aborted || file.size === 0) return;
+        // The provider stopped early, often because it closes a connection the helper is
+        // slow to read while FFmpeg is busy converting: ask again from where it got to.
+        stalls = pos > from ? 0 : stalls + 1;
+        if (stalls >= 2) throw new SourceError("The provider stopped sending " + file.key + " at byte " + pos);
+        continue;
       } finally {
         if (signal) signal.removeEventListener("abort", stop);
         if (this.exclusive === abort) this.exclusive = null;

@@ -62,6 +62,7 @@ import {
   xtreamQuery,
   fetchAllowed,
 } from "./plan.mjs";
+import { httpGet } from "./http-get.mjs";
 import { parseRange, SourceFiles } from "./source.mjs";
 
 const VERSION = "1.1";
@@ -163,7 +164,7 @@ const fetchAgent = ffmpegAgent || BROWSER_UA;
 const requestTally = { count: 0, slowest: 0 };
 
 const sources = new SourceFiles({
-  fetch,
+  fetch: httpGet,
   userAgent: fetchAgent,
   onRequest: ({ ms }) => {
     requestTally.count++;
@@ -1102,6 +1103,12 @@ server.listen(port, "0.0.0.0", async () => {
   console.log("");
   console.log("Leave this window open while you watch. Ctrl+C stops the helper.");
   console.log("");
+});
+
+// A fault in one request (a bug in Node's own code, as with fetch before) mustn't close
+// the helper the TV and the phone rely on: say what happened and carry on.
+process.on("uncaughtException", (err) => {
+  noteError("Something went wrong inside the helper, which carried on: " + (err && err.stack ? err.stack.split("\n").slice(0, 3).join(" / ") : String(err)));
 });
 
 process.on("SIGINT", () => {

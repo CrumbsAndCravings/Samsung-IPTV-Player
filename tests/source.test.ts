@@ -2,14 +2,16 @@
 // file are asked for once, a remembered redirect saves a round trip, and one request is
 // open at a time for FFmpeg.
 import { describe, expect, it } from "vitest";
-import { HEAD_BYTES, parseRange, SourceFiles, totalFromContentRange } from "../helper/source.mjs";
+import { httpGet } from "../helper/http-get.mjs";
+import { HEAD_BYTES, parseRange, SourceFiles, totalFromContentRange, type SourceFetch } from "../helper/source.mjs";
+import { startDroppingServer } from "./drop-server.mjs";
 
 const SIZE = 40 * 1024 * 1024;
 const byteAt = (i: number) => (i * 7 + 3) % 251;
 
 // A provider with ranges that redirects every file to a "streaming server", and keeps a
-// log of what it was asked.
-function fakeProvider() {
+// log of what it was asked. With `cutAt`, the first answer stops after that many bytes.
+function fakeProvider({ cutAt = 0 } = {}) {
   const log: { url: string; range: string }[] = [];
   let open = 0;
   let mostOpen = 0;
@@ -28,6 +30,11 @@ function fakeProvider() {
         if (pos > end || init.signal?.aborted) {
           open--;
           controller.close();
+          return;
+        }
+        if (cutAt > 0 && log.length === 1 && pos - start >= cutAt) {
+          open--;
+          controller.error(new Error("socket hang up"));
           return;
         }
         const n = Math.min(65536, end - pos + 1);
@@ -73,7 +80,7 @@ const right = (data: Uint8Array, start: number) => data.every((b, i) => b === by
 describe("reading the provider's files", () => {
   it("asks for the start and the end of a file once, and follows its redirect", async () => {
     const provider = fakeProvider();
-    const sources = new SourceFiles({ fetch: provider.fetch as unknown as typeof fetch });
+    const sources = new SourceFiles({ fetch: provider.fetch as unknown as SourceFetch });
     const file = sources.file("movie:1", "http://provider.example/movie/u/p/1.mkv");
     // FFmpeg's first look: the start of the file, then it closes.
     const head = await read(sources, file, 0, -1, 3 * 1024 * 1024);
@@ -100,7 +107,7 @@ describe("reading the provider's files", () => {
 
   it("goes on from what's kept to the provider", async () => {
     const provider = fakeProvider();
-    const sources = new SourceFiles({ fetch: provider.fetch as unknown as typeof fetch });
+    const sources = new SourceFiles({ fetch: provider.fetch as unknown as SourceFetch });
     const file = sources.file("movie:2", "http://provider.example/movie/u/p/2.mkv");
     await read(sources, file, 0, -1, 1024 * 1024);
     // The first megabyte is kept; reading further asks the provider for what follows it.
@@ -115,7 +122,7 @@ describe("reading the provider's files", () => {
 
   it("keeps one request open at a time for FFmpeg", async () => {
     const provider = fakeProvider();
-    const sources = new SourceFiles({ fetch: provider.fetch as unknown as typeof fetch });
+    const sources = new SourceFiles({ fetch: provider.fetch as unknown as SourceFetch });
     const file = sources.file("movie:3", "http://provider.example/movie/u/p/3.mkv");
     const first = sources.bytes(file, 20000000, -1, undefined, { exclusive: true });
     await first.next();
@@ -127,6 +134,48 @@ describe("reading the provider's files", () => {
     // The first one's request was stopped: it ends (FFmpeg has moved on by then).
     expect(rest.done || (rest.value as Uint8Array).length > 0).toBe(true);
     await second.return(undefined);
+  });
+
+  it("asks again from where it got to when the provider drops the connection", async () => {
+    const provider = fakeProvider({ cutAt: 3 * 1024 * 1024 });
+    const sources = new SourceFiles({ fetch: provider.fetch as unknown as SourceFetch });
+    const file = sources.file("movie:4", "http://provider.example/movie/u/p/4.mkv");
+    const part = await read(sources, file, 20000000, 20000000 + 5 * 1024 * 1024 - 1);
+    expect(part.length).toBe(5 * 1024 * 1024);
+    expect(right(part, 20000000)).toBe(true);
+    expect(provider.log.map((r) => r.range)).toEqual(["bytes=20000000-25242879", "bytes=23145728-25242879"]);
+  });
+
+  it("reads through a provider that closes connections it thinks are idle", async () => {
+    // A real server, as the helper's requests go out with Node's http: the first answer
+    // stops partway while the reader is busy (FFmpeg converting), which crashed the
+    // helper when it used fetch. The second goes through a redirect, as Xtream's do.
+    const size = 6 * 1024 * 1024;
+    const server = await startDroppingServer(size, byteAt);
+    try {
+      const sources = new SourceFiles({ fetch: httpGet });
+      const file = sources.file("movie:5", server.url);
+      const parts: Uint8Array[] = [];
+      let length = 0;
+      for await (const chunk of sources.bytes(file, 0, -1, undefined, { exclusive: true })) {
+        parts.push(chunk);
+        length += chunk.length;
+        // Slow to read at first, so the connection closes while the reader holds back.
+        if (parts.length === 1) await new Promise((resolve) => setTimeout(resolve, 300));
+      }
+      const all = new Uint8Array(length);
+      let at = 0;
+      for (const piece of parts) {
+        all.set(piece, at);
+        at += piece.length;
+      }
+      expect(length).toBe(size);
+      expect(right(all, 0)).toBe(true);
+      expect(server.ranges.length).toBe(2);
+      expect(server.ranges[0]).toBe("bytes=0-");
+    } finally {
+      server.close();
+    }
   });
 
   it("reads Range headers", () => {

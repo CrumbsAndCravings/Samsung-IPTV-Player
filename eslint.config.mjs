@@ -28,7 +28,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ["tools/**/*.mjs", "dev/**/*.mjs", "helper/**/*.mjs", "*.mjs"],
+    files: ["tools/**/*.mjs", "dev/**/*.mjs", "helper/**/*.mjs", "tests/**/*.mjs", "*.mjs"],
     languageOptions: { globals: globals.node },
   },
 );

@@ -9,8 +9,19 @@ export interface SourceFile {
   size: number;
   headLength: number;
 }
+// helper/http-get.mjs's httpGet, or a stand-in with answers shaped like fetch's.
+export type SourceFetch = (
+  url: string,
+  init: { headers: Record<string, string>; signal?: AbortSignal; redirect?: string },
+) => Promise<{
+  status: number;
+  url: string;
+  headers: { get(name: string): string | null };
+  body: (AsyncIterable<Uint8Array> & { cancel(): Promise<void> }) | null;
+  text(): Promise<string>;
+}>;
 export class SourceFiles {
-  constructor(options: { fetch: typeof fetch; userAgent?: string; onRequest?: (info: { key: string; start: number; ms: number; status: number }) => void });
+  constructor(options: { fetch: SourceFetch; userAgent?: string; onRequest?: (info: { key: string; start: number; ms: number; status: number }) => void });
   file(key: string, url: string): SourceFile;
   size(file: SourceFile, signal?: AbortSignal): Promise<number>;
   bytes(file: SourceFile, start: number, end: number, signal?: AbortSignal, options?: { exclusive?: boolean }): AsyncGenerator<Uint8Array, void, unknown>;
