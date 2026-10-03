@@ -266,6 +266,10 @@ function pickEncoder() {
 
 const encoder = settings.encoder && ENCODERS[settings.encoder] ? settings.encoder : pickEncoder();
 
+// Whether this FFmpeg writes pictures whole before they appear (5.1 and newer), so the
+// phone never gets half a preview picture.
+const atomicPictures = /atomic_writing/.test(spawnSync(ffmpeg.path, ["-hide_banner", "-h", "muxer=image2"], { encoding: "utf8", windowsHide: true }).stdout || "");
+
 // --- One connection at a time ---------------------------------------------------------
 
 let active = null; // the FFmpeg run using the provider's connection
@@ -1018,6 +1022,8 @@ async function startVod(q) {
     audioPlan: "aac",
     audio: described.audio.map((a) => ({ codec: a.codec, channels: a.channels, language: a.language, title: a.title || "" })),
     subtitles,
+    // A picture of each piece once FFmpeg has made it: <prefix><5-digit piece>.jpg.
+    previews: { every: VOD_SECONDS, prefix: base + "p" },
   };
 }
 
@@ -1043,6 +1049,8 @@ async function startVodRun(session, n) {
     audioTrack: session.audioTrack,
     height: session.q.height,
     subtitles: session.q.subs,
+    previews: true,
+    atomic: atomicPictures,
     userAgent: ffmpegAgent,
   });
   const child = spawn(ffmpeg.path, args, { windowsHide: true });
@@ -1157,6 +1165,19 @@ async function serveVodFile(res, session, name) {
     }
     res.writeHead(200, headers);
     return res.end(mergeVtt(texts));
+  }
+  if (/^p\d{5}\.jpg$/.test(name)) {
+    // A preview picture, from whichever run made it; none (yet) is a quick 404, never a
+    // wait or a new run: pictures only come from what's converted already.
+    for (let r = session.runs; r >= 1; r--) {
+      const file = path.join(session.dir, "r" + r, name);
+      if (!existsSync(file)) continue;
+      res.writeHead(200, { ...headers, "Cache-Control": "private, max-age=86400", "Content-Length": statSync(file).size });
+      return createReadStream(file)
+        .on("error", () => res.destroy())
+        .pipe(res);
+    }
+    return sendJson(res, 404, { error: "Not converted yet." });
   }
   const piece = /^seg(\d{5})\.ts$/.exec(name);
   const n = piece ? Number(piece[1]) : -1;

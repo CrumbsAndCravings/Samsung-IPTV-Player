@@ -185,6 +185,13 @@ describe("the helper", () => {
     expect(text).toContain("-map 0:s:0 -c:s webvtt -flush_packets 1 -f webvtt /tmp/s/r2/sub0.vtt");
     expect(text).toContain("/tmp/s/r2/sub2.vtt");
     expect(text).not.toContain("sub1.vtt");
+    // No pictures unless asked; with them, one a piece, named by the piece.
+    expect(text).not.toContain("p%05d.jpg");
+    const pictures = vodArgs({ url: "u", piece: 36, encoder: "libx264", probe, dir: "/d", previews: true, atomic: true }).join(" ");
+    expect(pictures).toContain("-map 0:V:0 -an -sn -dn -vf fps=1/6,scale=-2:180 -q:v 5 -f image2 -frame_pts 1 -atomic_writing 1 /d/p%05d.jpg");
+    expect(vodArgs({ url: "u", piece: 0, encoder: "libx264", probe, dir: "/d", previews: true }).join(" ")).not.toContain("atomic_writing");
+    expect(sessionFile("p00036.jpg")).toBe(true);
+    expect(sessionFileType("p00036.jpg")).toBe("image/jpeg");
     const first = vodArgs({ url: "u", piece: 0, encoder: "libx264", probe, dir: "/d" });
     expect(first).not.toContain("-ss");
     expect(first).not.toContain("-forced-idr");

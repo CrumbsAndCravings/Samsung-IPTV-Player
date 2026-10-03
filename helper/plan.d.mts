@@ -42,9 +42,12 @@ export function vodArgs(options: {
   audioTrack?: number;
   height?: number;
   subtitles?: boolean;
+  previews?: boolean;
+  atomic?: boolean;
   userAgent?: string;
   seconds?: number;
 }): string[];
+export const PREVIEW_HEIGHT: number;
 export function mergeVtt(texts: string[]): string;
 export function wantsGzip(header: string | undefined): boolean;
 export function compressible(type: string | undefined): boolean;

@@ -212,11 +212,11 @@ export function playlistState(text) {
 
 // Files a session may serve: the playlist, its pieces, and the subtitle files.
 export function sessionFile(name) {
-  return /^(index\.m3u8|init\.mp4|seg\d{5}\.(?:m4s|ts)|sub\d\.vtt)$/.test(name);
+  return /^(index\.m3u8|init\.mp4|seg\d{5}\.(?:m4s|ts)|sub\d\.vtt|p\d{5}\.jpg)$/.test(name);
 }
 
 // fMP4 pieces as plain MP4, the type Apple's own tools serve them with.
-const CONTENT_TYPES = { m3u8: "application/vnd.apple.mpegurl", mp4: "video/mp4", m4s: "video/mp4", ts: "video/mp2t", vtt: "text/vtt; charset=utf-8" };
+const CONTENT_TYPES = { m3u8: "application/vnd.apple.mpegurl", mp4: "video/mp4", m4s: "video/mp4", ts: "video/mp2t", vtt: "text/vtt; charset=utf-8", jpg: "image/jpeg" };
 
 export function sessionFileType(name) {
   return CONTENT_TYPES[name.slice(name.lastIndexOf(".") + 1)] || "application/octet-stream";
@@ -262,10 +262,17 @@ export function vodPlaylist({ duration, start = 0, seconds = VOD_SECONDS }) {
 // when told.
 const IDR = { h264_nvenc: ["-forced-idr", "1"], h264_qsv: ["-forced_idr", "1"] };
 
+// The preview pictures' height (the phone shows them about 160 points wide, 3 pixels a
+// point would be sharper but three times the bytes over 5G).
+export const PREVIEW_HEIGHT = 180;
+
 // The FFmpeg arguments for a run from piece `piece` on, into `dir`: the pieces
-// (seg<n>.ts, numbered as in the playlist) and, with `subtitles`, each text subtitle
-// track as WebVTT (sub<n>.vtt, with the film's own times).
-export function vodArgs({ url, piece, encoder, probe, dir, audioTrack = 0, height = 0, subtitles = false, userAgent = "", seconds = VOD_SECONDS }) {
+// (seg<n>.ts, numbered as in the playlist); with `subtitles`, each text subtitle track
+// as WebVTT (sub<n>.vtt, with the film's own times); with `previews`, a small picture of
+// each piece (p<n>.jpg, numbered as the pieces), shown above the bar while dragging it.
+// `atomic`: this FFmpeg writes pictures whole before they appear (image2's
+// atomic_writing, FFmpeg 5.1 and newer).
+export function vodArgs({ url, piece, encoder, probe, dir, audioTrack = 0, height = 0, subtitles = false, previews = false, atomic = false, userAgent = "", seconds = VOD_SECONDS }) {
   const args = ["-hide_banner", "-nostdin", "-loglevel", "error"];
   // The film's own timestamps (from 0 at its start), so every run's pieces fit together.
   args.push("-copyts", "-start_at_zero");
@@ -291,6 +298,13 @@ export function vodArgs({ url, piece, encoder, probe, dir, audioTrack = 0, heigh
     probe.subtitles.slice(0, MAX_SUBTITLES).forEach((sub, n) => {
       if (sub.text) args.push("-map", "0:s:" + n, "-c:s", "webvtt", "-flush_packets", "1", "-f", "webvtt", path.join(dir, "sub" + n + ".vtt"));
     });
+  }
+  if (previews) {
+    // One picture a piece: the run starts on a piece, so the pictures land on the same
+    // places whichever run makes them, each named by its time over `seconds` (the
+    // piece's number), from inside its piece.
+    args.push("-map", "0:V:0", "-an", "-sn", "-dn", "-vf", "fps=1/" + seconds + ",scale=-2:" + PREVIEW_HEIGHT, "-q:v", "5");
+    args.push("-f", "image2", "-frame_pts", "1", ...(atomic ? ["-atomic_writing", "1"] : []), path.join(dir, "p%05d.jpg"));
   }
   return args;
 }
