@@ -130,6 +130,27 @@ The user's words: "decode every video into the format the TV is capable of runni
 
 Keep `/v1/stream` and `/v1/info` exactly as they are: the Samsung app uses them.
 
+**Update (helper 1.1, built for the iPhone app in `web-iptv-player`):** most of A1 and
+A2 now exists. What's there, and how it differs from the plan below:
+
+- `GET /v1/hls/index.m3u8?key&kind&id&ext&start&video&height&audio` starts a session
+  and answers with a redirect to `s/<session>/index.m3u8` (relative), so the playlist's
+  piece names resolve to the session's folder without rewriting. MPEG-TS pieces and
+  sound as for the TV (`audio=keep`) unless `format=fmp4` or `audio=aac` is asked for.
+  `GET /v1/hls/start` does the same and answers with JSON (the phone uses that, with
+  `format=fmp4`).
+- Pieces are 6 s; converting forces a keyframe at each piece's start; the playlist is
+  served with `#EXT-X-START:TIME-OFFSET=0` so a player starts at its beginning.
+- `height` scales down when converting; `audio=aac` turns everything but AAC into AAC
+  stereo; `a=<n>` or `alang=<code>` picks the one sound track a session carries;
+  `hevc=0` converts HEVC for players without it; `subs=1` writes text subtitles as
+  WebVTT next to the pieces.
+- Sessions: the newest is kept for 3 hours of not being asked for, older ones for 2
+  minutes, and everything is deleted when the helper starts. `/v1/stop?session=<id>`
+  stops one. A start the player gives up on is dropped.
+- Not done: `-hwaccel auto` (A2) and a default browser user agent for FFmpeg (A3);
+  `transcoder.userAgent` sets one when needed.
+
 ### A1. HLS output
 
 - **The playlist:** `GET /v1/hls/index.m3u8?key&kind&id&ext&start&video=copy|convert&height=&audio=`

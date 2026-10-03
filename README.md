@@ -81,7 +81,7 @@ A build can carry settings of your own in `personal.json` at the top of the repo
 - **`sync`:** the address and key of your sync Worker, set up once with the Roku repo's [sync guide](https://github.com/CrumbsAndCravings/roku-iptv-player/blob/main/sync/README.md). Use the same key as the Roku build. Without it nothing syncs.
 - **`server`, `username`, `password`:** a login the TV signs in with by itself. Leave them out to type the login on the TV as usual. With them, the signed `.wgt` holds your login, so keep that file to yourself. When a newer build carries a different login, the TV replaces the saved one and clears Continue Watching (its titles belong to the old provider). A login typed on the TV for the same account is kept, Continue Watching and all.
 
-- **`transcoder`:** where [the helper on your computer](#the-helper-on-your-computer) is, and its key. The helper writes this itself the first time it runs.
+- **`transcoder`:** where [the helper on your computer](#the-helper-on-your-computer) is, and its key. The helper writes this itself the first time it runs. Optional extras the helper reads here: `webApp` (the folder of the [iPhone app](#the-iphone-app)'s build, when it isn't next to this repo) and `userAgent` (how the helper introduces itself to the provider; when left out, a desktop browser for lists and files, and FFmpeg's own name for conversions).
 
 `npm run install:tv` (and `npm run build`) picks the file up and prints which parts it found, never their values. The desktop harness ignores it unless `ARANPLUS_PERSONAL` names a file, so `npm run dev` never talks to your provider by accident.
 
@@ -104,6 +104,17 @@ The TV plays MKV and MP4 files with H.264 or HEVC pictures, but not AVI files (o
 4. Run `npm run install:tv` once more, so the TV knows where the helper is.
 
 From then on, start the helper before you watch (or put a shortcut to `helper\start-helper.cmd` in the Startup folder: press Win+R, type `shell:startup`). Its window shows what it is converting. If the TV says the helper didn't answer, check that the computer is on and the window is open. Give the computer a fixed address in your router, or the TV may lose it; the helper says when the address in `personal.json` no longer matches.
+
+### The iPhone app
+
+The helper also serves ARAN+ for the iPhone, a web app in [CrumbsAndCravings/web-iptv-player](https://github.com/CrumbsAndCravings/web-iptv-player) (its README has the setup steps). Put that repo next to this one, run `npm install` and `npm run build` in it, and start the helper: it prints a link and a QR code for the phone, with the key in the link. For the phone the helper also:
+
+- **asks the provider for the lists,** adding the login from `personal.json` (a web page can't call the provider, and the password never reaches the phone);
+- **passes MP4 files on as they are,** with ranges, so Safari jumps in them itself;
+- **converts the rest into HLS,** the streaming format Safari plays: FFmpeg writes numbered pieces and a playlist into the computer's temp folder as fast as it can, keeping H.264 and HEVC pictures (HEVC labelled the way Apple's players want), converting older formats to H.264, and turning the sound into AAC. The file's own text subtitles are written out as WebVTT alongside. A jump into what's converted already is instant; a jump further on starts a new run from there. Old runs are deleted a couple of minutes after the phone stops asking for them, and all of them when the helper starts;
+- **passes OpenSubtitles requests on,** and reads a file's moviehash for "matches this file" results.
+
+The TV's way of using the helper hasn't changed. The phone and the TV share the provider's one connection, so starting a video on one stops the other.
 
 ## Setup checks on the TV
 
@@ -179,7 +190,8 @@ src/
   probe/                             the M0 setup checks
   styles/                            design tokens, base styles, screen styles
 assets/fonts  assets/images          Fredoka and Nunito (SIL OFL), generated glows
-helper/                              the helper for a computer at home: FFmpeg converts what the TV can't play
+helper/                              the helper for a computer at home: FFmpeg converts what the TV can't
+                                     play, and it serves the iPhone app (web-iptv-player) and its HLS
 tests/                               vitest
 dev/                                 fake Xtream server, fake OpenSubtitles, screenshot script
 tools/                               build, dev server, Tizen CLI wrapper, image generator
