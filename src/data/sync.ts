@@ -8,16 +8,21 @@
 // right after leaving a video or removing a title, every 5 minutes while a video plays,
 // and when Home comes back (at most once a minute). A round asked for while one is
 // running runs once more after it.
+//
+// The same service keeps the online subtitles downloaded for each title (one file per
+// movie or episode), so the next device to play it shows them without a download.
 
 import { log } from "../core/log";
 import { mergeProgress, progressList, progressRemovedList, progressSave } from "../core/progress";
 import { syncConfig } from "../core/personal";
 import { sha256Hex } from "../core/sha256";
+import { readSavedSubtitle, SavedSubtitle } from "../core/subtitles";
 import { Creds, isObj, syncSpaceText } from "../core/utils";
 import { send } from "../platform/http";
 
 const SOON_MS = 60000;
 const TIMEOUT_MS = 20000;
+const SUBTITLE_MAX_BYTES = 4 * 1024 * 1024;
 
 // This login's list on the sync service: 16 hex digits of SHA-256 of syncSpaceText.
 export function syncSpace(creds: Creds): string {
@@ -67,6 +72,50 @@ export class ProgressSync {
   stop(): void {
     this.ended = true;
     this.listeners = [];
+  }
+
+  // --- Subtitles saved for a title ("m:<streamId>" or "e:<episodeId>") ---
+
+  private subtitlesUrl(title: string): string {
+    return this.config.url + "/v1/subtitles?space=" + syncSpace(this.creds) + "&k=" + encodeURIComponent(title);
+  }
+
+  // The subtitles saved for this title by any device, or null (none, or no answer).
+  savedSubtitle(title: string): Promise<SavedSubtitle | null> {
+    return send({ url: this.subtitlesUrl(title), headers: { Authorization: "Bearer " + this.config.key }, timeoutMs: TIMEOUT_MS, maxBytes: SUBTITLE_MAX_BYTES }).promise.then((res) => {
+      if (res.code !== 200) {
+        log("sync: no saved subtitles (" + (res.timedOut ? "no answer in time" : "HTTP " + res.code) + ")");
+        return null;
+      }
+      try {
+        return readSavedSubtitle(JSON.parse(res.text));
+      } catch {
+        return null;
+      }
+    });
+  }
+
+  // Saves subtitles for this title, for every device; resolves to whether it worked.
+  saveSubtitle(title: string, subtitle: SavedSubtitle): Promise<boolean> {
+    return this.postSubtitle(title, JSON.stringify(subtitle));
+  }
+
+  // The nudges of the subtitles saved for this title.
+  saveSubtitleDelay(title: string, fileId: string, delayMs: number): Promise<boolean> {
+    return this.postSubtitle(title, JSON.stringify({ fileId, delayMs }));
+  }
+
+  private postSubtitle(title: string, body: string): Promise<boolean> {
+    return send({
+      method: "POST",
+      url: this.subtitlesUrl(title),
+      headers: { Authorization: "Bearer " + this.config.key, "Content-Type": "application/json" },
+      body,
+      timeoutMs: TIMEOUT_MS,
+    }).promise.then((res) => {
+      if (res.code !== 200) log("sync: subtitles not saved (" + (res.timedOut ? "no answer in time" : "HTTP " + res.code) + ")");
+      return res.code === 200;
+    });
   }
 
   private round(): void {

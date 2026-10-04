@@ -79,6 +79,7 @@ export interface OsCandidate {
   machine: boolean;
   sdh: boolean;
   downloads: number;
+  saved?: boolean; // saved for this title on the sync service, by any device
 }
 
 // /subtitles response -> the best six candidates, best first: made for this exact file,
@@ -111,6 +112,7 @@ export function parseOsResults(data: Json): OsCandidate[] {
 }
 
 export function subtitleLabel(candidate: OsCandidate): string {
+  if (candidate.saved) return "English · saved for this title";
   let label: string;
   if (candidate.hashMatch) label = "English · matches this file";
   else {

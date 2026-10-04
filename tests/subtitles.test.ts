@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { findQueries, FindRequest, OsCandidate } from "../src/core/opensubtitles";
 import { cleanCueText } from "../src/core/srt";
-import { activeSubtitle, audioPlan, delayText, freshOnline, OnlineStatus, subtitleMenu, subtitlePlan, tracksNote } from "../src/core/subtitles";
+import { activeSubtitle, audioPlan, delayText, freshOnline, OnlineStatus, readSavedSubtitle, savedCandidate, showsSaved, subtitleMenu, subtitlePlan, tracksNote } from "../src/core/subtitles";
 import { audioOptions, subtitleOptions } from "../src/core/tracks";
 
 const movie: FindRequest = { kind: "movie", title: "EN - The Batman (2022)", tmdbId: "414906", season: 0, episode: 0, hash: "" };
@@ -100,5 +100,39 @@ describe("remembered choices", () => {
     expect(audioPlan("hin", audio)).toBe("1");
     expect(audioPlan("", audio)).toBe("");
     expect(audioPlan("tam", audio)).toBe("");
+  });
+});
+
+describe("subtitles saved for a title on the sync service", () => {
+  const saved = { fileId: "9", name: "Show.S01E02.WEB", delayMs: -1000, text: "1\n00:00:01,000 --> 00:00:02,000\nHi" };
+  it("reads the service's answer", () => {
+    expect(readSavedSubtitle({ found: true, fileId: "9", name: "Show.S01E02.WEB", delayMs: -1000, at: 5, file: "https://x", text: saved.text })).toEqual(saved);
+    expect(readSavedSubtitle({ found: false })).toBeNull();
+    expect(readSavedSubtitle({ found: true, fileId: "9", text: "" })).toBeNull();
+    expect(readSavedSubtitle("nonsense")).toBeNull();
+  });
+  it("lists them first, even without an OpenSubtitles account", () => {
+    const withSaved = (patch: Partial<OnlineStatus>) => ({ ...online(patch), candidates: [savedCandidate(saved)].concat(patch.candidates || []) });
+    expect(ids(subtitleMenu(embedded, { ...withSaved({}), configured: false }))).toEqual(["", "2", "3", "os:file:9", "os:setup"]);
+    expect(ids(subtitleMenu(embedded, withSaved({})))).toEqual(["", "2", "3", "os:file:9", "os:search"]);
+    expect(subtitleMenu(embedded, withSaved({}))[3].label).toBe("English · saved for this title");
+    // A search finding the same file lists it once.
+    const searched = withSaved({ state: "results", candidates: [candidate("9", true), candidate("8")] });
+    expect(ids(subtitleMenu(embedded, searched))).toEqual(["", "2", "3", "os:file:9", "os:file:8"]);
+    expect(ids(subtitleMenu(embedded, { ...withSaved({}), configured: false, loadedFileId: "9" }))).toEqual(["", "2", "3", "os:file:9", "os:setup", "os:earlier", "os:later"]);
+  });
+  it("says they're on every device", () => {
+    const on = { ...online({ loadedFileId: "9", savedFileId: "9", delayMs: -1000 }), configured: false };
+    expect(tracksNote(on, 0)).toBe("Online subtitles on, saved for all your devices. Showing them 1s earlier. If they're out of sync, nudge them earlier or later.");
+    expect(tracksNote({ ...online({}), candidates: [savedCandidate(saved)] }, 1)).toBe("“Saved for this title” came from an earlier download, on this or another device.");
+  });
+  it("show by themselves where this device would look online or hasn't chosen", () => {
+    const none = subtitleOptions([]);
+    expect(showsSaved("online", subtitlePlan("online", none, true))).toBe(true);
+    expect(showsSaved("online", subtitlePlan("online", none, false))).toBe(true);
+    expect(showsSaved("", subtitlePlan("", embedded, true))).toBe(true);
+    expect(showsSaved("off", subtitlePlan("off", none, true))).toBe(false);
+    expect(showsSaved("hin", subtitlePlan("hin", none, true))).toBe(false);
+    expect(showsSaved("online", subtitlePlan("online", embedded, true))).toBe(false);
   });
 });
