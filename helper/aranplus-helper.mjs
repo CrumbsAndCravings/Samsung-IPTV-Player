@@ -12,10 +12,12 @@
 //
 // For the TV:
 //   GET /                         is it running (no key needed; a browser goes to /app/)
-//   GET /v1/info?key&kind&id&ext  what the file holds and how it would be converted
+//   GET /v1/info?key&kind&id&ext&hash=1
+//                                 what the file holds and how it would be converted; with
+//                                 hash=1, its OpenSubtitles moviehash too
 //   GET /v1/stream?key&kind&id&ext&start&video=copy|convert
 //                                 the file as MPEG-TS, from `start` seconds
-//   GET /v1/last-error?key        why the last stream failed, for the TV's error screen
+//   GET /v1/last-error?key        why the last stream failed (and how long ago), for the TVs
 //
 // For the iPhone:
 //   GET /app/...                  the web app's files (no key needed; they hold no secrets)
@@ -35,6 +37,9 @@
 //   GET /v1/hls/s/<session>/<file> the playlist, its pieces and subtitle files (the
 //                                 session's random name is its key)
 //   GET /v1/stop?key&session      stops that session's FFmpeg (the phone left the player)
+//
+// The Roku uses /v1/info, /v1/hash, /v1/hls/start (vod=1, format=ts), /v1/stop and
+// /v1/last-error.
 //
 // The provider allows one connection at a time, so a new request stops the one before.
 
@@ -401,6 +406,8 @@ function readQuery(url) {
     hevc: p.get("hevc") !== "0",
     // A playlist for the whole film, its pieces made as they're asked for.
     vod: p.get("vod") === "1",
+    // /v1/info: the file's moviehash too, for online subtitles (the Samsung TV).
+    hash: p.get("hash") === "1",
   };
   if (!/^[0-9A-Za-z_-]{1,40}$/.test(q.id) || !/^[0-9a-z]{1,5}$/.test(q.ext) || q.start > 86400 || q.audioTrack > 50 || q.height > 4320) return null;
   if (q.audioLanguage && !/^[a-z]{2,3}$/.test(q.audioLanguage)) return null;
@@ -1351,7 +1358,8 @@ const server = http.createServer((req, res) => {
   const piece = /^\/v1\/hls\/s\/([0-9a-f]{32})\/([^/]+)$/.exec(pathname);
   if (piece) return serveSessionFile(res, piece[1], piece[2]).catch((err) => failed(res, err));
   if (!keyMatches(url.searchParams.get("key"))) return sendHelperError(res, 401, "Wrong or missing key.");
-  if (pathname === "/v1/last-error") return sendJson(res, 200, lastError);
+  // "ago" (seconds) lets a TV tell a fresh reason from an old one.
+  if (pathname === "/v1/last-error") return sendJson(res, 200, { ...lastError, ago: lastError.at ? Math.round((Date.now() - lastError.at) / 1000) : -1 });
   if (pathname === "/v1/app") return sendJson(res, 200, appSettings());
   if (pathname === "/v1/xtream") return xtream(req, res, url).catch((err) => failed(res, err));
   if (pathname === "/v1/fetch") return passFetch(req, res, url).catch((err) => failed(res, err));
@@ -1371,8 +1379,9 @@ const server = http.createServer((req, res) => {
   const q = readQuery(url);
   if (!q) return sendJson(res, 400, { error: "Odd request." });
   if (pathname === "/v1/info") {
+    // With hash=1, read from the start and end the helper keeps once it's described.
     return info(q).then(
-      (described) => sendJson(res, 200, described),
+      async (described) => sendJson(res, 200, q.hash ? { ...described, hash: (await fileHash(q)).hash } : described),
       (err) => {
         noteError("Couldn't read " + q.kind + " " + q.id + "." + q.ext + " from the provider: " + err.message);
         sendJson(res, 502, { error: lastError.error });

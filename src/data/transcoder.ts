@@ -17,6 +17,7 @@ export interface HelperInfo {
   width: number;
   videoPlan: "copy" | "try" | "convert";
   audio: { codec: string; plan: string }[];
+  hash: string; // the OpenSubtitles moviehash, when asked for ("" otherwise)
 }
 
 const TITLES_MAX = 200;
@@ -45,10 +46,13 @@ function failure(code: number, timedOut: boolean, text: string): string {
   return said || "The helper answered HTTP " + code + ".";
 }
 
-// What the file holds and how the helper would treat it.
-export function helperInfo(item: Item): Promise<HelperInfo> {
+// What the file holds and how the helper would treat it. `startSecs` lets it keep its
+// connection to the provider for a stream from the start; with `wantHash` it also
+// fingerprints the file for online subtitles, in the same reads.
+export function helperInfo(item: Item, startSecs = 0, wantHash = false): Promise<HelperInfo> {
   const config = base();
-  return send({ url: config.url + "/v1/info?key=" + encodeURIComponent(config.key) + "&" + params(item), timeoutMs: 45000 }).promise.then((res) => {
+  const extra = "&start=" + Math.max(0, Math.floor(startSecs)) + (wantHash ? "&hash=1" : "");
+  return send({ url: config.url + "/v1/info?key=" + encodeURIComponent(config.key) + "&" + params(item) + extra, timeoutMs: 45000 }).promise.then((res) => {
     if (res.code !== 200) throw new Error(failure(res.code, res.timedOut, res.text));
     const data: unknown = JSON.parse(res.text);
     const video = field(data, "video");
@@ -60,6 +64,7 @@ export function helperInfo(item: Item): Promise<HelperInfo> {
       width: toInt(field(video, "width")),
       videoPlan: plan === "try" || plan === "convert" ? plan : "copy",
       audio: isArr(audio) ? audio.filter(isObj).map((a) => ({ codec: fieldStr(a, "codec"), plan: fieldStr(a, "plan") })) : [],
+      hash: /^[0-9a-f]{16}$/.test(fieldStr(data, "hash")) ? fieldStr(data, "hash") : "",
     };
   });
 }

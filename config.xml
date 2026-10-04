@@ -6,7 +6,7 @@
   The version must match package.json (tools/build.mjs checks).
 -->
 <widget xmlns="http://www.w3.org/ns/widgets" xmlns:tizen="http://tizen.org/ns/widgets"
-        id="https://github.com/CrumbsAndCravings/Samsung-IPTV-Player" version="0.7.0" viewmodes="maximized">
+        id="https://github.com/CrumbsAndCravings/Samsung-IPTV-Player" version="0.7.1" viewmodes="maximized">
     <tizen:application id="ARANplus01.ARANplus" package="ARANplus01" required_version="5.0"/>
     <tizen:profile name="tv-samsung"/>
     <content src="index.html"/>

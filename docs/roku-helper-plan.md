@@ -4,15 +4,41 @@ A brief for a new session. It extends the helper built for the Samsung app (this
 repo, `helper/`) so the Roku app can use it too, and lists every change in both
 repositories.
 
-- **Samsung repo:** `CrumbsAndCravings/Samsung-IPTV-Player`. The helper and this plan
-  are on branch `claude/blissful-wozniak-8xy7ar` (version 0.7.0); if that branch has
-  been merged by the time you start, use `main`.
+- **Samsung repo:** `CrumbsAndCravings/Samsung-IPTV-Player`. The helper (1.1) and this
+  plan are on branch `claude/blissful-wozniak-8xy7ar` (app version 0.7.1); if that
+  branch has been merged by the time you start, use `main`.
 - **Roku repo:** `CrumbsAndCravings/roku-iptv-player`, `main` (0.4.25 at the time of
   writing). Its `docs/features.md` is the spec for every feature and its gotchas
   (section 13); read it before touching BrightScript.
 
 The session needs both repositories: Part A changes the helper in the Samsung repo,
 Part B changes the Roku app.
+
+## Status
+
+Done, in a different shape from the plan below, which is kept as it was written. The
+helper here (1.2) is the one built for the iPhone app (`web-iptv-player`), and the Roku
+app (0.5.2) plays through it. It supersedes both 1.1's reading layer (section 2) and the
+Roku-only build of A1 to A3 (once on branch `claude/new-session-700kir`):
+
+- **Reading the provider:** FFmpeg reads each file through the helper's own address
+  (`/v1/source/...`, answered to this computer only), and the helper reads the provider
+  one connection at a time, keeping the start and the end of each file and the
+  provider's redirect (`helper/source.mjs`). This replaces `readHead`, `feedFromStart`
+  and `/p/<token>`. Once a file's start and end are kept, a jump costs one request to
+  the provider.
+- **Whole-film playlists:** `/v1/hls/start?vod=1` answers with a playlist for the whole
+  film in 6 s MPEG-TS pieces, made as they're asked for and keeping the film's own
+  timestamps. The Roku jumps by itself, and online subtitles play without re-timing.
+  Files of unknown length still get the growing (EVENT) playlist.
+- **For the TVs:** `/v1/info` takes `hash=1` (the moviehash, for the Samsung TV's
+  online subtitles; `start` is accepted and no longer needed); `/v1/hash` gives the
+  moviehash on its own (the Roku asks for it before the stream starts);
+  `/v1/stop?session=<id>` stops one session; and `/v1/last-error` reports `ago`
+  (seconds).
+- **Not carried over** from the Roku-only build: `track=`, the master playlist,
+  `/v1/subtitles.srt` (re-timed subtitles) and `-hwaccel auto`.
+- **The Roku's side:** the Roku repo's `docs/features.md` §15.
 
 ## 1. Goal
 
@@ -44,26 +70,69 @@ The user's words: "decode every video into the format the TV is capable of runni
     and VC-1; "convert" for the rest.
   - `audioPlan`: keeps AAC, AC-3 and E-AC-3; turns DTS and TrueHD (more than 2
     channels) into AC-3 448k; turns everything else into AAC 192k.
-  - `ffmpegArgs`, `providerUrl`, `redactor`.
+  - `ffmpegArgs({ input, start, video, encoder, probe })`: `input` is `"pipe:0"` or a
+    URL.
+  - `providerUrl`, `redactor`, `sizeFromAnswer`, `askedRange`, and `osHash` (the
+    OpenSubtitles moviehash, which matches the app's `src/core/oshash.ts`).
 - **Settings:** it reads the provider login from `personal.json` at the Samsung repo
   root (git-ignored). On its first run it writes `transcoder: { url, key }` there:
-  this PC's LAN address on port 8090 and a random key.
+  this PC's LAN address on port 8090 and a random key. `transcoder.userAgent` is
+  optional; the default is `Lavf/61.1.100`, the way FFmpeg introduces itself.
 - **Endpoints:**
   - `GET /`: a health check; needs no key.
-  - `GET /v1/info?key&kind&id&ext`: what the file holds, with
-    `{ duration, video, audio[], videoPlan, encoder }`. Cached for 6 hours.
+  - `GET /v1/info?key&kind&id&ext&start&hash=1`: what the file holds, with
+    `{ duration, video, audio[], videoPlan, encoder, hash }`. `hash` is the moviehash,
+    filled in when `hash=1` is asked. `start` tells the helper whether to keep its
+    connection open for a stream from the beginning. Cached for 6 hours.
   - `GET /v1/stream?key&kind&id&ext&start&video=copy|convert`: one endless MPEG-TS
     stream from `start` seconds. The timestamps restart at 0.
   - `GET /v1/last-error?key`: why the last stream failed.
-- **One provider connection at a time:** a new request stops the running FFmpeg and
-  waits 1.2 s.
+  - `GET /p/<token>`: the local address described below. It answers this computer only.
+- **How it reads the provider (1.1).** This is the speed fix, and every new output
+  must use it.
+  - **Why:** FFmpeg never asks the provider itself. It would open an AVI with 6
+    requests (the start, the index at the end, back again), and a provider takes a
+    moment to start each one: with 2 s per request, a start took 24 s.
+  - **From the beginning:**
+    - the first 4 MB are read once (`readHead`), described with FFmpeg reading
+      `pipe:0`, and kept in a block cache (1 MB blocks);
+    - the connection stays open just after them for 20 s (`warm`);
+    - `feedFromStart` then feeds FFmpeg the cached start followed by the rest of that
+      same connection: 1 provider request in all.
+  - **Resumes and jumps:**
+    - FFmpeg reads `localUrl(file)`, which is `http://127.0.0.1:<port>/p/<token>`;
+    - `serveFile` answers its range requests from the cache, and asks the provider
+      only for the rest, from a block boundary, caching up to 8 MB of each read so the
+      index stays;
+    - the first resume of a title costs 3 requests (the start, the index, the resume
+      point), and each later jump costs 1.
+  - **Files that can't be read from their start alone** (MP4 with its index at the
+    end): described through the local address instead. `pipeOk` is false for them, so
+    they always stream through it.
+  - **Unknown size** (the provider sends no length): FFmpeg falls back to the provider
+    URL.
+  - **The fingerprint:** with `hash=1`, the last 64 KB are fetched first (`readTail`),
+    then the start. So with online subtitles a start costs 2 requests, and the TV
+    makes none of its own.
+  - **Memory:** up to 32 MB of cache per title, for the 3 most recent titles.
+- **One provider connection at a time:**
+  - `openAt` closes any other provider connection first;
+  - `takeSlot` stops the running FFmpeg, closes the connection and waits 300 ms.
 - **Encoders:** at startup it picks the first H.264 encoder that works:
   `h264_nvenc`, `h264_qsv`, `h264_amf`, then `libx264`.
-- **Logs** hide the server, username, password and key.
+- **Logs:**
+  - they hide the server, username, password and key;
+  - each title logs "the provider started sending after X s" and "Sending to the TV
+    after Y s";
+  - `ARANPLUS_HELPER_DEBUG=1` also prints which input FFmpeg reads.
 
 ### The Samsung app's use of it (reference implementation)
 
 - `src/data/transcoder.ts`: the helper client and the remembered choices.
+  - `helperInfo(item, start, wantHash)`: asks for the moviehash when online subtitles
+    are on. `src/screens/player.ts` then skips the TV's own hash requests for helper
+    titles (`hashThenLoad`, `helperHash`), and stores the result with
+    `rememberHash`.
   - `helperModes`: per picture codec, whether "copy" or "convert" worked.
   - `helperTitles`: titles that need the helper from the start, such as DTS-only ones.
 - `src/screens/player.ts`, the `route: "direct" | "helper"` state:
@@ -130,7 +199,7 @@ The user's words: "decode every video into the format the TV is capable of runni
 
 Keep `/v1/stream` and `/v1/info` exactly as they are: the Samsung app uses them.
 
-**Update (helper 1.1, built for the iPhone app in `web-iptv-player`):** most of A1 and
+**Update (built for the iPhone app in `web-iptv-player`):** most of A1 and
 A2 now exists. What's there, and how it differs from the plan below:
 
 - `GET /v1/hls/index.m3u8?key&kind&id&ext&start&video&height&audio` starts a session
@@ -158,6 +227,9 @@ A2 now exists. What's there, and how it differs from the plan below:
 
 ### A1. HLS output
 
+- **Build it on the 1.1 reading layer** (section 2): FFmpeg's input is `"pipe:0"` fed by
+  `feedFromStart` when starting at 0, otherwise `localUrl(file)` with `-ss`. Never the
+  provider URL, or the start and jumps go back to taking 10 s or more.
 - **The playlist:** `GET /v1/hls/index.m3u8?key&kind&id&ext&start&video=copy|convert&height=&audio=`
   - starts FFmpeg with `-f hls -hls_time 6 -hls_list_size 0 -hls_playlist_type event
     -hls_flags independent_segments+temp_file -hls_segment_filename <dir>/seg%05d.ts`,
@@ -172,8 +244,8 @@ A2 now exists. What's there, and how it differs from the plan below:
     grow while FFmpeg works;
   - answers 404 for an unknown session, and never serves anything outside the
     session's folder (no `..`).
-- **One run at a time:** a new HLS or stream request stops the previous FFmpeg (the
-  existing `takeSlot`).
+- **One run at a time:** a new HLS or stream request stops the previous FFmpeg and
+  provider connection (the existing `takeSlot`).
   - Keep the previous session's files until its next request fails, so a Roku
     re-reading the playlist doesn't break during a reopen.
   - Delete a session's folder 2 minutes after it stops being requested, and delete
@@ -195,11 +267,12 @@ A2 now exists. What's there, and how it differs from the plan below:
 
 ### A3. The provider's view of the helper
 
-- FFmpeg introduces itself as `Lavf/<version>`. The Roku notes (features.md §2.3) found
-  a provider refusing some identities.
-- Add `-user_agent` with `transcoder.userAgent` from `personal.json`, defaulting to the
+- Done in 1.1: the helper's own requests send `transcoder.userAgent`, defaulting to
+  `Lavf/61.1.100`.
+- If the provider refuses it, the Roku notes (features.md §2.3) suggest trying the
   same desktop browser string as the Roku's `BrowserUserAgent()`.
-- Apply it to the probe and the stream.
+- The one place FFmpeg still asks the provider directly (unknown size) should pass
+  `-user_agent` with the same value.
 
 ### A4. Tests and checks
 
@@ -209,11 +282,19 @@ A2 now exists. What's there, and how it differs from the plan below:
     `#EXT` lines are kept).
 - An end-to-end run against the fake provider (`dev/mock-xtream.mjs` serves
   `dev/media/sample.<ext>`):
-  - make a test AVI and an HEVC MKV with DTS 5.1 with FFmpeg into `dev/media/`
-    (git-ignored);
-  - start the helper with `ARANPLUS_PERSONAL` pointing at a test `personal.json` (use
-    `127.0.0.1`, not `localhost`: static Linux FFmpeg builds can't look the name up);
-  - fetch the playlist, check it grows, fetch two segments.
+  - make 10-minute test files with FFmpeg into `dev/media/` (git-ignored): an Xvid AVI
+    with MP3 sound, and an H.264 or HEVC MKV with DTS 5.1. Small files fit in the
+    cache and hide jump costs;
+  - start the helper with `ARANPLUS_PERSONAL` pointing at a test `personal.json` whose
+    server is `localhost:<port>`; with `127.0.0.1` the log's redaction also hides the
+    helper's own local address;
+  - fetch the playlist, check it grows, fetch two segments;
+  - time it the way 1.1 was timed:
+    - wrap the fake provider so each file request waits 2 s and is counted;
+    - expect 1 provider request for a start from the beginning (2 with `hash=1`), 3
+      for a first resume, and 1 for each later jump;
+  - run FFmpeg asynchronously in such scripts: a synchronous call freezes the fake
+    provider living in the same process.
   - Note: the static FFmpeg used in the cloud sandbox crashed reading MPEG-TS, so
     check segments by reading the TS program table directly (stream types 0x1B H.264,
     0x24 HEVC, 0x0F AAC, 0x81 AC-3) with a small Python script, as was done for
@@ -231,8 +312,12 @@ A2 now exists. What's there, and how it differs from the plan below:
 
 ### B2. Talking to the helper
 
-- Add a `helperInfo` mode to `XtreamTask` (or a small `HelperTask`): `GET /v1/info`,
-  returning `{ duration, videoCodec, width, height, audio[], videoPlan }` or an error.
+- Add a `helperInfo` mode to `XtreamTask` (or a small `HelperTask`):
+  `GET /v1/info?...&start=<s>&hash=1`, returning
+  `{ duration, videoCodec, width, height, audio[], videoPlan, hash }` or an error.
+  - Pass the real `start`, so the helper keeps its connection only for a stream from
+    the beginning.
+  - Ask for `hash=1` when online subtitles are set up.
 - Add a `helperError` mode: `GET /v1/last-error`.
 - Errors in plain words, as in the Samsung `src/data/transcoder.ts` `failure()`:
   - no answer: "The helper on your computer didn't answer. Is the computer on, with
@@ -261,6 +346,18 @@ Never use the helper when `HelperOn()` is false. Then everything behaves as toda
 - **`height`:** the screen's height (`roDeviceInfo.GetDisplaySize().h`, 720 on the
   user's TV).
 - **`audio`:** "aac" unless `CanDecodeAudio({ Codec: "ac3" })` is true.
+
+### B4b. Online subtitles through the helper
+
+- The Roku computes the moviehash during the online search, while the video plays:
+  `SubtitleTask.brs` `osFind` calls `fileHash(videoUrl)`, which makes two range
+  requests to the provider.
+- Through the helper, the helper already holds the provider's one connection, so those
+  requests would be a second one during playback.
+- For helper titles:
+  - pass the hash from `helperInfo` to the subtitle search (a `hash` field next to
+    `videoUrl`, used when set);
+  - leave `videoUrl` empty, so `fileHash` never runs.
 
 ### B5. Position and duration
 
@@ -353,6 +450,10 @@ In `tests/utils_test.brs` and `tests/parse_test.brs`, test:
 
 - **How Roku handles EVENT playlists:** its `position` and `duration`, and how far it
   can jump. Settle this first (B5, B6).
+- **Start time:** the helper's speed fix (section 2) carries over to the Roku only if
+  the HLS output reads through it and the Roku asks for `start` and `hash` as above.
+  The helper window's "provider started sending after X s" line shows how much of
+  what remains is the provider's own delay.
 - **PC load:** converting HEVC in real time needs hardware help or a reasonably modern
   processor. Converting to 720p helps a lot. The helper prints the encoder at
   startup.
@@ -363,8 +464,9 @@ In `tests/utils_test.brs` and `tests/parse_test.brs`, test:
 - **Subtitles:** embedded tracks don't come through the helper (`-sn`); online
   subtitles still work. Converting text subtitles to WebVTT in the HLS output is a
   possible later step.
-- **Disk:** HLS segments take room in the temp folder (about 1 GB per hour at 720p).
-  Cleanup (A1) matters.
+- **Disk and memory:** HLS segments take room in the temp folder (about 1 GB per hour
+  at 720p), so cleanup (A1) matters. The read cache takes up to about 100 MB of
+  memory.
 
 ## 8. Working agreements (from the earlier sessions)
 
