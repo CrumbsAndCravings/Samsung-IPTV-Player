@@ -14,6 +14,32 @@ repositories.
 The session needs both repositories: Part A changes the helper in the Samsung repo,
 Part B changes the Roku app.
 
+## Status
+
+Done, in a different shape from the plan below, which is kept as it was written. The
+helper here (1.2) is the one built for the iPhone app (`web-iptv-player`), and the Roku
+app (0.5.2) plays through it. It supersedes both 1.1's reading layer (section 2) and the
+Roku-only build of A1 to A3 (once on branch `claude/new-session-700kir`):
+
+- **Reading the provider:** FFmpeg reads each file through the helper's own address
+  (`/v1/source/...`, answered to this computer only), and the helper reads the provider
+  one connection at a time, keeping the start and the end of each file and the
+  provider's redirect (`helper/source.mjs`). This replaces `readHead`, `feedFromStart`
+  and `/p/<token>`. Once a file's start and end are kept, a jump costs one request to
+  the provider.
+- **Whole-film playlists:** `/v1/hls/start?vod=1` answers with a playlist for the whole
+  film in 6 s MPEG-TS pieces, made as they're asked for and keeping the film's own
+  timestamps. The Roku jumps by itself, and online subtitles play without re-timing.
+  Files of unknown length still get the growing (EVENT) playlist.
+- **For the TVs:** `/v1/info` takes `hash=1` (the moviehash, for the Samsung TV's
+  online subtitles; `start` is accepted and no longer needed); `/v1/hash` gives the
+  moviehash on its own (the Roku asks for it before the stream starts);
+  `/v1/stop?session=<id>` stops one session; and `/v1/last-error` reports `ago`
+  (seconds).
+- **Not carried over** from the Roku-only build: `track=`, the master playlist,
+  `/v1/subtitles.srt` (re-timed subtitles) and `-hwaccel auto`.
+- **The Roku's side:** the Roku repo's `docs/features.md` §15.
+
 ## 1. Goal
 
 Titles the Roku can't play today should play on it through the helper on the user's
@@ -172,6 +198,32 @@ The user's words: "decode every video into the format the TV is capable of runni
 ## 4. Part A: helper changes (Samsung repo, `helper/`)
 
 Keep `/v1/stream` and `/v1/info` exactly as they are: the Samsung app uses them.
+
+**Update (built for the iPhone app in `web-iptv-player`):** most of A1 and
+A2 now exists. What's there, and how it differs from the plan below:
+
+- `GET /v1/hls/index.m3u8?key&kind&id&ext&start&video&height&audio` starts a session
+  and answers with a redirect to `s/<session>/index.m3u8` (relative), so the playlist's
+  piece names resolve to the session's folder without rewriting. MPEG-TS pieces and
+  sound as for the TV (`audio=keep`) unless `format=fmp4` or `audio=aac` is asked for.
+  `GET /v1/hls/start` does the same and answers with JSON (the phone uses that, with
+  `format=fmp4`).
+- Pieces are 6 s; converting forces a keyframe at each piece's start; the playlist is
+  served with `#EXT-X-START:TIME-OFFSET=0` so a player starts at its beginning.
+- `height` scales down when converting; `audio=aac` turns everything but AAC into AAC
+  stereo; `a=<n>` or `alang=<code>` picks the one sound track a session carries;
+  `hevc=0` converts HEVC for players without it; `subs=1` writes text subtitles as
+  WebVTT next to the pieces.
+- Sessions: the newest is kept for 3 hours of not being asked for, older ones for 2
+  minutes, and everything is deleted when the helper starts. `/v1/stop?session=<id>`
+  stops one. A start the player gives up on is dropped.
+- Not done: `-hwaccel auto` (A2) and a default browser user agent for FFmpeg (A3);
+  `transcoder.userAgent` sets one when needed.
+- The phone now asks for `vod=1`: a playlist for the whole film (`#EXT-X-PLAYLIST-TYPE:VOD`,
+  6 s pieces at fixed places), with pieces made when asked for and FFmpeg started again
+  for a jump (`helper/plan.mjs`, "Whole films"). Safari didn't start the growing (EVENT)
+  playlists on a real iPhone. The Roku may well want the same; `/v1/hls/index.m3u8`
+  still gives the growing kind.
 
 ### A1. HLS output
 

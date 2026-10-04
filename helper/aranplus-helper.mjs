@@ -1,37 +1,105 @@
 // The ARAN+ helper: runs on a computer at home and converts the videos this TV can't
-// play (AVI files, DTS sound) into a stream it can, with FFmpeg, while you watch.
+// play (AVI files, DTS sound) into a stream it can, with FFmpeg, while you watch. It
+// also serves ARAN+ for the iPhone (the web-iptv-player repo), which can't reach the
+// provider by itself and plays almost nothing as the provider sends it.
 //
 //   npm run helper        (or double-click helper\start-helper.cmd on Windows)
 //
 // It reads the provider login from personal.json, so the login never travels from the
-// TV. The first run adds "transcoder" (this computer's address and a random key) to
-// personal.json; build the TV app once more (npm run install:tv) so it knows them.
+// TV or the phone. The first run adds "transcoder" (this computer's address and a
+// random key) to personal.json; build the TV app once more (npm run install:tv) so it
+// knows them. The phone gets the key from the link the helper prints.
 //
-//   GET /                         is it running (no key needed)
-//   GET /v1/info?key&kind&id&ext  what the file holds and how it would be converted
+// For the TV:
+//   GET /                         is it running (no key needed; a browser goes to /app/)
+//   GET /v1/info?key&kind&id&ext&hash=1
+//                                 what the file holds and how it would be converted; with
+//                                 hash=1, its OpenSubtitles moviehash too
 //   GET /v1/stream?key&kind&id&ext&start&video=copy|convert
 //                                 the file as MPEG-TS, from `start` seconds
-//   GET /v1/last-error?key        why the last stream failed, for the TV's error screen
+//   GET /v1/last-error?key        why the last stream failed (and how long ago), for the TVs
+//
+// For the iPhone:
+//   GET /app/...                  the web app's files (no key needed; they hold no secrets)
+//   GET /v1/app?key               the account (server and username, never the password),
+//                                 languages and sync settings from personal.json
+//   GET /v1/xtream?key&action&... the provider's player_api.php, with the login added
+//   GET /v1/file/<kind>/<id>.<ext>?key
+//                                 the file as the provider sends it (MP4s play as they are)
+//   GET /v1/hash?key&kind&id&ext  the file's OpenSubtitles moviehash
+//   GET|POST /v1/fetch?key&url    OpenSubtitles, which a web page can't call itself
+//   GET /v1/hls/start?key&kind&id&ext&start&video&hevc&a|alang&audio&height&format&subs&vod
+//                                 starts HLS from `start` seconds; answers once the first
+//                                 pieces are ready, with the playlist's address. With
+//                                 vod=1, the playlist is the whole film's (see "Whole
+//                                 films, for the phone" below)
+//   GET /v1/hls/index.m3u8?...    the same, answered with a redirect to the playlist
+//   GET /v1/hls/s/<session>/<file> the playlist, its pieces and subtitle files (the
+//                                 session's random name is its key)
+//   GET /v1/stop?key&session      stops that session's FFmpeg (the phone left the player)
+//
+// The Roku uses /v1/info, /v1/hash, /v1/hls/start (vod=1, format=ts), /v1/stop and
+// /v1/last-error.
 //
 // The provider allows one connection at a time, so a new request stops the one before.
 
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import http from "node:http";
-import https from "node:https";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { ENCODERS, askedRange, audioPlan, ffmpegArgs, osHash, parseProbe, providerUrl, redactor, sizeFromAnswer, videoPlan } from "./plan.mjs";
+import { promisify } from "node:util";
+import { gzip as gzipCallback } from "node:zlib";
+import {
+  ENCODERS,
+  MAX_SUBTITLES,
+  audioPlan,
+  compressible,
+  ffmpegArgs,
+  hashedAsset,
+  hlsArgs,
+  hlsVideoPlan,
+  mergeVtt,
+  movieHash,
+  parseProbe,
+  pieceName,
+  playlistForPlayer,
+  playlistState,
+  providerUrl,
+  redactor,
+  sessionFile,
+  sessionFileType,
+  videoPlan,
+  vodArgs,
+  vodPieces,
+  vodPlaylist,
+  VOD_SECONDS,
+  wantsGzip,
+  xtreamQuery,
+  fetchAllowed,
+} from "./plan.mjs";
+import { httpGet } from "./http-get.mjs";
+import { parseRange, SourceFiles } from "./source.mjs";
 
-const VERSION = "1.1";
+const VERSION = "1.2";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const personalPath = process.env.ARANPLUS_PERSONAL || path.join(root, "personal.json");
 const DEFAULT_PORT = 8090;
 const PROBE_TIMEOUT_MS = 30000;
 const FIRST_BYTES_MS = 45000; // the provider can be slow to start a file
+const FREE_SLOT_MS = 1200; // lets the provider notice the last connection closed
 const INFO_TTL_MS = 6 * 3600 * 1000;
+const API_TIMEOUT_MS = 45000;
+const HLS_ROOT = path.join(os.tmpdir(), "aranplus-helper");
+const HLS_READY_SEGMENTS = 1; // pieces in the playlist before the phone is told to play
+const SESSION_IDLE_MS = 2 * 60000; // an older session nobody asks for any more
+const SESSION_KEEP_MS = 3 * 3600000; // the newest one, kept through long pauses
+// How the helper introduces itself when it asks the provider for lists and files
+// (FFmpeg keeps its own name unless "userAgent" is set under "transcoder"): the same
+// desktop browser as the Roku app's BrowserUserAgent().
+const BROWSER_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 const ENCODER_NAMES = {
   h264_nvenc: "the NVIDIA graphics card",
   h264_qsv: "Intel Quick Sync",
@@ -90,6 +158,20 @@ function lanAddress() {
 }
 
 const address = lanAddress();
+
+// This computer's Tailscale address (100.64.0.0 to 100.127.255.255), when Tailscale is on:
+// a private network of your own devices, so the phone reaches the helper from anywhere
+// (5G, another Wi-Fi) at one address. "" without it.
+function tailscaleAddress() {
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const a of list || []) {
+      if (a.family !== "IPv4" && a.family !== 4) continue;
+      const parts = a.address.split(".").map(Number);
+      if (parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127) return a.address;
+    }
+  }
+  return "";
+}
 let settings = personal.transcoder && typeof personal.transcoder === "object" ? personal.transcoder : null;
 let addedSettings = false;
 if (!settings || !settings.url || !settings.key) {
@@ -101,6 +183,47 @@ if (!settings || !settings.url || !settings.key) {
 const port = Number(new URL(settings.url).port) || DEFAULT_PORT;
 const key = String(settings.key);
 const redact = redactor(login, key);
+const ffmpegAgent = String(settings.userAgent || "").trim();
+const fetchAgent = ffmpegAgent || BROWSER_UA;
+
+// --- The provider's files ----------------------------------------------------------------
+//
+// FFmpeg reads the provider's files through the helper itself (/v1/source, helper/source.mjs),
+// which keeps the start and the end of each file and the provider's redirect, so a jump
+// costs one request to the provider instead of four or five. The window says how long
+// the provider takes to answer, the usual reason a video is slow to start.
+
+const requestTally = { count: 0, slowest: 0 };
+
+const sources = new SourceFiles({
+  fetch: httpGet,
+  userAgent: fetchAgent,
+  onRequest: ({ ms }) => {
+    requestTally.count++;
+    requestTally.slowest = Math.max(requestTally.slowest, ms);
+  },
+});
+
+function sourceFile(q) {
+  return sources.file(q.kind + ":" + q.id + "." + q.ext, providerUrl(login, q.kind, q.id, q.ext));
+}
+
+// The address FFmpeg reads a file from: the helper itself, on this computer only.
+function sourceUrl(q) {
+  return "http://127.0.0.1:" + port + "/v1/source/" + q.kind + "/" + encodeURIComponent(q.id) + "." + q.ext + "?key=" + encodeURIComponent(key);
+}
+
+// "2 requests to the provider, the slowest answered in 4.1 s" since `since`.
+function tallySince(since) {
+  const count = requestTally.count - since.count;
+  if (count <= 0) return "nothing asked of the provider";
+  return count + (count === 1 ? " request" : " requests") + " to the provider, the slowest answered in " + (requestTally.slowest / 1000).toFixed(1) + " s";
+}
+
+function startTally() {
+  requestTally.slowest = 0;
+  return { count: requestTally.count, at: Date.now() };
+}
 
 function say(...parts) {
   const time = new Date().toLocaleTimeString();
@@ -148,259 +271,14 @@ function pickEncoder() {
 
 const encoder = settings.encoder && ENCODERS[settings.encoder] ? settings.encoder : pickEncoder();
 
-// --- The provider's file ---------------------------------------------------------------
-//
-// FFmpeg never talks to the provider itself. Opening an AVI costs it six requests (the
-// start, the index at the end, back again, ...), and a provider takes a moment to start
-// each one, so the helper fetches the file itself:
-// - from the start, on one connection: the first 4 MB are read once, inspected, then
-//   fed to FFmpeg, followed by the rest of the same connection;
-// - from anywhere else, through a local address (/p/<token>) that answers FFmpeg's
-//   requests from a memory cache of the parts it keeps going back to (the start, the
-//   index) and asks the provider only for the rest.
-// There is never more than one provider connection open.
+// Whether this FFmpeg writes pictures whole before they appear (5.1 and newer), so the
+// phone never gets half a preview picture.
+const atomicPictures = /atomic_writing/.test(spawnSync(ffmpeg.path, ["-hide_banner", "-h", "muxer=image2"], { encoding: "utf8", windowsHide: true }).stdout || "");
 
-const BLOCK = 1 << 20;
-const HEAD_BYTES = 4 * BLOCK;
-const HEAD_WAIT_MS = 20000;
-const PROVIDER_WAIT_MS = 30000;
-const CACHE_PER_READ = 8 * BLOCK; // an index sits within the first few MB of a read
-const CACHE_PER_FILE = 32 * BLOCK;
-const FILES_KEPT = 3;
-const WARM_MS = 20000; // how long the connection that read the start waits for the stream
-const SETTLE_MS = 300; // after closing a connection, before the next
-const HASH_BYTES = 65536;
-const USER_AGENT = String(settings.userAgent || "Lavf/61.1.100"); // as FFmpeg introduces itself
+// --- One connection at a time ---------------------------------------------------------
 
-const files = new Map(); // "movie:123.avi" -> what the helper knows about the file
-const byToken = new Map();
-let provider = null; // the one provider connection
-let active = null; // the FFmpeg run
-let warmTimer = 0;
+let active = null; // the FFmpeg run using the provider's connection
 let lastError = { error: "", at: 0 };
-
-function seconds(since) {
-  return ((Date.now() - since) / 1000).toFixed(1) + " s";
-}
-
-function fileFor(q) {
-  const id = q.kind + ":" + q.id + "." + q.ext;
-  let file = files.get(id);
-  if (file) files.delete(id); // most recent last
-  else {
-    file = { id, name: q.kind + " " + q.id + "." + q.ext, url: providerUrl(login, q.kind, q.id, q.ext), size: 0, blocks: new Map(), cached: 0, token: randomBytes(16).toString("hex"), info: null, infoAt: 0, pipeOk: false };
-    byToken.set(file.token, file);
-  }
-  files.set(id, file);
-  while (files.size > FILES_KEPT) {
-    const [oldest, old] = files.entries().next().value;
-    files.delete(oldest);
-    byToken.delete(old.token);
-  }
-  return file;
-}
-
-// The local address FFmpeg reads a file through (the provider's own when its size is
-// unknown, since the cache needs it).
-function localUrl(file) {
-  return file.size > 0 ? `http://127.0.0.1:${port}/p/${file.token}` : file.url;
-}
-
-// Keeps whole blocks (or the file's last one) of what was read, within the budget.
-function storeBlocks(file, offset, buf, always) {
-  for (let at = 0; at < buf.length; at += BLOCK) {
-    const piece = buf.subarray(at, at + BLOCK);
-    const index = (offset + at) / BLOCK;
-    const whole = piece.length === BLOCK || (file.size > 0 && offset + at + piece.length === file.size);
-    if (!whole || file.blocks.has(index)) continue;
-    if (!always && file.cached + piece.length > CACHE_PER_FILE) return;
-    file.blocks.set(index, Buffer.from(piece));
-    file.cached += piece.length;
-  }
-}
-
-function closeProvider() {
-  clearTimeout(warmTimer);
-  if (!provider) return;
-  provider.req.destroy();
-  provider = null;
-}
-
-// Opens the file at `start` (or with the given `range`), following redirects; any
-// other provider connection is closed first. `pos` is where the next byte from the
-// provider sits in the file.
-function openAt(file, start, range) {
-  closeProvider();
-  return new Promise((resolve, reject) => {
-    let hops = 0;
-    const go = (target) => {
-      const lib = target.startsWith("https:") ? https : http;
-      const conn = { file, req: null, res: null, pos: start, skip: 0, pending: null, next: start };
-      const req = lib.get(target, { headers: { "User-Agent": USER_AGENT, Accept: "*/*", Range: range || "bytes=" + start + "-" } }, (res) => {
-        clearTimeout(timer);
-        if (provider !== conn) {
-          req.destroy();
-          return reject(new Error("closed"));
-        }
-        const status = res.statusCode || 0;
-        res.on("error", () => undefined);
-        if (status >= 300 && status < 400 && res.headers.location && hops < 5) {
-          hops++;
-          req.destroy();
-          provider = null;
-          return go(new URL(res.headers.location, target).toString());
-        }
-        if (status !== 200 && status !== 206) {
-          req.destroy();
-          provider = null;
-          return reject(new Error("The provider answered HTTP " + status + (res.statusMessage ? " " + res.statusMessage : "") + "."));
-        }
-        const size = sizeFromAnswer(status, res.headers);
-        if (size > 0) file.size = size;
-        // A provider that ignores the range sends the whole file: skip to `start`.
-        if (status === 200) conn.skip = start;
-        conn.res = res;
-        resolve(conn);
-      });
-      conn.req = req;
-      provider = conn;
-      const timer = setTimeout(() => req.destroy(new Error("no answer in " + PROVIDER_WAIT_MS / 1000 + " seconds")), PROVIDER_WAIT_MS);
-      req.on("error", (err) => {
-        clearTimeout(timer);
-        if (provider === conn) provider = null;
-        reject(new Error("Couldn't reach the provider: " + err.message));
-      });
-    };
-    go(file.url);
-  });
-}
-
-// Sends what a provider connection brings to `out`, from byte `from` to byte `to` of
-// the file, caching up to `cacheBytes` of it on the way. `done(ok)` when it ends.
-function forward(conn, out, from, to, cacheBytes, done) {
-  const file = conn.file;
-  let blockStart = conn.pos;
-  let acc = [];
-  let accBytes = 0;
-  let cachedHere = 0;
-  const caching = cacheBytes > 0 && conn.pos % BLOCK === 0;
-  let finished = false;
-  const finish = (ok) => {
-    if (finished) return;
-    finished = true;
-    conn.res.off("data", onData);
-    done(ok);
-  };
-  function onData(data) {
-    let chunk = data;
-    if (conn.skip > 0) {
-      if (chunk.length <= conn.skip) {
-        conn.skip -= chunk.length;
-        return;
-      }
-      chunk = chunk.subarray(conn.skip);
-      conn.skip = 0;
-    }
-    const at = conn.pos;
-    conn.pos += chunk.length;
-    if (caching && cachedHere < cacheBytes) {
-      acc.push(chunk);
-      accBytes += chunk.length;
-      while (accBytes >= BLOCK || (file.size > 0 && accBytes > 0 && blockStart + accBytes >= file.size)) {
-        const all = Buffer.concat(acc);
-        const take = Math.min(BLOCK, all.length);
-        storeBlocks(file, blockStart, all.subarray(0, take), false);
-        blockStart += take;
-        cachedHere += take;
-        acc = take < all.length ? [all.subarray(take)] : [];
-        accBytes = all.length - take;
-        if (take < BLOCK) break;
-      }
-    }
-    const first = Math.max(0, from - at);
-    const last = Math.min(chunk.length, to - at + 1);
-    if (last > first && !out.write(chunk.subarray(first, last))) {
-      conn.res.pause();
-      out.once("drain", () => conn.res.resume());
-    }
-    if (conn.pos > to) finish(true);
-  }
-  conn.res.on("data", onData);
-  conn.res.once("end", () => finish(true));
-  conn.res.once("error", () => finish(false));
-  conn.res.resume();
-}
-
-// Waits until `stream` takes more, or goes away.
-function drained(stream) {
-  return new Promise((resolve) => {
-    const done = () => {
-      stream.off("drain", done);
-      stream.off("close", done);
-      resolve();
-    };
-    stream.once("drain", done);
-    stream.once("close", done);
-  });
-}
-
-// Reads the first 4 MB into the cache. The connection stays open just after them, so a
-// stream from the start carries on with it.
-async function readHead(file) {
-  const since = Date.now();
-  const conn = await openAt(file, 0);
-  const chunks = [];
-  let got = 0;
-  let firstAt = 0;
-  await new Promise((resolve) => {
-    const done = () => {
-      clearTimeout(timer);
-      conn.res.off("data", onData);
-      resolve();
-    };
-    const onData = (chunk) => {
-      if (!firstAt) firstAt = Date.now();
-      chunks.push(chunk);
-      got += chunk.length;
-      if (got >= HEAD_BYTES) {
-        conn.res.pause();
-        done();
-      }
-    };
-    const timer = setTimeout(() => {
-      conn.res.pause();
-      done();
-    }, HEAD_WAIT_MS);
-    conn.res.on("data", onData);
-    conn.res.once("end", done);
-    conn.res.once("error", done);
-  });
-  const all = Buffer.concat(chunks);
-  const head = all.subarray(0, Math.min(all.length, HEAD_BYTES));
-  storeBlocks(file, 0, head, true);
-  conn.pos = all.length;
-  conn.next = head.length;
-  conn.pending = all.subarray(head.length);
-  say(`Opening ${file.name}: the provider started sending after ${firstAt ? seconds(since) : "-"}, the first ${(head.length / BLOCK).toFixed(1)} MB took ${seconds(since)}.`);
-  return head;
-}
-
-// The last 64 KB, for the OpenSubtitles fingerprint the TV would otherwise fetch itself
-// (two more requests before the video starts). Best effort.
-async function readTail(file) {
-  const conn = await openAt(file, 0, "bytes=-" + HASH_BYTES);
-  if (conn.res.statusCode !== 206) return closeProvider(); // the whole file: not worth it
-  const chunks = [];
-  await new Promise((resolve) => {
-    conn.res.on("data", (chunk) => chunks.push(chunk));
-    conn.res.once("end", resolve);
-    conn.res.once("error", resolve);
-    conn.res.resume();
-  });
-  closeProvider();
-  const tail = Buffer.concat(chunks);
-  if (tail.length === HASH_BYTES) file.tail = tail;
-}
 
 // Stops FFmpeg on purpose, so its exit isn't reported as a problem.
 function stopRun(child) {
@@ -408,16 +286,12 @@ function stopRun(child) {
   child.kill();
 }
 
-// Frees the provider's one connection for something new.
 async function takeSlot() {
-  const busy = !!active || !!provider;
-  if (active) {
-    const old = active;
-    active = null;
-    stopRun(old);
-  }
-  closeProvider();
-  if (busy) await new Promise((resolve) => setTimeout(resolve, SETTLE_MS));
+  if (!active) return;
+  const old = active;
+  active = null;
+  stopRun(old);
+  await new Promise((resolve) => setTimeout(resolve, FREE_SLOT_MS));
 }
 
 function lastLines(text) {
@@ -436,155 +310,47 @@ function noteError(message) {
 
 // --- What a file holds ----------------------------------------------------------------
 
-// FFmpeg's description of a file: from bytes handed to it, or from an address.
-function probe(input, bytes) {
-  return new Promise((resolve) => {
-    const args = bytes ? ["-hide_banner", "-i", "pipe:0"] : ["-hide_banner", "-nostdin", "-i", input];
-    const child = spawn(ffmpeg.path, args, { windowsHide: true });
+const infoCache = new Map();
+
+function probe(url) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(ffmpeg.path, ["-hide_banner", "-nostdin", "-i", url], { windowsHide: true });
+    active = child;
     let text = "";
     child.stderr.on("data", (d) => {
       text = (text + d).slice(-200000);
     });
     const timer = setTimeout(() => child.kill(), PROBE_TIMEOUT_MS);
-    child.on("error", (err) => {
-      text += "\n" + err.message;
-    });
+    child.on("error", (err) => reject(err));
     child.on("close", (code, signal) => {
       clearTimeout(timer);
-      if (!/Stream #/.test(text)) text += "\nFFmpeg stopped without saying why (" + (signal || "code " + code) + ").";
-      resolve(text);
+      if (active === child) active = null;
+      const result = parseProbe(text);
+      if (!result.video && result.audio.length === 0) reject(new Error(lastLines(text) || "FFmpeg stopped without saying why (" + (signal || "code " + code) + ")."));
+      else resolve(result);
     });
-    if (bytes) {
-      child.stdin.on("error", () => undefined);
-      child.stdin.end(bytes);
-    }
   });
 }
 
 async function info(q) {
-  const file = fileFor(q);
-  if (file.info && Date.now() - file.infoAt < INFO_TTL_MS && file.blocks.has(0)) return { ...file.info, hash: file.hash || "" };
+  const cacheKey = q.kind + ":" + q.id;
+  const cached = infoCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < INFO_TTL_MS) return cached.info;
   await takeSlot();
-  // The fingerprint's end first, so the connection that reads the start can stay open.
-  if (q.hash && !file.tail) {
-    try {
-      await readTail(file);
-    } catch (err) {
-      say("  No fingerprint for online subtitles: " + err.message);
-    }
-  }
-  const head = await readHead(file);
-  if (file.tail && head.length >= HASH_BYTES && file.size >= 2 * HASH_BYTES) file.hash = osHash(file.size, head.subarray(0, HASH_BYTES), file.tail);
-  let text = await probe("", head);
-  let result = parseProbe(text);
-  file.pipeOk = !!(result.video || result.audio.length);
-  if (!file.pipeOk) {
-    // Some files (MP4 with its index at the end) can't be read from their start alone.
-    closeProvider();
-    text = await probe(localUrl(file), null);
-    result = parseProbe(text);
-    if (!result.video && !result.audio.length) throw new Error(lastLines(text) || "FFmpeg couldn't read the file.");
-  }
-  file.info = {
+  const tally = startTally();
+  const result = await probe(sourceUrl(q));
+  say(`Read what ${q.kind} ${q.id}.${q.ext} holds in ${((Date.now() - tally.at) / 1000).toFixed(1)} s (${tallySince(tally)}).`);
+  const described = {
     duration: result.duration,
     video: result.video,
     audio: result.audio.map((a) => ({ ...a, plan: audioPlan(a) })),
+    subtitles: result.subtitles,
     videoPlan: result.video ? videoPlan(result.video.codec) : "copy",
+    hlsVideoPlan: result.video ? hlsVideoPlan(result.video.codec) : "copy",
     encoder,
   };
-  file.infoAt = Date.now();
-  // Keep the connection for a stream from the start, but not for long.
-  if (q.start > 0 || !file.pipeOk) closeProvider();
-  else {
-    clearTimeout(warmTimer);
-    const warm = provider;
-    warmTimer = setTimeout(() => {
-      if (provider === warm && !warm.inUse) closeProvider();
-    }, WARM_MS);
-  }
-  return { ...file.info, hash: file.hash || "" };
-}
-
-// Feeds a file to FFmpeg from the start: the cached first blocks, then the rest from
-// the provider (on the connection that read them, when it's still open).
-async function feedFromStart(child, file) {
-  const stdin = child.stdin;
-  stdin.on("error", () => undefined);
-  let gone = false;
-  child.once("close", () => {
-    gone = true;
-  });
-  let pos = 0;
-  for (;;) {
-    const block = file.blocks.get(pos / BLOCK);
-    if (!block) break;
-    pos += block.length;
-    if (!stdin.write(block)) await drained(stdin);
-    if (gone) return;
-  }
-  if (file.size > 0 && pos >= file.size) return stdin.end();
-  let conn = provider && provider.file === file && provider.next === pos ? provider : null;
-  if (!conn) conn = await openAt(file, pos);
-  if (gone) return closeProvider();
-  conn.inUse = true;
-  clearTimeout(warmTimer);
-  if (conn.pending && conn.pending.length) stdin.write(conn.pending);
-  conn.pending = null;
-  const ownConn = conn;
-  child.once("close", () => {
-    if (provider === ownConn) closeProvider();
-  });
-  forward(conn, stdin, conn.pos, file.size > 0 ? file.size - 1 : Infinity, 0, () => stdin.end());
-}
-
-// The local address: answers FFmpeg's range requests from the cache, and the rest from
-// the provider. Only this computer may ask.
-async function serveFile(req, res, file) {
-  const remote = req.socket.remoteAddress || "";
-  if (!/^(127\.|::1$|::ffff:127\.)/.test(remote)) {
-    res.writeHead(403);
-    return res.end();
-  }
-  const want = askedRange(req.headers.range, file.size);
-  if (want.start >= file.size) {
-    res.writeHead(416, { "Content-Range": "bytes */" + file.size });
-    return res.end();
-  }
-  const headers = { "Content-Type": "application/octet-stream", "Accept-Ranges": "bytes", "Content-Length": String(want.end - want.start + 1) };
-  if (want.partial) headers["Content-Range"] = `bytes ${want.start}-${want.end}/${file.size}`;
-  res.writeHead(want.partial ? 206 : 200, headers);
-  if (req.method === "HEAD") return res.end();
-  let closed = false;
-  let conn = null;
-  res.on("close", () => {
-    closed = true;
-    if (conn && provider === conn) closeProvider();
-  });
-  let pos = want.start;
-  while (pos <= want.end && !closed) {
-    const index = Math.floor(pos / BLOCK);
-    const block = file.blocks.get(index);
-    if (!block) break;
-    const from = pos - index * BLOCK;
-    const piece = block.subarray(from, Math.min(block.length, from + (want.end - pos + 1)));
-    pos += piece.length;
-    if (!res.write(piece)) await drained(res);
-  }
-  if (closed) return;
-  if (pos > want.end) return res.end();
-  // From the start of the block, so the whole block can be cached too.
-  const aligned = Math.floor(pos / BLOCK) * BLOCK;
-  try {
-    conn = await openAt(file, aligned);
-  } catch (err) {
-    if (err.message !== "closed") noteError("Couldn't read " + file.name + " from the provider: " + err.message);
-    return res.destroy();
-  }
-  if (closed) return closeProvider();
-  forward(conn, res, pos, want.end, CACHE_PER_READ, () => {
-    if (provider === conn) closeProvider();
-    res.end();
-  });
+  infoCache.set(cacheKey, { at: Date.now(), info: described });
+  return described;
 }
 
 // --- Requests -------------------------------------------------------------------------
@@ -594,6 +360,23 @@ const CORS = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers
 function sendJson(res, code, body) {
   res.writeHead(code, { "Content-Type": "application/json", "Cache-Control": "no-store", ...CORS });
   res.end(JSON.stringify(body));
+}
+
+const gzip = promisify(gzipCallback);
+
+// A whole answer, gzipped when it's text the phone takes that way.
+async function sendBody(req, res, code, headers, body) {
+  const type = headers["Content-Type"] || headers["content-type"];
+  if (body.length > 1024 && compressible(type)) {
+    headers.Vary = "Accept-Encoding";
+    if (wantsGzip(req.headers["accept-encoding"])) {
+      body = await gzip(body);
+      headers["Content-Encoding"] = "gzip";
+    }
+  }
+  headers["Content-Length"] = body.length;
+  res.writeHead(code, headers);
+  res.end(body);
 }
 
 function keyMatches(given) {
@@ -610,9 +393,24 @@ function readQuery(url) {
     ext: (p.get("ext") || "").toLowerCase(),
     start: Math.max(0, Math.floor(Number(p.get("start")) || 0)),
     video: p.get("video") === "convert" ? "convert" : "copy",
+    // HLS only: which sound track, what to do with it, the tallest picture when
+    // converting, the kind of pieces, and whether to write the subtitle files.
+    audioTrack: Math.max(0, Math.floor(Number(p.get("a")) || 0)),
+    // Without "a": the first sound track in this language, when there is one.
+    audioLanguage: p.has("a") ? "" : (p.get("alang") || "").toLowerCase(),
+    audio: p.get("audio") === "keep" ? "keep" : "aac",
+    height: Math.max(0, Math.floor(Number(p.get("height")) || 0)),
+    format: p.get("format") === "ts" ? "ts" : "fmp4",
+    subs: p.get("subs") === "1",
+    // Whether the player decodes HEVC; without it, HEVC is converted too.
+    hevc: p.get("hevc") !== "0",
+    // A playlist for the whole film, its pieces made as they're asked for.
+    vod: p.get("vod") === "1",
+    // /v1/info: the file's moviehash too, for online subtitles (the Samsung TV).
     hash: p.get("hash") === "1",
   };
-  if (!/^[0-9A-Za-z_-]{1,40}$/.test(q.id) || !/^[0-9a-z]{1,5}$/.test(q.ext) || q.start > 86400) return null;
+  if (!/^[0-9A-Za-z_-]{1,40}$/.test(q.id) || !/^[0-9a-z]{1,5}$/.test(q.ext) || q.start > 86400 || q.audioTrack > 50 || q.height > 4320) return null;
+  if (q.audioLanguage && !/^[a-z]{2,3}$/.test(q.audioLanguage)) return null;
   return q;
 }
 
@@ -630,7 +428,6 @@ function describePlan(described, video) {
 }
 
 async function stream(req, res, q) {
-  const since = Date.now();
   let described;
   try {
     described = await info(q);
@@ -639,31 +436,15 @@ async function stream(req, res, q) {
     return sendJson(res, 502, { error: lastError.error });
   }
   if (res.destroyed) return;
-  const file = fileFor(q);
   // Pictures that can't be repackaged are converted whatever the TV asked for.
   const video = q.video === "convert" || described.videoPlan === "convert" ? "convert" : "copy";
-  // From the start, the helper feeds FFmpeg itself; elsewhere FFmpeg reads the local
-  // address, which can jump.
-  const piped = q.start === 0 && file.pipeOk && file.blocks.has(0);
-  if (piped && provider && provider.file === file && !provider.inUse) {
-    if (active) {
-      const old = active;
-      active = null;
-      stopRun(old);
-    }
-  } else await takeSlot();
+  const args = ffmpegArgs({ url: sourceUrl(q), start: q.start, video, encoder, probe: described });
+  await takeSlot();
   if (res.destroyed) return;
-  const args = ffmpegArgs({ input: piped ? "pipe:0" : localUrl(file), start: q.start, video, encoder, probe: described });
-  say(`Playing ${file.name} from ${clock(q.start)}: ${describePlan(described, video)}`);
-  if (process.env.ARANPLUS_HELPER_DEBUG) say("  reading " + (piped ? "from the start, fed by the helper" : localUrl(file)));
+  say(`Playing ${q.kind} ${q.id}.${q.ext} from ${clock(q.start)}: ${describePlan(described, video)}`);
+  const tally = startTally();
   const child = spawn(ffmpeg.path, args, { windowsHide: true });
   active = child;
-  if (piped) {
-    feedFromStart(child, file).catch((err) => {
-      noteError("Couldn't read " + file.name + " from the provider: " + err.message);
-      stopRun(child);
-    });
-  }
   const started = Date.now();
   let stderr = "";
   let sending = false;
@@ -679,7 +460,7 @@ async function stream(req, res, q) {
   child.stdout.once("data", (chunk) => {
     sending = true;
     clearTimeout(waiting);
-    say(`  Sending to the TV after ${seconds(since)}.`);
+    say(`Sending to the TV after ${((Date.now() - tally.at) / 1000).toFixed(1)} s (${tallySince(tally)}).`);
     // A plain stream with no length, the way IPTV servers send live video.
     res.removeHeader("Transfer-Encoding");
     res.writeHead(200, { "Content-Type": "video/mp2t", Connection: "close", "Cache-Control": "no-store", ...CORS });
@@ -692,13 +473,13 @@ async function stream(req, res, q) {
     if (active === child) active = null;
     const secs = Math.round((Date.now() - started) / 1000);
     if (!sending) {
-      noteError((lastLines(stderr) || "FFmpeg stopped (" + code + ").") + " (" + file.name + ")");
+      noteError((lastLines(stderr) || "FFmpeg stopped (" + code + ").") + " (" + q.kind + " " + q.id + "." + q.ext + ")");
       if (!res.headersSent) sendJson(res, 502, { error: lastError.error });
       else res.end();
       return;
     }
     if (code !== 0 && !child.stoppedByHelper && stderr.trim() !== "") noteError(lastLines(stderr));
-    say(`  Stopped after ${clock(secs)}.`);
+    say(`Stopped after ${clock(secs)}.`);
     res.end();
   });
   // The TV went away (Back, a jump, another title): free the provider's connection.
@@ -706,9 +487,852 @@ async function stream(req, res, q) {
     if (!res.writableEnded && active === child) {
       active = null;
       stopRun(child);
-      closeProvider();
     }
   });
+}
+
+// --- The provider, for the phone ------------------------------------------------------
+//
+// A web page can't call the provider itself (the provider doesn't allow other sites to
+// read its answers, and the phone would need the password), so the helper asks for it.
+
+// What the provider said, passed on as it is, with the headers the app reads to explain
+// a refusal (who answered, and whether Cloudflare blocked it).
+const PASSED_HEADERS = ["server", "cf-ray", "cf-mitigated", "content-type"];
+
+function providerFailure(err) {
+  if (err && (err.name === "TimeoutError" || err.name === "AbortError")) return "Your provider didn't answer the helper within " + API_TIMEOUT_MS / 1000 + " seconds.";
+  const cause = err && err.cause ? err.cause.code || err.cause.message : "";
+  return "The helper couldn't reach your provider" + (cause ? " (" + cause + ")" : "") + ".";
+}
+
+// The helper's own trouble (not the provider's answer) says so in a header, so the app
+// can tell "the provider refused" from "nobody answered".
+function sendHelperError(res, code, message) {
+  res.writeHead(code, { "Content-Type": "application/json", "Cache-Control": "no-store", "X-ARANplus-Helper": "error", ...CORS });
+  res.end(JSON.stringify({ error: redact(message) }));
+}
+
+// The provider's lists, kept for a few minutes: the phone asks for some twice (Home, then
+// Search's library), and a list kept here skips the provider's own wait. A request
+// already on its way is shared, not sent again.
+const LIST_KEEP_MS = 10 * 60000;
+const LIST_KEEP_BYTES = 200 * 1024 * 1024;
+const lists = new Map(); // provider address -> { at, status, headers, body }
+const listsAsked = new Map(); // provider address -> its answer, on its way
+let listBytes = 0;
+
+function keepList(target, answer) {
+  // An empty answer may be the provider having a bad moment; it isn't kept.
+  if (answer.status !== 200 || answer.body.length <= 2) return;
+  const old = lists.get(target);
+  if (old) listBytes -= old.body.length;
+  lists.delete(target);
+  lists.set(target, answer);
+  listBytes += answer.body.length;
+  for (const [key, kept] of lists) {
+    if (listBytes <= LIST_KEEP_BYTES) break;
+    lists.delete(key);
+    listBytes -= kept.body.length;
+  }
+}
+
+async function askProvider(target) {
+  const answer = await fetch(target, { headers: { "User-Agent": fetchAgent, Accept: "application/json" }, signal: AbortSignal.timeout(API_TIMEOUT_MS), redirect: "follow" });
+  const body = Buffer.from(await answer.arrayBuffer());
+  const headers = {};
+  for (const name of PASSED_HEADERS) {
+    const value = answer.headers.get(name);
+    if (value) headers[name] = value;
+  }
+  if (!headers["content-type"]) headers["content-type"] = "application/json";
+  return { at: Date.now(), status: answer.status, headers, body };
+}
+
+async function xtream(req, res, url) {
+  const target = xtreamQuery(login, url.searchParams);
+  if (!target) return sendJson(res, 400, { error: "Odd request." });
+  let answer = lists.get(target);
+  if (!answer || Date.now() - answer.at > LIST_KEEP_MS) {
+    let asked = listsAsked.get(target);
+    if (!asked) {
+      asked = askProvider(target);
+      listsAsked.set(target, asked);
+      asked.then(
+        (got) => keepList(target, got),
+        () => undefined,
+      );
+      asked.finally(() => listsAsked.delete(target)).catch(() => undefined);
+    }
+    try {
+      answer = await asked;
+    } catch (err) {
+      return sendHelperError(res, 504, providerFailure(err));
+    }
+  }
+  await sendBody(req, res, answer.status, { "Cache-Control": "no-store", ...CORS, ...answer.headers }, answer.body);
+}
+
+const FILE_TYPES = { mp4: "video/mp4", m4v: "video/x-m4v", mov: "video/quicktime", mkv: "video/x-matroska", avi: "video/x-msvideo", ts: "video/mp2t" };
+
+// Files being passed on to the phone, so a new title stops the last one's connection.
+const fileRuns = new Set();
+
+// The provider's file as it is, with ranges (Safari plays MP4s this way and jumps by
+// asking for the part it needs).
+async function passFile(req, res, q) {
+  const title = q.kind + ":" + q.id;
+  for (const run of fileRuns) if (run.title !== title) run.abort.abort();
+  await takeSlot();
+  const abort = new AbortController();
+  const run = { title, abort };
+  fileRuns.add(run);
+  res.on("close", () => fileRuns.delete(run));
+  // Safari decides what a file is from its type, which providers often leave vague.
+  await serveSource(req, res, sourceFile(q), { exclusive: false, abort, type: FILE_TYPES[q.ext] || "application/octet-stream", what: q.kind + " " + q.id + "." + q.ext });
+}
+
+function writeChunk(res, chunk) {
+  if (res.destroyed) return Promise.resolve(false);
+  if (res.write(chunk)) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const done = () => {
+      res.off("drain", done);
+      res.off("close", done);
+      resolve(!res.destroyed);
+    };
+    res.once("drain", done);
+    res.once("close", done);
+  });
+}
+
+// A provider file with ranges, from what the helper keeps where it can (helper/source.mjs).
+// For FFmpeg (`exclusive`: one request to the provider at a time) and Safari's MP4s.
+async function serveSource(req, res, file, { exclusive, abort = new AbortController(), type, what }) {
+  res.on("close", () => abort.abort());
+  const asked = parseRange(req.headers.range);
+  try {
+    let start = 0;
+    let end = -1;
+    if (asked && "suffix" in asked) start = Math.max(0, (await sources.size(file, abort.signal)) - asked.suffix);
+    else if (asked) ({ start, end } = asked);
+    if (req.method === "HEAD") {
+      const size = await sources.size(file, abort.signal);
+      res.writeHead(200, { "Content-Type": type, "Content-Length": size, "Accept-Ranges": "bytes", ...CORS });
+      return res.end();
+    }
+    if (file.size > 0 && start >= file.size) {
+      res.writeHead(416, { "Content-Range": "bytes */" + file.size, ...CORS });
+      return res.end();
+    }
+    const chunks = sources.bytes(file, start, end, abort.signal, { exclusive });
+    const first = await chunks.next();
+    const size = file.size;
+    const last = end >= 0 ? Math.min(end, size - 1) : size - 1;
+    const headers = { "Content-Type": type, "Accept-Ranges": "bytes", "Cache-Control": "no-store", ...CORS };
+    if (size > 0) {
+      headers["Content-Length"] = last - start + 1;
+      if (asked) headers["Content-Range"] = "bytes " + start + "-" + last + "/" + size;
+    }
+    res.writeHead(asked && size > 0 ? 206 : 200, headers);
+    let sent = 0;
+    if (!first.done) {
+      sent += first.value.length;
+      if (!(await writeChunk(res, first.value))) return chunks.return();
+    }
+    for await (const chunk of chunks) {
+      sent += chunk.length;
+      if (!(await writeChunk(res, chunk))) break;
+    }
+    // Cut short (the provider's connection dropped): say so, so the reader asks again.
+    if (size > 0 && sent < last - start + 1) res.destroy();
+    else res.end();
+  } catch (err) {
+    if (abort.signal.aborted) return; // the reader went away (a jump, or Back)
+    const status = err && err.status >= 400 ? err.status : 502;
+    if (status >= 400 && err.status) noteError("The provider refused " + what + ": HTTP " + err.status);
+    if (!res.headersSent) {
+      res.writeHead(status, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", ...CORS });
+      res.end(redact(err && err.message ? err.message : providerFailure(err)));
+    } else res.destroy();
+  }
+}
+
+// --- The file's fingerprint, for OpenSubtitles -------------------------------------------
+
+const CHUNK = 65536;
+const hashes = new Map();
+
+// Bytes `from` to `to` of a file, through what the helper keeps (the start and the end of
+// a file are kept, so FFmpeg won't ask for these again).
+async function rangeOf(file, from, to) {
+  const parts = [];
+  for await (const chunk of sources.bytes(file, from, to, AbortSignal.timeout(15000), { exclusive: true })) parts.push(chunk);
+  const bytes = Buffer.concat(parts);
+  return bytes.length === to - from + 1 ? bytes : null;
+}
+
+async function fileHash(q) {
+  const cacheKey = q.kind + ":" + q.id;
+  if (hashes.has(cacheKey)) return hashes.get(cacheKey);
+  await takeSlot();
+  const file = sourceFile(q);
+  let result = { hash: "", size: 0 };
+  try {
+    const head = await rangeOf(file, 0, CHUNK - 1);
+    if (head && file.size >= CHUNK * 2) {
+      const tail = await rangeOf(file, file.size - CHUNK, file.size - 1);
+      if (tail) result = { hash: movieHash(head, tail, file.size), size: file.size };
+    }
+  } catch {
+    // No fingerprint; the search goes on without it.
+  }
+  if (result.hash) hashes.set(cacheKey, result);
+  return result;
+}
+
+// --- OpenSubtitles, for the phone --------------------------------------------------------
+
+const FETCH_HEADERS = ["api-key", "authorization", "content-type", "accept"];
+const FETCH_MAX_BYTES = 5 * 1024 * 1024;
+
+function readBody(req, limit) {
+  return new Promise((resolve, reject) => {
+    const parts = [];
+    let size = 0;
+    req.on("data", (part) => {
+      size += part.length;
+      if (size > limit) {
+        reject(new Error("too big"));
+        req.destroy();
+      } else parts.push(part);
+    });
+    req.on("end", () => resolve(Buffer.concat(parts)));
+    req.on("error", reject);
+  });
+}
+
+async function passFetch(req, res, url) {
+  const target = url.searchParams.get("url") || "";
+  if (!fetchAllowed(target)) return sendJson(res, 400, { error: "The helper only passes on requests to OpenSubtitles." });
+  const headers = { "User-Agent": String(req.headers["x-user-agent"] || "ARANplus v" + VERSION) };
+  for (const name of FETCH_HEADERS) if (req.headers[name]) headers[name] = String(req.headers[name]);
+  let body;
+  if (req.method === "POST") {
+    try {
+      body = await readBody(req, 65536);
+    } catch {
+      return sendJson(res, 413, { error: "Too much to pass on." });
+    }
+  }
+  let answer;
+  let data;
+  try {
+    answer = await fetch(target, { method: req.method === "POST" ? "POST" : "GET", headers, body, signal: AbortSignal.timeout(20000), redirect: "follow" });
+    data = Buffer.from(await answer.arrayBuffer());
+  } catch (err) {
+    const cause = err && err.cause ? err.cause.code || err.cause.message : "";
+    return sendHelperError(res, 504, err && err.name === "TimeoutError" ? "OpenSubtitles didn't answer the helper in time." : "The helper couldn't reach OpenSubtitles" + (cause ? " (" + cause + ")" : "") + ".");
+  }
+  if (data.length > FETCH_MAX_BYTES) return sendHelperError(res, 502, "OpenSubtitles sent more than the helper passes on.");
+  res.writeHead(answer.status, { "Content-Type": answer.headers.get("content-type") || "application/octet-stream", "Cache-Control": "no-store", ...CORS });
+  res.end(data);
+}
+
+// --- HLS, for the phone ------------------------------------------------------------------
+//
+// FFmpeg writes numbered pieces and a playlist into a folder of its own under the
+// computer's temp folder, as fast as it can; Safari plays them as they arrive and can
+// jump anywhere FFmpeg has already reached. A jump further on starts a new session from
+// there. Old sessions are deleted once nothing asks for them, and all of them when the
+// helper starts.
+
+const sessions = new Map();
+let newestSession = "";
+
+function dropSession(session) {
+  sessions.delete(session.id);
+  if (session.child) {
+    if (active === session.child) active = null;
+    stopRun(session.child);
+  }
+  if (session.run) stopVodRun(session);
+  // Windows keeps a file FFmpeg still has open, so wait for it to go.
+  setTimeout(() => {
+    try {
+      rmSync(session.dir, { recursive: true, force: true });
+    } catch {
+      // Removed when the helper next starts.
+    }
+  }, 3000);
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const session of sessions.values()) {
+    const limit = session.id === newestSession ? SESSION_KEEP_MS : SESSION_IDLE_MS;
+    if (now - session.lastUsed > limit) dropSession(session);
+  }
+}, 30000).unref();
+
+function playlistText(session) {
+  try {
+    return readFileSync(path.join(session.dir, "index.m3u8"), "utf8");
+  } catch {
+    return "";
+  }
+}
+
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function startHls(q) {
+  let described;
+  try {
+    described = await info(q);
+  } catch (err) {
+    noteError("Couldn't read " + q.kind + " " + q.id + "." + q.ext + " from the provider: " + err.message);
+    throw new Error(lastError.error, { cause: err });
+  }
+  const plan = q.format === "fmp4" ? described.hlsVideoPlan : described.videoPlan;
+  const hevcRefused = !q.hevc && described.video && described.video.codec === "hevc";
+  const video = q.video === "convert" || plan === "convert" || hevcRefused ? "convert" : "copy";
+  await takeSlot();
+  const id = randomBytes(16).toString("hex");
+  const dir = path.join(HLS_ROOT, id);
+  mkdirSync(dir, { recursive: true });
+  let audioTrack = q.audioTrack < described.audio.length ? q.audioTrack : 0;
+  if (q.audioLanguage) {
+    const found = described.audio.findIndex((a) => a.language === q.audioLanguage);
+    if (found >= 0) audioTrack = found;
+  }
+  const args = hlsArgs({
+    url: sourceUrl(q),
+    start: q.start,
+    video,
+    encoder,
+    probe: described,
+    dir,
+    audioTrack,
+    audio: q.audio,
+    height: q.height,
+    format: q.format,
+    subtitles: q.subs,
+    userAgent: ffmpegAgent,
+  });
+  const sound = described.audio[audioTrack];
+  const soundPlan = !sound ? "" : q.audio === "aac" ? (sound.codec === "aac" ? "copy" : "aac") : audioPlan(sound);
+  const soundText = !sound ? "no sound" : soundPlan === "copy" ? sound.codec + " kept" : sound.codec + " to " + soundPlan.toUpperCase();
+  const picture = !described.video ? "no picture" : video === "convert" ? `picture ${described.video.codec} converted to H.264 with ${ENCODER_NAMES[encoder]}` : `picture ${described.video.codec} kept`;
+  say(`Playing ${q.kind} ${q.id}.${q.ext} for the phone from ${clock(q.start)}: ${picture}; sound ${soundText}`);
+  const tally = startTally();
+  const child = spawn(ffmpeg.path, args, { windowsHide: true });
+  active = child;
+  const session = { id, dir, child, lastUsed: Date.now(), ended: false, error: "", stderr: "", started: Date.now() };
+  sessions.set(id, session);
+  newestSession = id;
+  child.stderr.on("data", (d) => {
+    session.stderr = (session.stderr + d).slice(-20000);
+  });
+  child.on("error", (err) => {
+    session.ended = true;
+    session.error = "FFmpeg didn't start: " + err.message;
+  });
+  child.on("close", (code) => {
+    session.ended = true;
+    session.child = null;
+    if (active === child) active = null;
+    if (code !== 0 && !child.stoppedByHelper) {
+      session.error = lastLines(session.stderr) || "FFmpeg stopped (" + code + ").";
+      noteError(session.error + " (" + q.kind + " " + q.id + "." + q.ext + ")");
+    } else if (code === 0) say(`Finished converting ${q.kind} ${q.id}.${q.ext} in ${clock(Math.round((Date.now() - session.started) / 1000))}.`);
+  });
+  // Ready once the playlist lists a couple of pieces (or all of a short file).
+  const deadline = Date.now() + FIRST_BYTES_MS;
+  for (;;) {
+    const state = playlistState(playlistText(session));
+    if (state.segments >= HLS_READY_SEGMENTS || (state.ended && state.segments > 0)) break;
+    if (session.ended) {
+      const reason = session.error || "FFmpeg stopped before the first piece was ready.";
+      if (!session.error) noteError(reason);
+      dropSession(session);
+      throw new Error(reason);
+    }
+    if (Date.now() > deadline) {
+      noteError("The provider sent too little for " + FIRST_BYTES_MS / 1000 + " seconds to start (" + q.kind + " " + q.id + "." + q.ext + ").");
+      dropSession(session);
+      throw new Error(lastError.error);
+    }
+    await wait(300);
+  }
+  say(`Ready to play after ${((Date.now() - tally.at) / 1000).toFixed(1)} s (${tallySince(tally)}).`);
+  const base = "/v1/hls/s/" + id + "/";
+  const subtitles = [];
+  described.subtitles.slice(0, MAX_SUBTITLES).forEach((sub, n) => {
+    if (sub.text && q.subs) subtitles.push({ index: n, language: sub.language, title: sub.title || "", forced: sub.forced, url: base + "sub" + n + ".vtt" });
+  });
+  return {
+    session: id,
+    url: base + "index.m3u8",
+    start: q.start,
+    duration: described.duration,
+    video,
+    videoCodec: described.video ? described.video.codec : "",
+    audioTrack,
+    audioPlan: soundPlan,
+    audio: described.audio.map((a) => ({ codec: a.codec, channels: a.channels, language: a.language, title: a.title || "" })),
+    subtitles,
+  };
+}
+
+async function serveSessionFile(res, id, name) {
+  const session = sessions.get(id);
+  if (!session || !sessionFile(name)) return sendJson(res, 404, { error: "That stream has ended. Play it again." });
+  session.lastUsed = Date.now();
+  if (session.vod) return serveVodFile(res, session, name);
+  const file = path.join(session.dir, name);
+  const type = sessionFileType(name);
+  const headers = { "Content-Type": type, "Cache-Control": "no-store", ...CORS };
+  if (name === "index.m3u8") {
+    res.writeHead(200, headers);
+    return res.end(playlistForPlayer(playlistText(session)));
+  }
+  // A subtitle file that has nothing yet is an empty one.
+  if (name.endsWith(".vtt") && !existsSync(file)) {
+    res.writeHead(200, headers);
+    return res.end("WEBVTT\n\n");
+  }
+  // A piece FFmpeg is still writing is waited for, briefly.
+  for (let i = 0; i < 60 && !existsSync(file) && !session.ended; i++) await wait(250);
+  let size;
+  try {
+    size = statSync(file).size;
+  } catch {
+    return sendJson(res, 404, { error: "No such piece." });
+  }
+  res.writeHead(200, { ...headers, "Content-Length": size });
+  createReadStream(file)
+    .on("error", () => res.destroy())
+    .pipe(res);
+}
+
+// The phone left the player. With its session's name, only that session's FFmpeg stops
+// (the TV may have started something since); without, everything does.
+function stopFor(id) {
+  if (id) {
+    const session = sessions.get(id);
+    if (session && session.child) {
+      if (active === session.child) active = null;
+      stopRun(session.child);
+    }
+    if (session && session.run) stopVodRun(session);
+    return;
+  }
+  for (const run of fileRuns) run.abort.abort();
+  if (active) {
+    stopRun(active);
+    active = null;
+  }
+}
+
+// --- Whole films, for the phone ---------------------------------------------------------
+//
+// The playlist lists the whole film in six-second pieces from the start (plan.mjs,
+// "Whole films"), and Safari asks for the pieces it wants. FFmpeg makes them in order
+// from where it was started, each run in a folder of its own; a piece already made is
+// sent at once, one FFmpeg will reach shortly is waited for, and any other (a jump)
+// starts FFmpeg again from that piece. Every run cuts the film at the same places, so a
+// piece is good whichever run made it.
+
+const VOD_AHEAD = 4; // pieces past FFmpeg's latest that are worth waiting for
+const PIECE_WAIT_MS = 60000; // the longest a piece is waited for
+
+// Starts a phone session: what the file holds, the first run from the piece holding
+// `start`, and an answer once that piece is ready.
+async function startVod(q) {
+  let described;
+  try {
+    described = await info(q);
+  } catch (err) {
+    noteError("Couldn't read " + q.kind + " " + q.id + "." + q.ext + " from the provider: " + err.message);
+    throw new Error(lastError.error, { cause: err });
+  }
+  // A film of unknown length, or sound alone, plays the older way.
+  if (!described.video || !(described.duration > 0)) return startHls({ ...q, vod: false });
+  let audioTrack = q.audioTrack < described.audio.length ? q.audioTrack : 0;
+  if (q.audioLanguage) {
+    const found = described.audio.findIndex((a) => a.language === q.audioLanguage);
+    if (found >= 0) audioTrack = found;
+  }
+  const start = Math.min(q.start, Math.max(0, described.duration - 1));
+  // Back to a film played a moment ago (resuming after leaving the player, another sound
+  // track and back): the pieces made then are still good, so its session carries on.
+  const same = [q.kind, q.id, q.ext, audioTrack, q.height, q.subs ? 1 : 0].join(":");
+  let session = [...sessions.values()].find((s) => s.vod && s.same === same);
+  const kept = !!session;
+  if (session) {
+    session.start = start;
+    session.lastUsed = Date.now();
+    session.opened = false;
+    session.playing = false;
+  } else {
+    const id = randomBytes(16).toString("hex");
+    session = {
+      id,
+      same,
+      dir: path.join(HLS_ROOT, id),
+      vod: true,
+      q,
+      described,
+      audioTrack,
+      start,
+      count: vodPieces(described.duration),
+      done: new Map(), // piece number -> the file holding it
+      run: null,
+      runs: 0,
+      lastUsed: Date.now(),
+      opened: false,
+      playing: false,
+    };
+    mkdirSync(session.dir, { recursive: true });
+    sessions.set(id, session);
+  }
+  const id = session.id;
+  newestSession = id;
+  const sound = described.audio[audioTrack];
+  const soundText = !sound ? "no sound" : sound.codec === "aac" && sound.channels <= 2 ? "aac kept as AAC" : sound.codec + " to AAC";
+  const keptText = kept ? ` (${session.done.size} pieces kept from before)` : "";
+  say(`Playing ${q.kind} ${q.id}.${q.ext} for the phone from ${clock(start)}: picture ${described.video.codec} converted to H.264 with ${ENCODER_NAMES[encoder]}; sound ${soundText}${keptText}`);
+  const first = Math.floor(start / VOD_SECONDS);
+  const tally = startTally();
+  try {
+    await pieceFile(session, first, { quiet: true });
+  } catch (err) {
+    if (!kept) dropSession(session);
+    throw err;
+  }
+  say(`Ready to play after ${((Date.now() - tally.at) / 1000).toFixed(1)} s (${tallySince(tally)}).`);
+  const base = "/v1/hls/s/" + id + "/";
+  const subtitles = [];
+  described.subtitles.slice(0, MAX_SUBTITLES).forEach((sub, n) => {
+    if (sub.text && q.subs) subtitles.push({ index: n, language: sub.language, title: sub.title || "", forced: sub.forced, url: base + "sub" + n + ".vtt" });
+  });
+  return {
+    session: id,
+    url: base + "index.m3u8",
+    vod: true,
+    start: 0, // the stream's clock is the film's
+    from: start, // where the playlist starts playing
+    duration: described.duration,
+    video: "convert",
+    videoCodec: described.video.codec,
+    audioTrack,
+    audioPlan: "aac",
+    audio: described.audio.map((a) => ({ codec: a.codec, channels: a.channels, language: a.language, title: a.title || "" })),
+    subtitles,
+    // A picture of each piece once FFmpeg has made it: <prefix><5-digit piece>.jpg.
+    previews: { every: VOD_SECONDS, prefix: base + "p" },
+  };
+}
+
+// FFmpeg from piece `n` on. Replaces this session's run (and stops anything else using
+// the provider's connection).
+async function startVodRun(session, n) {
+  const hadRun = stopVodRun(session);
+  // ended: FFmpeg has stopped, for whatever reason; finished: it got to the film's end.
+  const run = { no: ++session.runs, first: n, next: n, child: null, ended: false, finished: false, failed: "", stderr: "", timer: 0 };
+  run.dir = path.join(session.dir, "r" + run.no);
+  session.run = run;
+  await takeSlot();
+  // The last run's connection to the provider needs a moment to close, as in takeSlot.
+  if (hadRun) await wait(FREE_SLOT_MS);
+  if (session.run !== run || !sessions.has(session.id)) return;
+  mkdirSync(run.dir, { recursive: true });
+  const args = vodArgs({
+    url: sourceUrl(session.q),
+    piece: n,
+    encoder,
+    probe: session.described,
+    dir: run.dir,
+    audioTrack: session.audioTrack,
+    height: session.q.height,
+    subtitles: session.q.subs,
+    previews: true,
+    atomic: atomicPictures,
+    userAgent: ffmpegAgent,
+  });
+  const child = spawn(ffmpeg.path, args, { windowsHide: true });
+  run.child = child;
+  active = child;
+  child.stderr.on("data", (d) => {
+    run.stderr = (run.stderr + d).slice(-20000);
+  });
+  child.on("error", (err) => {
+    run.failed = "FFmpeg didn't start: " + err.message;
+    run.ended = true;
+  });
+  child.on("close", (code) => {
+    if (active === child) active = null;
+    clearInterval(run.timer);
+    notePieces(session, run);
+    // Finished: the last piece is done too.
+    if (code === 0 && !child.stoppedByHelper) {
+      if (existsSync(path.join(run.dir, pieceName(run.next)))) {
+        session.done.set(run.next, path.join(run.dir, pieceName(run.next)));
+        run.next++;
+      }
+      run.finished = true;
+    }
+    run.ended = true;
+    if (code !== 0 && !child.stoppedByHelper) {
+      run.failed = lastLines(run.stderr) || "FFmpeg stopped (" + code + ").";
+      noteError(run.failed + " (" + session.q.kind + " " + session.q.id + "." + session.q.ext + ")");
+    }
+  });
+  run.timer = setInterval(() => notePieces(session, run), 200);
+}
+
+// A piece is finished once FFmpeg has started the next one.
+function notePieces(session, run) {
+  while (existsSync(path.join(run.dir, pieceName(run.next + 1)))) {
+    session.done.set(run.next, path.join(run.dir, pieceName(run.next)));
+    run.next++;
+  }
+}
+
+// Stops this session's FFmpeg; true when one was running.
+function stopVodRun(session) {
+  const run = session.run;
+  if (!run) return false;
+  session.run = null;
+  clearInterval(run.timer);
+  run.ended = true;
+  if (run.child && run.child.exitCode === null) {
+    if (active === run.child) active = null;
+    stopRun(run.child);
+    return true;
+  }
+  return false;
+}
+
+// The file holding piece `n`, made first if need be: waited for when FFmpeg will reach
+// it shortly, otherwise FFmpeg starts again from it. Null past the end of the film.
+async function pieceFile(session, n, { quiet = false } = {}) {
+  const deadline = Date.now() + PIECE_WAIT_MS;
+  let restarted = 0;
+  let mine = null; // the run this request started
+  for (;;) {
+    const file = session.done.get(n);
+    if (file) {
+      if (restarted && !quiet) say(`Jumped to ${clock(n * VOD_SECONDS)}: ready after ${((Date.now() - restarted) / 1000).toFixed(1)} s (${tallySince(mine.tally)}).`);
+      return file;
+    }
+    const run = session.run;
+    if (run && run.first <= n && n <= run.next) {
+      if (run.failed) throw new Error(run.failed);
+      if (run.finished) return null; // FFmpeg reached the end before this piece: the film is shorter
+    }
+    const coming = run && !run.ended && run.first <= n && n <= run.next + VOD_AHEAD;
+    if (!coming) {
+      // Asked for elsewhere since (the player moved on), or stopped (the TV took over).
+      if (mine && run !== mine) throw new Error("Another part of the film was asked for.");
+      if (mine) throw new Error(mine.failed || "FFmpeg stopped before " + clock(n * VOD_SECONDS) + ".");
+      restarted = Date.now();
+      if (!quiet) say(`Jumping to ${clock(n * VOD_SECONDS)} in ${session.q.kind} ${session.q.id}.${session.q.ext}.`);
+      const tally = startTally();
+      await startVodRun(session, n);
+      mine = session.run || { failed: "", tally };
+      mine.tally = tally;
+      continue;
+    }
+    if (Date.now() > deadline) throw new Error("The piece at " + clock(n * VOD_SECONDS) + " took over " + PIECE_WAIT_MS / 1000 + " seconds; the provider may be slow.");
+    await wait(150);
+  }
+}
+
+async function serveVodFile(res, session, name) {
+  const headers = { "Content-Type": sessionFileType(name), "Cache-Control": "no-store", ...CORS };
+  if (name === "index.m3u8") {
+    if (!session.opened) {
+      session.opened = true;
+      say("The phone opened the stream.");
+    }
+    res.writeHead(200, headers);
+    return res.end(vodPlaylist({ duration: session.described.duration, start: session.start }));
+  }
+  const sub = /^sub(\d)\.vtt$/.exec(name);
+  if (sub) {
+    // Each run writes the lines from where it started; together they're the film's.
+    const texts = [];
+    for (let r = 1; r <= session.runs; r++) {
+      try {
+        texts.push(readFileSync(path.join(session.dir, "r" + r, name), "utf8"));
+      } catch {
+        // That run has none (yet).
+      }
+    }
+    res.writeHead(200, headers);
+    return res.end(mergeVtt(texts));
+  }
+  if (/^p\d{5}\.jpg$/.test(name)) {
+    // A preview picture, from whichever run made it; none (yet) is a quick 404, never a
+    // wait or a new run: pictures only come from what's converted already.
+    for (let r = session.runs; r >= 1; r--) {
+      const file = path.join(session.dir, "r" + r, name);
+      if (!existsSync(file)) continue;
+      res.writeHead(200, { ...headers, "Cache-Control": "private, max-age=86400", "Content-Length": statSync(file).size });
+      return createReadStream(file)
+        .on("error", () => res.destroy())
+        .pipe(res);
+    }
+    return sendJson(res, 404, { error: "Not converted yet." });
+  }
+  const piece = /^seg(\d{5})\.ts$/.exec(name);
+  const n = piece ? Number(piece[1]) : -1;
+  if (n < 0 || n >= session.count) return sendJson(res, 404, { error: "No such piece." });
+  let file;
+  try {
+    file = await pieceFile(session, n);
+  } catch (err) {
+    return sendHelperError(res, 502, err.message);
+  }
+  if (!file) return sendJson(res, 404, { error: "The film ends before this." });
+  if (!session.playing) {
+    session.playing = true;
+    say(`The phone is playing (from ${clock(n * VOD_SECONDS)}).`);
+  }
+  let size;
+  try {
+    size = statSync(file).size;
+  } catch {
+    return sendJson(res, 404, { error: "No such piece." });
+  }
+  res.writeHead(200, { ...headers, "Content-Length": size });
+  createReadStream(file)
+    .on("error", () => res.destroy())
+    .pipe(res);
+}
+
+// --- The web app -------------------------------------------------------------------------
+//
+// Served from the web-iptv-player repo's build: "webApp" under "transcoder" in
+// personal.json, or the dist folder of a web-iptv-player checkout next to this repo
+// (or inside it, where a clone made from this folder lands).
+
+function webAppPlaces() {
+  const places = [process.env.ARANPLUS_WEB_APP, settings.webApp ? path.resolve(root, String(settings.webApp)) : ""];
+  places.push(path.resolve(root, "..", "web-iptv-player", "dist"), path.resolve(root, "web-iptv-player", "dist"));
+  return places.filter((dir) => dir);
+}
+
+function findWebApp() {
+  for (const dir of webAppPlaces()) if (existsSync(path.join(dir, "index.html"))) return dir;
+  return "";
+}
+
+// Where the helper looked, in its window: a checkout that isn't built yet says so.
+let lastMissingNote = 0;
+function explainMissingWebApp() {
+  if (Date.now() - lastMissingNote < 60000) return;
+  lastMissingNote = Date.now();
+  console.log("");
+  console.log("The iPhone app isn't built where the helper looks. It looked in:");
+  for (const dir of webAppPlaces()) {
+    const repo = path.dirname(dir);
+    const state = existsSync(path.join(repo, "package.json")) ? "the repo is there, but not built: run npm install, then npm run build, in " + repo : "nothing there";
+    console.log("  " + dir + "  (" + state + ")");
+  }
+  console.log('Build it in one of those places, or set "webApp" under "transcoder" in personal.json to its dist folder.');
+  console.log("");
+}
+
+let webApp = findWebApp();
+
+const APP_TYPES = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json",
+  ".webmanifest": "application/manifest+json",
+  ".png": "image/png",
+  ".svg": "image/svg+xml",
+  ".ttf": "font/ttf",
+  ".woff2": "font/woff2",
+  ".txt": "text/plain; charset=utf-8",
+  ".ico": "image/x-icon",
+};
+
+const NO_APP_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>ARAN+</title>
+<style>body{font:17px/1.5 -apple-system,system-ui,sans-serif;background:#151028;color:#F7F3FF;padding:24px;max-width:640px;margin:auto}code{color:#FFD98A}</style></head>
+<body><h1>ARAN+ isn't on this computer yet</h1><p>The helper is running and this phone reached it, but the helper can't find the iPhone app's build. The helper's window on the computer now lists the folders it looked in.</p>
+<p>On the computer, put the <code>web-iptv-player</code> repo next to the <code>Samsung-IPTV-Player</code> folder, and in it run:</p>
+<p><code>npm install</code><br><code>npm run build</code></p><p>Then reload this page; the helper needn't restart. (Or set <code>"webApp"</code> under <code>"transcoder"</code> in personal.json to the app's <code>dist</code> folder.)</p></body></html>`;
+
+// The app's files, gzipped once per version.
+const zippedApp = new Map(); // file -> { tag, body }
+
+async function serveApp(req, res, pathname) {
+  if (!webApp) {
+    webApp = findWebApp();
+    if (webApp) console.log("Found the iPhone app in " + webApp);
+  }
+  if (!webApp) {
+    explainMissingWebApp();
+    res.writeHead(200, { "Content-Type": APP_TYPES[".html"], "Cache-Control": "no-store" });
+    return res.end(NO_APP_PAGE);
+  }
+  let relative;
+  try {
+    relative = decodeURIComponent(pathname.slice("/app/".length)) || "index.html";
+  } catch {
+    return sendJson(res, 400, { error: "Odd request." });
+  }
+  const file = path.resolve(webApp, relative);
+  if (!file.startsWith(webApp + path.sep) || !existsSync(file) || !statSync(file).isFile()) {
+    res.writeHead(404, { "Content-Type": "text/plain" });
+    return res.end("Not found");
+  }
+  // Files named with their hash never change; the rest are checked against the phone's
+  // copy each time (an answer of a few bytes when it's the same).
+  const stat = statSync(file);
+  const tag = 'W/"' + stat.size.toString(16) + "-" + Math.floor(stat.mtimeMs).toString(16) + '"';
+  const type = APP_TYPES[path.extname(file).toLowerCase()] || "application/octet-stream";
+  const headers = { "Content-Type": type, "Cache-Control": hashedAsset(path.basename(file)) ? "public, max-age=31536000, immutable" : "no-cache", ETag: tag };
+  if (req.headers["if-none-match"] === tag) {
+    res.writeHead(304, headers);
+    return res.end();
+  }
+  if (compressible(type) && wantsGzip(req.headers["accept-encoding"])) {
+    let zipped = zippedApp.get(file);
+    if (!zipped || zipped.tag !== tag) {
+      zipped = { tag, body: await gzip(readFileSync(file)) };
+      zippedApp.set(file, zipped);
+    }
+    res.writeHead(200, { ...headers, "Content-Encoding": "gzip", Vary: "Accept-Encoding", "Content-Length": zipped.body.length });
+    return res.end(zipped.body);
+  }
+  res.writeHead(200, { ...headers, "Content-Length": stat.size });
+  createReadStream(file).pipe(res);
+}
+
+// The account and settings the app needs; the password stays here.
+function appSettings() {
+  const sync = personal.sync && typeof personal.sync === "object" ? personal.sync : null;
+  return {
+    ok: true,
+    service: "aranplus-helper",
+    version: VERSION,
+    encoder,
+    account: { server: login.server, username: login.username },
+    languages: Array.isArray(personal.languages) ? personal.languages.map(String) : [],
+    sync: sync && sync.url && sync.key ? { url: String(sync.url), key: String(sync.key) } : null,
+  };
+}
+
+// --- Routes ------------------------------------------------------------------------------
+
+function failed(res, err) {
+  if (res.headersSent) return res.destroy();
+  sendHelperError(res, 502, err && err.message ? err.message : String(err));
 }
 
 const server = http.createServer((req, res) => {
@@ -717,26 +1341,89 @@ const server = http.createServer((req, res) => {
     res.writeHead(204, CORS);
     return res.end();
   }
-  if (url.pathname === "/") return sendJson(res, 200, { ok: true, service: "aranplus-helper", version: VERSION, encoder });
-  if (url.pathname.indexOf("/p/") === 0) {
-    const file = byToken.get(url.pathname.slice(3));
-    if (!file || !file.size) return sendJson(res, 404, { error: "Nothing here." });
-    return serveFile(req, res, file).catch(() => res.destroy());
+  const pathname = url.pathname;
+  if (pathname === "/") {
+    // A browser goes to the app; the TV's check gets the usual answer.
+    if (String(req.headers.accept || "").indexOf("text/html") >= 0) {
+      res.writeHead(302, { Location: "/app/" + url.search });
+      return res.end();
+    }
+    return sendJson(res, 200, { ok: true, service: "aranplus-helper", version: VERSION, encoder });
   }
-  if (!keyMatches(url.searchParams.get("key"))) return sendJson(res, 401, { error: "Wrong or missing key." });
-  if (url.pathname === "/v1/last-error") return sendJson(res, 200, lastError);
+  if (pathname === "/app") {
+    res.writeHead(301, { Location: "/app/" + url.search });
+    return res.end();
+  }
+  if (pathname.startsWith("/app/")) return serveApp(req, res, pathname).catch((err) => failed(res, err));
+  const piece = /^\/v1\/hls\/s\/([0-9a-f]{32})\/([^/]+)$/.exec(pathname);
+  if (piece) return serveSessionFile(res, piece[1], piece[2]).catch((err) => failed(res, err));
+  if (!keyMatches(url.searchParams.get("key"))) return sendHelperError(res, 401, "Wrong or missing key.");
+  // "ago" (seconds) lets a TV tell a fresh reason from an old one.
+  if (pathname === "/v1/last-error") return sendJson(res, 200, { ...lastError, ago: lastError.at ? Math.round((Date.now() - lastError.at) / 1000) : -1 });
+  if (pathname === "/v1/app") return sendJson(res, 200, appSettings());
+  if (pathname === "/v1/xtream") return xtream(req, res, url).catch((err) => failed(res, err));
+  if (pathname === "/v1/fetch") return passFetch(req, res, url).catch((err) => failed(res, err));
+  if (pathname === "/v1/stop") {
+    stopFor(/^[0-9a-f]{32}$/.test(url.searchParams.get("session") || "") ? url.searchParams.get("session") : "");
+    return sendJson(res, 200, { ok: true });
+  }
+  const source = /^\/v1\/source\/(movie|series)\/([0-9A-Za-z_-]{1,40})\.([0-9a-z]{1,5})$/.exec(pathname);
+  if (source) {
+    // For FFmpeg on this computer only.
+    if (!/^(::1|127\.0\.0\.1|::ffff:127\.0\.0\.1)$/.test(req.socket.remoteAddress || "")) return sendHelperError(res, 403, "Only for this computer.");
+    const q = { kind: source[1], id: source[2], ext: source[3] };
+    return serveSource(req, res, sourceFile(q), { exclusive: true, type: FILE_TYPES[q.ext] || "application/octet-stream", what: q.kind + " " + q.id + "." + q.ext }).catch((err) => failed(res, err));
+  }
+  const file = /^\/v1\/file\/(movie|series)\/([0-9A-Za-z_-]{1,40})\.([0-9a-z]{1,5})$/.exec(pathname);
+  if (file) return passFile(req, res, { kind: file[1], id: file[2], ext: file[3] }).catch((err) => failed(res, err));
   const q = readQuery(url);
   if (!q) return sendJson(res, 400, { error: "Odd request." });
-  if (url.pathname === "/v1/info") {
+  if (pathname === "/v1/info") {
+    // With hash=1, read from the start and end the helper keeps once it's described.
     return info(q).then(
-      (described) => sendJson(res, 200, described),
+      async (described) => sendJson(res, 200, q.hash ? { ...described, hash: (await fileHash(q)).hash } : described),
       (err) => {
         noteError("Couldn't read " + q.kind + " " + q.id + "." + q.ext + " from the provider: " + err.message);
         sendJson(res, 502, { error: lastError.error });
       },
     );
   }
-  if (url.pathname === "/v1/stream") {
+  if (pathname === "/v1/hash") return fileHash(q).then((result) => sendJson(res, 200, result), (err) => failed(res, err));
+  if (pathname === "/v1/hls/start") {
+    // The phone may give up before the first pieces are ready (it left the player): then
+    // the session it never heard about is stopped, not left converting the whole film.
+    let gone = false;
+    res.on("close", () => {
+      if (!res.writableEnded) gone = true;
+    });
+    return (q.vod ? startVod(q) : startHls(q)).then(
+      (started) => {
+        const session = sessions.get(started.session);
+        if (gone && session) {
+          // A whole-film session keeps its pieces for when the phone comes back.
+          if (session.vod) stopVodRun(session);
+          else dropSession(session);
+          return;
+        }
+        sendJson(res, 200, started);
+      },
+      (err) => failed(res, err),
+    );
+  }
+  if (pathname === "/v1/hls/index.m3u8") {
+    // For players that take a playlist's address and nothing else (the Roku): MPEG-TS
+    // pieces unless asked otherwise, then a redirect to the playlist.
+    if (url.searchParams.get("format") !== "fmp4") q.format = "ts";
+    if (url.searchParams.get("audio") !== "aac") q.audio = "keep";
+    return startHls(q).then(
+      (started) => {
+        res.writeHead(302, { Location: "s/" + started.session + "/index.m3u8", "Cache-Control": "no-store", ...CORS });
+        res.end();
+      },
+      (err) => failed(res, err),
+    );
+  }
+  if (pathname === "/v1/stream") {
     if (req.method === "HEAD") {
       res.writeHead(200, { "Content-Type": "video/mp2t", ...CORS });
       return res.end();
@@ -754,7 +1441,44 @@ server.on("error", (err) => {
   fail(err.message);
 });
 
-server.listen(port, "0.0.0.0", () => {
+// A QR code drawn with block characters, light on the terminal's dark background, so a
+// phone's camera opens the link. Nothing when the qrcode-generator package (installed
+// by npm install) isn't there.
+async function qrLines(text) {
+  let qrcode;
+  try {
+    qrcode = (await import("qrcode-generator")).default;
+  } catch {
+    return [];
+  }
+  const code = qrcode(0, "L");
+  code.addData(text);
+  code.make();
+  const size = code.getModuleCount();
+  const margin = 2;
+  const light = (row, col) => row < 0 || col < 0 || row >= size || col >= size || !code.isDark(row, col);
+  const lines = [];
+  for (let row = -margin; row < size + margin; row += 2) {
+    let line = "  ";
+    for (let col = -margin; col < size + margin; col++) {
+      const top = light(row, col);
+      const bottom = row + 1 >= size + margin ? false : light(row + 1, col);
+      line += top && bottom ? "\u2588" : top ? "\u2580" : bottom ? "\u2584" : " ";
+    }
+    lines.push(line);
+  }
+  return lines;
+}
+
+// The temp folder of earlier runs' HLS pieces.
+try {
+  rmSync(HLS_ROOT, { recursive: true, force: true });
+} catch {
+  // In use by an FFmpeg still running from before; it goes next time.
+}
+mkdirSync(HLS_ROOT, { recursive: true });
+
+server.listen(port, "0.0.0.0", async () => {
   console.log("");
   console.log(`ARAN+ helper ${VERSION} is running.`);
   console.log(`  The TV reaches it at ${settings.url}`);
@@ -771,13 +1495,46 @@ server.listen(port, "0.0.0.0", () => {
     console.log("  so the TV knows them. If Windows asks whether Node.js may use the network, allow");
     console.log("  private networks.");
   }
+  // The phone needs this computer's address now, not the one the TV was built with.
+  const linkAt = (host) => `http://${host}:${port}/app/?key=${encodeURIComponent(key)}`;
+  const tailscale = tailscaleAddress();
+  console.log("");
+  if (tailscale) {
+    // One address for every network the phone is on, so it's the one to add.
+    console.log("On your iPhone, with Tailscale on, open this link in Safari, or point the camera at");
+    console.log("the code. It works on 5G and on any Wi-Fi. Then Share > Add to Home Screen. The");
+    console.log("link holds the helper's key, so keep it to yourself.");
+    console.log(`  ${linkAt(tailscale)}`);
+    for (const line of await qrLines(linkAt(tailscale))) console.log(line);
+    console.log(`  Without Tailscale, on this computer's Wi-Fi only: ${linkAt(address)}`);
+  } else {
+    console.log("On your iPhone (on the same Wi-Fi), open this link in Safari, or point the camera");
+    console.log("at the code. Then Share > Add to Home Screen. The link holds the helper's key, so");
+    console.log("keep it to yourself.");
+    console.log(`  ${linkAt(address)}`);
+    for (const line of await qrLines(linkAt(address))) console.log(line);
+    console.log("  To watch on 5G or another Wi-Fi too, put Tailscale (tailscale.com) on this computer");
+    console.log("  and the phone, and start the helper again: it then shows a link that works anywhere.");
+  }
+  if (webApp) console.log("  (The iPhone app is in " + webApp + ")");
+  if (!webApp) explainMissingWebApp();
   console.log("");
   console.log("Leave this window open while you watch. Ctrl+C stops the helper.");
   console.log("");
 });
 
+// A fault in one request (a bug in Node's own code, as with fetch before) mustn't close
+// the helper the TV and the phone rely on: say what happened and carry on.
+process.on("uncaughtException", (err) => {
+  noteError("Something went wrong inside the helper, which carried on: " + (err && err.stack ? err.stack.split("\n").slice(0, 3).join(" / ") : String(err)));
+});
+
 process.on("SIGINT", () => {
   if (active) stopRun(active);
-  closeProvider();
+  try {
+    rmSync(HLS_ROOT, { recursive: true, force: true });
+  } catch {
+    // FFmpeg may still hold a file; it goes next time.
+  }
   process.exit(0);
 });

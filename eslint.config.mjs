@@ -3,7 +3,7 @@ import globals from "globals";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["dist/", "out/", "node_modules/"] },
+  { ignores: ["dist/", "out/", "node_modules/", "web-iptv-player/"] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
@@ -28,7 +28,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ["tools/**/*.mjs", "dev/**/*.mjs", "helper/**/*.mjs", "*.mjs"],
+    files: ["tools/**/*.mjs", "dev/**/*.mjs", "helper/**/*.mjs", "tests/**/*.mjs", "*.mjs"],
     languageOptions: { globals: globals.node },
   },
 );

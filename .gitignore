@@ -14,3 +14,6 @@ personal.json
 
 # Generated sample video for the desktop harness (tools/make_sample_video.py).
 dev/media/
+
+# The iPhone app's repo, when it was cloned inside this one (the helper serves it).
+web-iptv-player/

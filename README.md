@@ -81,20 +81,20 @@ A build can carry settings of your own in `personal.json` at the top of the repo
 - **`sync`:** the address and key of your sync Worker, set up once with the Roku repo's [sync guide](https://github.com/CrumbsAndCravings/roku-iptv-player/blob/main/sync/README.md). Use the same key as the Roku build. Without it nothing syncs.
 - **`server`, `username`, `password`:** a login the TV signs in with by itself. Leave them out to type the login on the TV as usual. With them, the signed `.wgt` holds your login, so keep that file to yourself. When a newer build carries a different login, the TV replaces the saved one and clears Continue Watching (its titles belong to the old provider). A login typed on the TV for the same account is kept, Continue Watching and all.
 
-- **`transcoder`:** where [the helper on your computer](#the-helper-on-your-computer) is, and its key. The helper writes this itself the first time it runs.
+- **`transcoder`:** where [the helper on your computer](#the-helper-on-your-computer) is, and its key. The helper writes this itself the first time it runs. Optional extras the helper reads here: `webApp` (the folder of the [iPhone app](#the-iphone-app)'s build, when it isn't next to this repo) and `userAgent` (how the helper introduces itself to the provider; when left out, a desktop browser for lists and files, and FFmpeg's own name for conversions).
 
 `npm run install:tv` (and `npm run build`) picks the file up and prints which parts it found, never their values. The desktop harness ignores it unless `ARANPLUS_PERSONAL` names a file, so `npm run dev` never talks to your provider by accident.
 
 ## The helper on your computer
 
-The TV plays MKV and MP4 files with H.264 or HEVC pictures, but not AVI files (old DivX and Xvid movies, about 1 in 60 of the provider's), and not DTS or TrueHD sound. The helper fixes that: a small program on a computer at home, switched on while you watch, that uses [FFmpeg](https://ffmpeg.org) to turn those files into a stream the TV plays.
+The TV plays MKV and MP4 files with H.264 or HEVC pictures, but not AVI files (old DivX and Xvid movies, about 1 in 60 of the provider's), and not DTS or TrueHD sound. The helper fixes that: a small program on a computer at home, switched on while you watch, that uses [FFmpeg](https://ffmpeg.org) to turn those files into a stream the TV plays. The Roku app ([CrumbsAndCravings/roku-iptv-player](https://github.com/CrumbsAndCravings/roku-iptv-player)) uses the same helper, for AVI files, DTS sound, and HEVC pictures on a Roku that can't decode them (see [For the Roku too](#for-the-roku-too)).
 
 **How it works.** When a title can't play on the TV (an AVI, sound the TV can't decode, or a file that failed before), ARAN+ asks the helper instead of the provider. The helper fetches the file with your login (from `personal.json`, so the login never travels from the TV), and FFmpeg sends it on as an MPEG-TS stream:
 
 - **The picture** is kept as it is when the TV plays it (H.264, HEVC). DivX and Xvid are first just repackaged, which takes almost no computing power; if the TV still refuses, they are converted to H.264, and ARAN+ remembers which way worked. Conversion uses the graphics card or Intel Quick Sync when the computer has one, otherwise the processor (fine for standard definition).
 - **The sound** is kept when it is AAC, AC-3 or E-AC-3; DTS and TrueHD become AC-3 (surround stays surround), and the rest AAC.
-- **Few requests to the provider,** since it takes a moment to start each one. FFmpeg never asks the provider itself (opening an AVI would cost it six requests): the helper reads the file with one connection at a time and hands FFmpeg the bytes. A title from the beginning takes one request, two with online subtitles set up (the helper also fingerprints the file for OpenSubtitles, so the TV doesn't have to). For resuming and jumping, the helper keeps the start of the file and its index in memory, so a jump costs one request.
-- **Jumping** starts the helper's stream again at the new time, so a jump takes about as long as the provider takes to start sending. Resuming works the same way.
+- **Jumping** starts the helper's stream again at the new time, so a jump takes a few seconds. Resuming works the same way. FFmpeg reads the provider's files through the helper, which keeps the start and the end of each file (where its index is) and remembers the provider's redirect, so a jump costs one request to the provider instead of four or five. The window says how long each start took and how slow the provider was to answer ("Ready to play after 6.1 s (2 requests to the provider, the slowest answered in 2.8 s)").
+- **Online subtitles:** with OpenSubtitles set up, the helper also fingerprints the file for it from the parts it keeps anyway, so the TV doesn't make two requests of its own to the provider.
 - The file's own subtitle tracks don't come through; online subtitles still work.
 
 **Set it up on Windows (once):**
@@ -105,6 +105,29 @@ The TV plays MKV and MP4 files with H.264 or HEVC pictures, but not AVI files (o
 4. Run `npm run install:tv` once more, so the TV knows where the helper is.
 
 From then on, start the helper before you watch (or put a shortcut to `helper\start-helper.cmd` in the Startup folder: press Win+R, type `shell:startup`). Its window shows what it is converting. If the TV says the helper didn't answer, check that the computer is on and the window is open. Give the computer a fixed address in your router, or the TV may lose it; the helper says when the address in `personal.json` no longer matches.
+
+### The iPhone app
+
+The helper also serves ARAN+ for the iPhone, a web app in [CrumbsAndCravings/web-iptv-player](https://github.com/CrumbsAndCravings/web-iptv-player) (its README has the setup steps). Put that repo next to this one, run `npm install` and `npm run build` in it, and start the helper: it prints a link and a QR code for the phone, with the key in the link. For the phone the helper also:
+
+- **asks the provider for the lists,** adding the login from `personal.json` (a web page can't call the provider, and the password never reaches the phone);
+- **passes MP4 files on as they are,** with ranges, so Safari jumps in them itself;
+- **converts the rest into HLS,** the streaming format Safari plays, the way Safari likes it best: a playlist for the whole film from the start, in six-second pieces, so the phone knows the length, starts at once and jumps by itself. The helper makes each piece when the phone asks for it: FFmpeg converts the picture to H.264 (with the graphics card when there is one) and the sound to AAC, as fast as it can from where it was started, into MPEG-TS pieces in the computer's temp folder; a piece it has made is sent at once, and a jump elsewhere starts FFmpeg again from there (a few seconds). Every run cuts the film at the same places and keeps its own timestamps, so pieces from different runs play as one. The file's own text subtitles are written out as WebVTT alongside, and a small picture of each piece (about 6 KB), which the phone shows above the bar while it's dragged. Old pieces are deleted a couple of minutes after the phone stops asking for them, and all of them when the helper starts. The window says when the phone opened the stream and started playing, and how long each jump took;
+- **passes OpenSubtitles requests on,** and reads a file's moviehash for "matches this file" results;
+- **sends as little as it can,** for 5G: the app and the lists gzipped (a list is about a tenth of the size), the app's files checked rather than sent again, the provider's lists kept for 10 minutes, and a film the phone goes back to (resuming after leaving the player) carrying on with the pieces already made.
+
+With [Tailscale](https://tailscale.com) on the computer and the phone, the helper also shows a link at its Tailscale address, which the phone reaches on 5G and on any Wi-Fi (the iPhone app's README has the steps).
+
+The TV's way of using the helper hasn't changed. The phone, the TV and the Roku share the provider's one connection, so starting a video on one stops the others.
+
+### For the Roku too
+
+The Roku app ([CrumbsAndCravings/roku-iptv-player](https://github.com/CrumbsAndCravings/roku-iptv-player)) plays through the same whole-film playlists as the phone, in MPEG-TS pieces:
+
+- **What the Roku asks for:** the picture converted when this Roku can't decode it (always for DivX and Xvid, and for HEVC on most Roku TVs), scaled down to the Roku's screen (720 lines on a 720p TV, which saves the computer most of the work on 1080p and 4K files), and stereo AAC sound in your language when the file has it.
+- **Jumping** is the Roku's own: a piece the helper has made plays at once, and one further away takes a few seconds while the helper starts converting from there. The pieces keep the film's own times, so online subtitles play as they are.
+- **When you leave a video,** the Roku tells the helper to stop its stream (only its own, so the phone isn't cut off). Pieces nobody asks for go after 2 minutes (3 hours for the video watched last, so a long pause can pick up again), and all of them when the helper starts.
+- **Setup:** after the helper has written `transcoder` into `personal.json`, copy that `"transcoder": { "url": ..., "key": ... }` into the Roku repo's `src/source/account.json` and build the Roku app again. The Roku repo's README has the steps.
 
 ## Setup checks on the TV
 
@@ -180,7 +203,8 @@ src/
   probe/                             the M0 setup checks
   styles/                            design tokens, base styles, screen styles
 assets/fonts  assets/images          Fredoka and Nunito (SIL OFL), generated glows
-helper/                              the helper for a computer at home: FFmpeg converts what the TV can't play
+helper/                              the helper for a computer at home: FFmpeg converts what the TV can't
+                                     play, and it serves the iPhone app (web-iptv-player) and its HLS
 tests/                               vitest
 dev/                                 fake Xtream server, fake OpenSubtitles, screenshot script
 tools/                               build, dev server, Tizen CLI wrapper, image generator
