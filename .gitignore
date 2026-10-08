@@ -17,3 +17,4 @@ dev/media/
 
 # The iPhone app's repo, when it was cloned inside this one (the helper serves it).
 web-iptv-player/
+personal.update.json

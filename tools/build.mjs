@@ -10,7 +10,7 @@ export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 export const dist = path.join(root, "dist");
 const pkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
 
-// A personal build can carry a login, languages and sync settings in personal.json
+// A personal build can carry a login, languages, sync and OpenSubtitles settings in personal.json
 // (git-ignored; see personal.example.json), so the TV signs in by itself. The dev
 // harness ignores it unless ARANPLUS_PERSONAL names a file, so it never talks to the
 // real provider by accident. Nothing from it is printed.
@@ -19,7 +19,8 @@ export function readPersonal({ dev = false } = {}) {
   if (!file || !existsSync(file)) return null;
   let data;
   try {
-    data = JSON.parse(readFileSync(file, "utf8"));
+    // Windows editors may start the file with a byte-order mark, which JSON doesn't allow.
+    data = JSON.parse(readFileSync(file, "utf8").replace(/^\uFEFF/, ""));
   } catch (err) {
     throw new Error(`${path.basename(file)} isn't valid JSON: ${err.message}`, { cause: err });
   }
@@ -28,6 +29,7 @@ export function readPersonal({ dev = false } = {}) {
   if (data.server && data.username && data.password) parts.push("a login");
   if (Array.isArray(data.languages)) parts.push("languages " + data.languages.join(", "));
   if (data.sync && data.sync.url && data.sync.key) parts.push("sync");
+  if (data.opensubtitles && data.opensubtitles.apiKey) parts.push("OpenSubtitles");
   if (data.transcoder && data.transcoder.url && data.transcoder.key) parts.push("the helper at " + data.transcoder.url);
   console.log(`personal build: ${path.basename(file)} with ${parts.join(", ") || "nothing usable"}`);
   return data;

@@ -2,7 +2,8 @@
 // tools/build.mjs), ported from the Roku app's Registry.brs (BuiltInCreds,
 // LanguagePrefs, SyncConfig) and MainScene.brs. docs/features.md §2.2, §4.2, §9.4.
 
-import { loadCreds, readJson, regDelete, regRead, regWrite, saveCreds } from "./storage";
+import { sha256Hex } from "./sha256";
+import { loadCreds, readJson, readOsFields, regDelete, regRead, regWrite, saveCreds, saveOsAccount } from "./storage";
 import { Creds, field, fieldStr, isArr, Json, normalizeServer, toStr } from "./utils";
 
 let data: Json = typeof __PERSONAL__ === "undefined" ? null : __PERSONAL__;
@@ -43,7 +44,9 @@ export function syncConfig(): { url: string; key: string } | null {
 // login and Continue Watching (whose IDs belong to the old provider) are cleared, so
 // the new one signs in by itself. Online subtitles are kept. Returns true when it did.
 // A saved login for the same account is kept with its Continue Watching (unlike the
-// Roku app, which clears it too), taking the build's password if that changed.
+// Roku app, which clears it too), taking the build's password if that changed, or the
+// build's server when only that changed (the provider's new address: same username and
+// password).
 export function applyBuiltInLogin(): boolean {
   const builtIn = builtInCreds();
   if (!builtIn) return false;
@@ -51,8 +54,9 @@ export function applyBuiltInLogin(): boolean {
   if (regRead("account", "builtIn") === stamp) return false;
   regWrite("account", "builtIn", stamp);
   const saved = loadCreds();
-  if (saved && normalizeServer(saved.server).toLowerCase() === builtIn.server.toLowerCase() && saved.username === builtIn.username) {
-    if (saved.password !== builtIn.password) saveCreds(builtIn);
+  const sameServer = !!saved && normalizeServer(saved.server).toLowerCase() === builtIn.server.toLowerCase();
+  if (saved && saved.username === builtIn.username && (sameServer || saved.password === builtIn.password)) {
+    if (!sameServer || saved.password !== builtIn.password) saveCreds(builtIn);
     return false;
   }
   regDelete("account", "creds");
@@ -74,4 +78,32 @@ export function transcoderConfig(): { url: string; key: string } | null {
 
 export function helperOn(): boolean {
   return transcoderConfig() !== null;
+}
+
+// OpenSubtitles details built into this package ("opensubtitles": { apiKey, username,
+// password }), or null. The API key alone is enough to search; a username needs its
+// password, as in the setup screen.
+export function builtInSubtitles(): { apiKey: string; username: string; password: string } | null {
+  const os = field(data, "opensubtitles");
+  const apiKey = fieldStr(os, "apiKey").trim();
+  if (apiKey === "") return null;
+  const username = fieldStr(os, "username").trim();
+  const password = fieldStr(os, "password").trim();
+  return username !== "" && password !== "" ? { apiKey, username, password } : { apiKey, username: "", password: "" };
+}
+
+// Sets up online subtitles with the build's OpenSubtitles details when the TV has none
+// (a first start, or after signing out), or when the build's details changed since the
+// TV last saw them. Details typed on the TV after that are kept. Returns true when it
+// set them.
+export function applyBuiltInSubtitles(): boolean {
+  const builtIn = builtInSubtitles();
+  if (!builtIn) return false;
+  const stamp = sha256Hex(builtIn.apiKey + "\n" + builtIn.username + "\n" + builtIn.password).slice(0, 16);
+  const saved = readOsFields();
+  if (saved.apiKey !== "" && regRead("opensubtitles", "builtIn") === stamp) return false;
+  regWrite("opensubtitles", "builtIn", stamp);
+  if (saved.apiKey === builtIn.apiKey && saved.username === builtIn.username && saved.password === builtIn.password) return false;
+  saveOsAccount({ ...builtIn, token: "", baseUrl: "" });
+  return true;
 }

@@ -1,8 +1,8 @@
 // A personal build's settings (docs/features.md §2.2, §4.2, §9.4), with made-up logins.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { applyBuiltInLogin, builtInCreds, languagePrefs, syncConfig, usePersonal } from "../src/core/personal";
+import { applyBuiltInLogin, applyBuiltInSubtitles, builtInCreds, builtInSubtitles, languagePrefs, syncConfig, usePersonal } from "../src/core/personal";
 import { progressList, progressPut } from "../src/core/progress";
-import { loadCreds, MemoryStore, saveCreds, useStore, writeJson } from "../src/core/storage";
+import { clearAccount, loadCreds, loadOsAccount, MemoryStore, saveCreds, saveOsAccount, useStore, writeJson } from "../src/core/storage";
 
 const login = { server: "provider.example:8080/", username: "jane", password: " pw1 " };
 const watched = () => progressPut({ k: "m:1", kind: "movie", id: "1", name: "A", poster: "", bd: "", ext: "mkv", pos: 60, dur: 600 }, 10);
@@ -36,6 +36,24 @@ describe("a personal build", () => {
     expect(applyBuiltInLogin()).toBe(false);
   });
 
+  it("follows the provider to a new address, keeping Continue Watching", () => {
+    usePersonal({ ...login, server: "http://new.example" });
+    saveCreds({ server: "http://provider.example:8080", username: "jane", password: "pw1" });
+    watched();
+    expect(applyBuiltInLogin()).toBe(false);
+    expect(loadCreds()).toEqual({ server: "http://new.example", username: "jane", password: "pw1" });
+    expect(progressList().length).toBe(1);
+  });
+
+  it("treats a new address with another password as another account", () => {
+    usePersonal({ ...login, server: "http://new.example" });
+    saveCreds({ server: "http://provider.example:8080", username: "jane", password: "old" });
+    watched();
+    expect(applyBuiltInLogin()).toBe(true);
+    expect(loadCreds()).toBeNull();
+    expect(progressList().length).toBe(0);
+  });
+
   it("replaces another account's login and clears its Continue Watching", () => {
     usePersonal(login);
     saveCreds({ server: "http://other.example", username: "sam", password: "x" });
@@ -47,6 +65,47 @@ describe("a personal build", () => {
     watched();
     expect(applyBuiltInLogin()).toBe(false);
     expect(progressList().length).toBe(1);
+  });
+});
+
+describe("OpenSubtitles in a personal build", () => {
+  beforeEach(() => useStore(new MemoryStore()));
+  afterEach(() => usePersonal(null));
+  const os = { apiKey: "key1", username: "jane", password: "pw" };
+
+  it("reads its details", () => {
+    usePersonal({ opensubtitles: { apiKey: " key1 ", username: "jane", password: "pw" } });
+    expect(builtInSubtitles()).toEqual(os);
+    usePersonal({ opensubtitles: { apiKey: "key1", username: "jane" } });
+    expect(builtInSubtitles()).toEqual({ apiKey: "key1", username: "", password: "" });
+    usePersonal({ opensubtitles: { username: "jane", password: "pw" } });
+    expect(builtInSubtitles()).toBeNull();
+    expect(applyBuiltInSubtitles()).toBe(false);
+  });
+
+  it("sets them up when the TV has none, and keeps what's typed on the TV", () => {
+    usePersonal({ opensubtitles: os });
+    expect(applyBuiltInSubtitles()).toBe(true);
+    expect(loadOsAccount()).toEqual({ ...os, token: "", baseUrl: "" });
+    expect(applyBuiltInSubtitles()).toBe(false);
+    saveOsAccount({ apiKey: "mine", username: "", password: "", token: "", baseUrl: "" });
+    expect(applyBuiltInSubtitles()).toBe(false);
+    expect(loadOsAccount()!.apiKey).toBe("mine");
+    // Signing out clears them; the build's come back.
+    clearAccount();
+    expect(applyBuiltInSubtitles()).toBe(true);
+    expect(loadOsAccount()!.apiKey).toBe("key1");
+    // A build with new details replaces them.
+    usePersonal({ opensubtitles: { ...os, apiKey: "key2" } });
+    expect(applyBuiltInSubtitles()).toBe(true);
+    expect(loadOsAccount()!.apiKey).toBe("key2");
+  });
+
+  it("leaves the same details alone, sign-in token and all", () => {
+    saveOsAccount({ ...os, token: "t", baseUrl: "https://vip.example" });
+    usePersonal({ opensubtitles: os });
+    expect(applyBuiltInSubtitles()).toBe(false);
+    expect(loadOsAccount()!.token).toBe("t");
   });
 });
 

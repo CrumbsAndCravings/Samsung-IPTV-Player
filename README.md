@@ -73,13 +73,15 @@ A build can carry settings of your own in `personal.json` at the top of the repo
 {
   "languages": ["en", "hi", "pa"],
   "sync": { "url": "https://aranplus-sync.<your-subdomain>.workers.dev", "key": "<the SYNC_KEY you set on the Worker>" },
-  "server": "…", "username": "…", "password": "…"
+  "server": "…", "username": "…", "password": "…",
+  "opensubtitles": { "apiKey": "…", "username": "…", "password": "…" }
 }
 ```
 
 - **`languages`:** whose categories to show, in order (`en`, `hi`, `pa`, `other`). Without it every language shows. This part holds nothing private.
 - **`sync`:** the address and key of your sync Worker, set up once with the Roku repo's [sync guide](https://github.com/CrumbsAndCravings/roku-iptv-player/blob/main/sync/README.md). Use the same key as the Roku build. Without it nothing syncs.
-- **`server`, `username`, `password`:** a login the TV signs in with by itself. Leave them out to type the login on the TV as usual. With them, the signed `.wgt` holds your login, so keep that file to yourself. When a newer build carries a different login, the TV replaces the saved one and clears Continue Watching (its titles belong to the old provider). A login typed on the TV for the same account is kept, Continue Watching and all.
+- **`server`, `username`, `password`:** a login the TV signs in with by itself. Leave them out to type the login on the TV as usual. With them, the signed `.wgt` holds your login, so keep that file to yourself. When a newer build carries a different login, the TV replaces the saved one and clears Continue Watching (its titles belong to the old provider). A login typed on the TV for the same account is kept, Continue Watching and all. So is one where only the server changed and the username and password are the same (the provider's new address).
+- **`opensubtitles`:** your OpenSubtitles API key, and optionally your OpenSubtitles username and password, so online subtitles are set up without typing them on the TV. The TV takes them when it has none (the first start, or after signing out) or when a newer build carries different ones; details typed on the TV after that are kept.
 
 - **`transcoder`:** where [the helper on your computer](#the-helper-on-your-computer) is, and its key. The helper writes this itself the first time it runs. Optional extras the helper reads here: `webApp` (the folder of the [iPhone app](#the-iphone-app)'s build, when it isn't next to this repo) and `userAgent` (how the helper introduces itself to the provider; when left out, a desktop browser for lists and files, and FFmpeg's own name for conversions).
 

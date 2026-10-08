@@ -128,7 +128,8 @@ if (!existsSync(personalPath)) {
 }
 let personal;
 try {
-  personal = JSON.parse(readFileSync(personalPath, "utf8"));
+  // Windows editors may start the file with a byte-order mark, which JSON doesn't allow.
+  personal = JSON.parse(readFileSync(personalPath, "utf8").replace(/^\uFEFF/, ""));
 } catch (err) {
   fail(`${path.basename(personalPath)} isn't valid JSON: ${err.message}`);
 }

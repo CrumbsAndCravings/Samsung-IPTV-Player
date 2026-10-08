@@ -4,7 +4,7 @@
 import "./styles/app.css";
 import { App } from "./app";
 import { log, logError } from "./core/log";
-import { applyBuiltInLogin, builtInCreds } from "./core/personal";
+import { applyBuiltInLogin, applyBuiltInSubtitles, builtInCreds } from "./core/personal";
 import { loadCreds } from "./core/storage";
 import { registerKeys } from "./platform/keys";
 import { getPlayer } from "./platform/players";
@@ -39,6 +39,8 @@ function boot(): void {
   if (!root) return;
   const app = new App(root);
   app.onSignedIn = (creds) => {
+    // A personal build's OpenSubtitles details, when the TV has none (signing out clears them).
+    if (applyBuiltInSubtitles()) log("personal build: online subtitles set up");
     app.useCreds(creds);
     app.resetTo(new HomeScreen(app));
   };
