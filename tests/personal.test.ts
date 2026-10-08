@@ -80,4 +80,18 @@ describe("the helper on a computer at home", () => {
     expect(needsHelper("m:1")).toBe(true);
     expect(needsHelper("m:2")).toBe(true);
   });
+
+  it("says why it failed, and where it is", async () => {
+    const { HELPER_NO_ANSWER, helperAddress, helperFailure } = await import("../src/data/transcoder");
+    expect(helperFailure(0, false, "")).toBe(HELPER_NO_ANSWER);
+    expect(helperFailure(200, true, "")).toBe(HELPER_NO_ANSWER);
+    expect(helperFailure(401, false, "")).toContain("key doesn't match");
+    expect(helperFailure(404, false, '{"error":"Nothing here."}')).toContain("may be older than this app");
+    expect(helperFailure(502, false, '{"error":"The provider refused it."}')).toBe("Your computer says: The provider refused it.");
+    expect(helperFailure(500, false, "<html>")).toBe("The helper on your computer answered HTTP 500.");
+    usePersonal({ transcoder: { url: "http://192.168.1.50:8090/", key: "secret" } });
+    expect(helperAddress()).toBe("http://192.168.1.50:8090");
+    usePersonal(null);
+    expect(helperAddress()).toBe("");
+  });
 });

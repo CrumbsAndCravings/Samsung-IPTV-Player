@@ -95,6 +95,7 @@ The TV plays MKV and MP4 files with H.264 or HEVC pictures, but not AVI files (o
 - **The sound** is kept when it is AAC, AC-3 or E-AC-3; DTS and TrueHD become AC-3 (surround stays surround), and the rest AAC.
 - **Jumping** starts the helper's stream again at the new time, so a jump takes a few seconds. Resuming works the same way. FFmpeg reads the provider's files through the helper, which keeps the start and the end of each file (where its index is) and remembers the provider's redirect, so a jump costs one request to the provider instead of four or five. The window says how long each start took and how slow the provider was to answer ("Ready to play after 6.1 s (2 requests to the provider, the slowest answered in 2.8 s)").
 - **Online subtitles:** with OpenSubtitles set up, the helper also fingerprints the file for it from the parts it keeps anyway, so the TV doesn't make two requests of its own to the provider.
+- **When the stream drops** after it has played (the provider's connection, say), ARAN+ opens it again from where it got to, twice at most (a minute of playing resets the count). Then the error screen says what the helper said, what it was doing with the file, and where it is. "May be older than this app" means the helper doesn't know the TV's request: update it (`git pull`) and start it again.
 - The file's own subtitle tracks don't come through; online subtitles still work.
 
 **Set it up on Windows (once):**
@@ -118,7 +119,7 @@ The helper also serves ARAN+ for the iPhone, a web app in [CrumbsAndCravings/web
 
 With [Tailscale](https://tailscale.com) on the computer and the phone, the helper also shows a link at its Tailscale address, which the phone reaches on 5G and on any Wi-Fi (the iPhone app's README has the steps).
 
-The TV's way of using the helper hasn't changed. The phone, the TV and the Roku share the provider's one connection, so starting a video on one stops the others.
+The TV keeps its one MPEG-TS stream rather than the whole-film playlists: unlike the phone and the Roku, it plays that kind of stream, which keeps the picture as it is (nothing to convert, so it starts sooner and looks as it should) and carries every sound track, so changing the language needs no new stream. The phone, the TV and the Roku share the provider's one connection, so starting a video on one stops the others.
 
 ### For the Roku too
 

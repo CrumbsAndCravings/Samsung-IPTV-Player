@@ -26,7 +26,7 @@ import { audioNowText, audioOptions, audioRescue, fromAvplay, optionIndex, subti
 import { codecLabel, describeCodecs, episodeCode, formatClock, streamUrl } from "../core/utils";
 import { currentOf, dueForSave, entryFor, finishedChange, hasNext, resumeFrom, saveAction, Watching } from "../core/watch";
 import { knownHash, movieHash, rememberHash } from "../data/moviehash";
-import { helperInfo, HelperInfo, helperLastError, helperStreamUrl, learnedMode, learnMode, needsHelper, rememberNeedsHelper, VideoMode } from "../data/transcoder";
+import { HELPER_NO_ANSWER, helperAddress, helperInfo, HelperInfo, helperLastError, helperStreamUrl, learnedMode, learnMode, needsHelper, rememberNeedsHelper, VideoMode } from "../data/transcoder";
 import { helperOn } from "../core/personal";
 import { OsClient } from "../data/opensubtitles";
 import { send } from "../platform/http";
@@ -136,6 +136,7 @@ export class PlayerScreen implements Screen {
   private convertTried = false;
   private helperTried = false; // this title has already moved to the helper
   private helperFromStart = false; // it went to the helper without trying on its own
+  private helperPlayed = false; // its stream has played, so a failure gets two reopens
   private offsetMs = 0;
   private jumpTo = -1; // reopen the helper's stream here
   private helperHash = false; // ask the helper for the moviehash
@@ -269,6 +270,8 @@ export class PlayerScreen implements Screen {
   // --- Starting a title -------------------------------------------------------------
 
   private startItem(startSecs: number): void {
+    // The helper may still hold the provider's one connection for a moment.
+    const afterHelper = this.route === "helper";
     this.clearTimers();
     this.preview.cancel();
     this.closePanel(false);
@@ -297,6 +300,7 @@ export class PlayerScreen implements Screen {
     this.convertTried = false;
     this.helperTried = false;
     this.helperFromStart = false;
+    this.helperPlayed = false;
     this.offsetMs = 0;
     this.jumpTo = -1;
     setText(this.noteEl, "");
@@ -316,6 +320,11 @@ export class PlayerScreen implements Screen {
       this.helperFromStart = true;
     } else if (this.check.verdict === "blocked" && !this.tryAnyway) {
       this.showUnplayable(this.check);
+      return;
+    }
+    if (afterHelper && this.route === "direct") {
+      this.show(this.spinnerEl, true);
+      this.retryTimer = window.setTimeout(() => this.hashThenLoad(), RETRY_AFTER_MS);
       return;
     }
     this.hashThenLoad();
@@ -525,6 +534,7 @@ export class PlayerScreen implements Screen {
       if (this.helper && this.helper.videoPlan === "try") learnMode(this.helper.videoCodec, this.helperVideo);
       // It plays this way, so a later failure (after a jump, say) isn't the picture's fault.
       this.convertTried = true;
+      this.helperPlayed = true;
     } else {
       const total = this.player.durationMs();
       if (total > 0) this.durationMs = total;
@@ -568,7 +578,7 @@ export class PlayerScreen implements Screen {
     if (this.failed || !this.started) return;
     // The helper's stream also ends when the provider's connection drops.
     if (this.route === "helper" && this.durationMs > 0 && this.positionMs < this.durationMs - 60000) {
-      this.handleError("HELPER: the stream from your computer ended early");
+      this.handleError("HELPER: The stream from your computer stopped before the end.");
       return;
     }
     this.applyFinished();
@@ -598,8 +608,10 @@ export class PlayerScreen implements Screen {
       this.retryTimer = window.setTimeout(() => this.loadStream(), RETRY_AFTER_MS);
       return;
     }
-    if (this.attempt === 0) {
-      this.attempt = 1;
+    // Once the helper's stream has played, a drop (the provider's connection, say) is
+    // reopened from where it got to twice; anything else gets one more try.
+    if (this.attempt < (this.route === "helper" && this.helperPlayed ? 2 : 1)) {
+      this.attempt++;
       if (this.started) this.startSecs = Math.floor(this.positionMs / 1000);
       this.started = false;
       this.firstTimeMs = -1;
@@ -622,12 +634,13 @@ export class PlayerScreen implements Screen {
     setText(this.errorDetail, this.diagnosis());
     setText(this.errorHint, "OK to try again   ·   Back to return");
     this.show(this.errorEl, true);
-    this.checkStream();
+    // Through the helper, the provider's answers come from the helper (below).
+    if (this.route === "direct") this.checkStream();
     // The TV's player only says the stream failed; the helper knows why.
     if (this.route === "helper" && (this.errors[this.errors.length - 1] || "").indexOf("HELPER: ") !== 0) {
       const token = this.streamToken;
       helperLastError().then((said) => {
-        if (said && token === this.streamToken && this.failed && !this.closing) setText(this.errorDetail, this.diagnosis() + "\nYour computer says: " + said);
+        if (said && token === this.streamToken && this.failed && !this.closing) setText(this.errorDetail, this.diagnosis(said));
       });
     }
   }
@@ -656,10 +669,12 @@ export class PlayerScreen implements Screen {
   }
 
   // What went wrong, what the file is, and whether this TV plays files like it.
-  private diagnosis(): string {
+  // `helperSaid`: why the helper's last stream failed (/v1/last-error).
+  private diagnosis(helperSaid = ""): string {
     const item = this.item;
     const last = this.errors[this.errors.length - 1] || "";
     const lines = [last.indexOf("HELPER: ") === 0 ? last.slice(8) : "Samsung's player says: " + last];
+    if (helperSaid) lines.push("Your computer says: " + helperSaid);
     const tries = this.errors.length === 2 ? "twice" : this.errors.length + " times";
     if (this.helperFromStart) lines.push("Tried " + tries + " through the helper on your computer.");
     else if (this.helperTried) lines.push("Tried " + tries + ", the last through the helper on your computer.");
@@ -668,9 +683,12 @@ export class PlayerScreen implements Screen {
     if (this.route === "helper") lines.push(this.helperLine());
     const check = this.check;
     if (check && check.verdict === "blocked") lines.push(check.reason);
-    else if (item.videoCodec) lines.push("This TV normally plays files like this, so the stream itself is the likely problem.");
+    else if (item.videoCodec && this.route === "direct") lines.push("This TV normally plays files like this, so the stream itself is the likely problem.");
     const api = this.app.api;
-    if (api) {
+    if (this.route === "helper" && helperAddress()) {
+      lines.push("Helper: " + helperAddress());
+      if (last === "HELPER: " + HELPER_NO_ANSWER) lines.push("Often the computer is asleep or off, the helper's window was closed, or the computer's address has changed (a fixed address in the router keeps it).");
+    } else if (api) {
       // Server, username and password are hidden, so a photo of the screen is safe.
       const ext = (item.ext || "mp4").toLowerCase();
       lines.push("Stream: " + redact(streamUrl(api.creds, item.kind === "episode" ? "series" : "movie", item.itemId, ext)));

@@ -33,17 +33,27 @@ function base(): { url: string; key: string } {
   return config;
 }
 
-// Why a request to the helper failed, in words for the error screen.
-function failure(code: number, timedOut: boolean, text: string): string {
-  if (code === 0 || timedOut) return "The helper on your computer didn't answer. Is the computer on, with the helper running?";
+export const HELPER_NO_ANSWER = "The helper on your computer didn't answer. Is the computer on, with the helper running?";
+
+// Why a request to the helper failed, in words for the error screen (the Roku app's
+// HelperFailure). code 0 means no answer.
+export function helperFailure(code: number, timedOut: boolean, text: string): string {
+  if (code === 0 || timedOut) return HELPER_NO_ANSWER;
   if (code === 401) return "The helper turned this TV away: its key doesn't match. Build the TV app again (npm run install:tv) with the helper's personal.json.";
+  if (code === 404) return "The helper on your computer doesn't know this request, so it may be older than this app. Update it (git pull) and start it again.";
   let said: string;
   try {
     said = fieldStr(JSON.parse(text), "error");
   } catch {
     said = "";
   }
-  return said || "The helper answered HTTP " + code + ".";
+  return said ? "Your computer says: " + said : "The helper on your computer answered HTTP " + code + ".";
+}
+
+// Where the helper is, for the error screen ("" without one). Its key stays hidden.
+export function helperAddress(): string {
+  const config = transcoderConfig();
+  return config ? config.url : "";
 }
 
 // What the file holds and how the helper would treat it. `startSecs` lets it keep its
@@ -53,7 +63,7 @@ export function helperInfo(item: Item, startSecs = 0, wantHash = false): Promise
   const config = base();
   const extra = "&start=" + Math.max(0, Math.floor(startSecs)) + (wantHash ? "&hash=1" : "");
   return send({ url: config.url + "/v1/info?key=" + encodeURIComponent(config.key) + "&" + params(item) + extra, timeoutMs: 45000 }).promise.then((res) => {
-    if (res.code !== 200) throw new Error(failure(res.code, res.timedOut, res.text));
+    if (res.code !== 200) throw new Error(helperFailure(res.code, res.timedOut, res.text));
     const data: unknown = JSON.parse(res.text);
     const video = field(data, "video");
     const audio = field(data, "audio");
@@ -80,7 +90,7 @@ export function helperLastError(): Promise<string> {
   const config = base();
   return send({ url: config.url + "/v1/last-error?key=" + encodeURIComponent(config.key), timeoutMs: 8000 }).promise.then(
     (res) => {
-      if (res.code !== 200) return failure(res.code, res.timedOut, res.text);
+      if (res.code !== 200) return "";
       try {
         return fieldStr(JSON.parse(res.text), "error");
       } catch {
