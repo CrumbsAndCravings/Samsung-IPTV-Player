@@ -5,6 +5,9 @@
 //
 //   npm run helper        (or double-click helper\start-helper.cmd on Windows)
 //
+// On a Raspberry Pi it runs as a service that starts with the Pi (helper/setup-pi.sh),
+// converting on the processor with quicker settings.
+//
 // It reads the provider login from personal.json, so the login never travels from the
 // TV or the phone. The first run adds "transcoder" (this computer's address and a
 // random key) to personal.json; build the TV app once more (npm run install:tv) so it
@@ -60,6 +63,7 @@ import { gzip as gzipCallback } from "node:zlib";
 import {
   ENCODERS,
   MAX_SUBTITLES,
+  X264_PRESETS,
   audioPlan,
   compressible,
   ffmpegArgs,
@@ -82,13 +86,15 @@ import {
   vodPlaylist,
   VOD_SECONDS,
   wantsGzip,
+  x264Args,
   xtreamQuery,
   fetchAllowed,
 } from "./plan.mjs";
 import { httpGet } from "./http-get.mjs";
 import { parseRange, SourceFiles } from "./source.mjs";
+import { lanAddress, smallComputer, tailscaleAddress } from "./where.mjs";
 
-const VERSION = "1.3";
+const VERSION = "1.4";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const personalPath = process.env.ARANPLUS_PERSONAL || path.join(root, "personal.json");
 const DEFAULT_PORT = 8090;
@@ -147,37 +153,8 @@ if (!login.server || !login.username || !login.password) {
   fail(`${path.basename(personalPath)} needs your provider's login ("server", "username" and "password"); the helper fetches the videos with it.`);
 }
 
-// This computer's address on the home network, as the TV will reach it.
-function lanAddress() {
-  const found = [];
-  for (const [name, list] of Object.entries(os.networkInterfaces())) {
-    if (/vethernet|virtualbox|vmware|wsl|hyper-v|loopback|docker/i.test(name)) continue;
-    for (const a of list || []) {
-      if (a.family !== "IPv4" && a.family !== 4) continue;
-      if (a.internal) continue;
-      found.push(a.address);
-    }
-  }
-  const rank = (ip) => (ip.startsWith("192.168.") ? 0 : ip.startsWith("10.") ? 1 : /^172\.(1[6-9]|2\d|3[01])\./.test(ip) ? 2 : 3);
-  found.sort((a, b) => rank(a) - rank(b));
-  return found[0] || "127.0.0.1";
-}
-
 const address = lanAddress();
 
-// This computer's Tailscale address (100.64.0.0 to 100.127.255.255), when Tailscale is on:
-// a private network of your own devices, so the phone reaches the helper from anywhere
-// (5G, another Wi-Fi) at one address. "" without it.
-function tailscaleAddress() {
-  for (const list of Object.values(os.networkInterfaces())) {
-    for (const a of list || []) {
-      if (a.family !== "IPv4" && a.family !== 4) continue;
-      const parts = a.address.split(".").map(Number);
-      if (parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127) return a.address;
-    }
-  }
-  return "";
-}
 let settings = personal.transcoder && typeof personal.transcoder === "object" ? personal.transcoder : null;
 let addedSettings = false;
 if (!settings || !settings.url || !settings.key) {
@@ -255,7 +232,8 @@ if (!ffmpeg) {
   fail(
     "FFmpeg isn't installed (or this window started before it was).\n" +
       "On Windows: open PowerShell and run   winget install Gyan.FFmpeg\n" +
-      "then open a new window and start the helper again.",
+      "then open a new window and start the helper again.\n" +
+      "On a Raspberry Pi: run   bash helper/setup-pi.sh   (or   sudo apt install ffmpeg).",
   );
 }
 
@@ -276,6 +254,13 @@ function pickEncoder() {
 }
 
 const encoder = settings.encoder && ENCODERS[settings.encoder] ? settings.encoder : pickEncoder();
+
+// The processor's settings: quicker on a small computer such as a Raspberry Pi, so it
+// keeps up converting for the phone and the Roku; "x264Preset" in personal.json's
+// "transcoder" chooses others.
+const small = smallComputer();
+const x264Preset = X264_PRESETS.indexOf(settings.x264Preset) >= 0 ? settings.x264Preset : small ? "superfast" : "veryfast";
+ENCODERS.libx264 = x264Args(x264Preset);
 
 // Whether this FFmpeg writes pictures whole before they appear (5.1 and newer), so the
 // phone never gets half a preview picture.
@@ -577,7 +562,7 @@ function sendHelperError(res, code, message) {
 // Search's library), and a list kept here skips the provider's own wait. A request
 // already on its way is shared, not sent again.
 const LIST_KEEP_MS = 10 * 60000;
-const LIST_KEEP_BYTES = 200 * 1024 * 1024;
+const LIST_KEEP_BYTES = Math.min(200 * 1024 * 1024, Math.floor(os.totalmem() / 10)); // less on a 1 GB Pi
 const lists = new Map(); // provider address -> { at, status, headers, body }
 const listsAsked = new Map(); // provider address -> its answer, on its way
 let listBytes = 0;
@@ -1503,7 +1488,7 @@ const server = http.createServer((req, res) => {
 });
 
 server.on("error", (err) => {
-  if (err.code === "EADDRINUSE") fail(`Port ${port} is already in use. Is the helper already running in another window?`);
+  if (err.code === "EADDRINUSE") fail(`Port ${port} is already in use. Is the helper already running (in another window, or as the service on a Raspberry Pi)?`);
   fail(err.message);
 });
 
@@ -1554,12 +1539,13 @@ server.listen(port, "0.0.0.0", async () => {
     console.log(`  change "url" under "transcoder" in personal.json and run npm run install:tv again.`);
   }
   console.log(`  ${ffmpeg.version}`);
-  console.log(`  Pictures are converted with ${ENCODER_NAMES[encoder]} (${encoder}).`);
+  if (small) console.log(`  Running on ${small}.`);
+  console.log(`  Pictures are converted with ${ENCODER_NAMES[encoder]} (${encoder}${encoder === "libx264" ? ", " + x264Preset : ""}).`);
   if (addedSettings) {
     console.log("");
     console.log("  Added the helper's address and key to personal.json. Run npm run install:tv once");
-    console.log("  so the TV knows them. If Windows asks whether Node.js may use the network, allow");
-    console.log("  private networks.");
+    console.log("  so the TV knows them.");
+    if (process.platform === "win32") console.log("  If Windows asks whether Node.js may use the network, allow private networks.");
   }
   // The phone needs this computer's address now, not the one the TV was built with.
   const linkAt = (host) => `http://${host}:${port}/app/?key=${encodeURIComponent(key)}`;
@@ -1585,7 +1571,9 @@ server.listen(port, "0.0.0.0", async () => {
   if (webApp) console.log("  (The iPhone app is in " + webApp + ")");
   if (!webApp) explainMissingWebApp();
   console.log("");
-  console.log("Leave this window open while you watch. Ctrl+C stops the helper.");
+  // systemd sets INVOCATION_ID for the services it runs (helper/setup-pi.sh).
+  if (process.env.INVOCATION_ID) console.log("Running as a service: it starts with this computer and again by itself if it stops.");
+  else console.log("Leave this window open while you watch. Ctrl+C stops the helper.");
   console.log("");
 });
 
@@ -1595,7 +1583,8 @@ process.on("uncaughtException", (err) => {
   noteError("Something went wrong inside the helper, which carried on: " + (err && err.stack ? err.stack.split("\n").slice(0, 3).join(" / ") : String(err)));
 });
 
-process.on("SIGINT", () => {
+// Ctrl+C in the window, or the service being stopped.
+function stopHelper() {
   if (active) stopRun(active);
   try {
     rmSync(HLS_ROOT, { recursive: true, force: true });
@@ -1603,4 +1592,6 @@ process.on("SIGINT", () => {
     // FFmpeg may still hold a file; it goes next time.
   }
   process.exit(0);
-});
+}
+process.on("SIGINT", stopHelper);
+process.on("SIGTERM", stopHelper);

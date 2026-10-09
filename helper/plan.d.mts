@@ -10,6 +10,8 @@ export function videoPlan(codec: string): "copy" | "try" | "convert";
 export function hlsVideoPlan(codec: string): "copy" | "convert";
 export function audioPlan(stream: { codec: string; channels: number }): "copy" | "ac3" | "aac";
 export const ENCODERS: { [name: string]: string[] };
+export function x264Args(preset: string): string[];
+export const X264_PRESETS: string[];
 export const TARGET_SECONDS: number;
 export const MAX_SUBTITLES: number;
 export const HLS_SECONDS: number;

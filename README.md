@@ -95,13 +95,13 @@ A build can carry settings of your own in `personal.json` at the top of the repo
 
 ## The helper on your computer
 
-The TV plays MKV and MP4 files with H.264 or HEVC pictures, but not AVI files (old DivX and Xvid movies, about 1 in 60 of the provider's), and not DTS or TrueHD sound. The helper fixes that: a small program on a computer at home, switched on while you watch, that uses [FFmpeg](https://ffmpeg.org) to turn those files into a stream the TV plays. The Roku app ([CrumbsAndCravings/roku-iptv-player](https://github.com/CrumbsAndCravings/roku-iptv-player)) uses the same helper, for AVI files, DTS sound, and HEVC pictures on a Roku that can't decode them (see [For the Roku too](#for-the-roku-too)).
+The TV plays MKV and MP4 files with H.264 or HEVC pictures, but not AVI files (old DivX and Xvid movies, about 1 in 60 of the provider's), and not DTS or TrueHD sound. The helper fixes that: a small program on a computer at home (a PC switched on while you watch, or a Raspberry Pi that is always on) that uses [FFmpeg](https://ffmpeg.org) to turn those files into a stream the TV plays. The Roku app ([CrumbsAndCravings/roku-iptv-player](https://github.com/CrumbsAndCravings/roku-iptv-player)) uses the same helper, for AVI files, DTS sound, and HEVC pictures on a Roku that can't decode them (see [For the Roku too](#for-the-roku-too)).
 
 **How it works.** When a title can't play on the TV (an AVI, sound the TV can't decode, or a file that failed before), ARAN+ asks the helper instead of the provider. The helper fetches the file with your login (from `personal.json`, so the login never travels from the TV), and FFmpeg sends it on as an MPEG-TS stream:
 
 - **The picture** is kept as it is when the TV plays it (H.264, HEVC). DivX and Xvid are first just repackaged, which takes almost no computing power; if the TV still refuses, they are converted to H.264, and ARAN+ remembers which way worked. Conversion uses the graphics card or Intel Quick Sync when the computer has one, otherwise the processor (fine for standard definition).
 - **The sound** is kept when it is AAC, AC-3 or E-AC-3; DTS and TrueHD become AC-3 (surround stays surround), and the rest AAC.
-- **Jumping** starts the helper's stream again at the new time, so a jump takes a few seconds. Resuming works the same way. While you choose where to jump, a picture of that moment shows above the time (helper 1.3 and newer): FFmpeg writes a small picture every six seconds of the film as it streams, named by the film's own time, so everything played so far (and a little ahead) has one; a moment not reached yet shows just the time. Pictures are kept for the three titles played last. FFmpeg reads the provider's files through the helper, which keeps the start and the end of each file (where its index is) and remembers the provider's redirect, so a jump costs one request to the provider instead of four or five. The window says how long each start took and how slow the provider was to answer ("Ready to play after 6.1 s (2 requests to the provider, the slowest answered in 2.8 s)").
+- **Jumping** starts the helper's stream again at the new time, so a jump takes a few seconds. Resuming works the same way. While you choose where to jump, a picture of that moment shows above the time (helper 1.3 and newer): FFmpeg writes a small picture every six seconds of the film as it streams, named by the film's own time (from the nearest keyframe when the picture is kept, so it decodes about a seventeenth of the film rather than all of it), so everything played so far (and a little ahead) has one; a moment not reached yet shows just the time. Pictures are kept for the three titles played last. FFmpeg reads the provider's files through the helper, which keeps the start and the end of each file (where its index is) and remembers the provider's redirect, so a jump costs one request to the provider instead of four or five. The window says how long each start took and how slow the provider was to answer ("Ready to play after 6.1 s (2 requests to the provider, the slowest answered in 2.8 s)").
 - **Online subtitles:** with OpenSubtitles set up, the helper also fingerprints the file for it from the parts it keeps anyway, so the TV doesn't make two requests of its own to the provider.
 - **When the stream drops** after it has played (the provider's connection, say), ARAN+ opens it again from where it got to, twice at most (a minute of playing resets the count). Then the error screen says what the helper said, what it was doing with the file, and where it is. "May be older than this app" means the helper doesn't know the TV's request: update it (`git pull`) and start it again.
 - The file's own subtitle tracks don't come through; online subtitles still work.
@@ -114,6 +114,22 @@ The TV plays MKV and MP4 files with H.264 or HEVC pictures, but not AVI files (o
 4. Run `npm run install:tv` once more, so the TV knows where the helper is.
 
 From then on, start the helper before you watch (or put a shortcut to `helper\start-helper.cmd` in the Startup folder: press Win+R, type `shell:startup`). Its window shows what it is converting. If the TV says the helper didn't answer, check that the computer is on and the window is open. Give the computer a fixed address in your router, or the TV may lose it; the helper says when the address in `personal.json` no longer matches.
+
+**Or on a Raspberry Pi, always on.** A Raspberry Pi 4 or 5 (2 GB or more) can run the helper instead of the PC, on a few watts, starting by itself with the Pi. For the TV its job is light: most titles are passed on as they are with only the sound converted, and the pictures for choosing a jump come from keyframes only. Converting pictures (DivX and Xvid films for the TV, most films for the iPhone, HEVC films for the Roku) runs on the Pi's processor with quicker settings (x264 `superfast`): fine for standard definition anywhere and for HD on a Pi 5; on a Pi 4, HD films for the phone or the Roku may stutter. A cable to the router is best; Wi-Fi works.
+
+1. Put **Raspberry Pi OS (64-bit)** on the card with Raspberry Pi Imager (Lite is enough), turning on SSH in its settings, and start the Pi on your home network.
+2. On the PC, open PowerShell, run `ssh <your Pi username>@<the Pi's address>`, and on the Pi run:
+   ```
+   sudo apt install -y git
+   git clone https://github.com/CrumbsAndCravings/Samsung-IPTV-Player.git
+   cd Samsung-IPTV-Player
+   bash helper/setup-pi.sh
+   ```
+   The first time, it stops and shows the command that copies `personal.json` from the PC (an `scp` line to run in PowerShell in the repo folder on the PC); then run `bash helper/setup-pi.sh` again. It installs FFmpeg and Node.js 22, points the helper's address in `personal.json` at the Pi (keeping the key), and starts the helper as a service that starts with the Pi and starts again by itself if it stops.
+3. On the PC: close the helper's window and take its shortcut out of the Startup folder (two helpers would fight over the provider's one connection), then run `npm run helper:address -- <the Pi's address>` and `npm run install:tv`. For the Roku, copy the same `transcoder` into its `src/source/account.json` and build it again. For the iPhone, open the new link: `journalctl -u aranplus-helper -b` on the Pi shows it with its code (and building web-iptv-player next to this repo on the Pi, as on the PC, puts the app there too).
+4. Give the Pi a fixed address in your router, so the TV keeps finding it.
+
+`journalctl -u aranplus-helper -f` on the Pi shows what the helper is doing. To update it: `git pull`, then `bash helper/setup-pi.sh` again. On another computer, `"x264Preset"` under `"transcoder"` in `personal.json` chooses the processor's settings (`ultrafast` to `medium`; `veryfast` on a PC, `superfast` on a Pi).
 
 ### The iPhone app
 
@@ -217,7 +233,8 @@ src/
   styles/                            design tokens, base styles, screen styles
 assets/fonts  assets/images          Fredoka and Nunito (SIL OFL), generated glows
 helper/                              the helper for a computer at home: FFmpeg converts what the TV can't
-                                     play, and it serves the iPhone app (web-iptv-player) and its HLS
+                                     play, and it serves the iPhone app (web-iptv-player) and its HLS;
+                                     setup-pi.sh runs it as a service on a Raspberry Pi
 tests/                               vitest
 dev/                                 fake Xtream server, fake OpenSubtitles, screenshot script
 tools/                               build, dev server, Tizen CLI wrapper, image generator

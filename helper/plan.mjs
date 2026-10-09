@@ -79,11 +79,21 @@ export function audioPlan(stream) {
 }
 
 // H.264 encoders, best first: NVIDIA, Intel Quick Sync, AMD, then the processor.
+// The processor's settings for `preset`: "veryfast" on a PC; "superfast" on a small
+// computer such as a Raspberry Pi, about half as fast again for a little more data at
+// the same look (so a notch less fine, crf 23).
+export function x264Args(preset) {
+  return ["-c:v", "libx264", "-preset", preset, "-crf", preset === "veryfast" ? "21" : "23", "-pix_fmt", "yuv420p", "-profile:v", "high", "-level:v", "4.1"];
+}
+
+export const X264_PRESETS = ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium"];
+
 export const ENCODERS = {
   h264_nvenc: ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "23", "-pix_fmt", "yuv420p"],
   h264_qsv: ["-c:v", "h264_qsv", "-preset", "veryfast", "-global_quality", "23", "-pix_fmt", "nv12"],
   h264_amf: ["-c:v", "h264_amf", "-quality", "speed", "-pix_fmt", "yuv420p"],
-  libx264: ["-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p", "-profile:v", "high", "-level:v", "4.1"],
+  // The helper swaps in other settings on a small computer (x264Args).
+  libx264: x264Args("veryfast"),
 };
 
 // The FFmpeg arguments for one stream. `start` in seconds; `video` "copy" or "convert".
@@ -97,6 +107,12 @@ export function ffmpegArgs({ url, start, video, encoder, probe, previews = null 
   // AVI files often lack timestamps; make them up so the stream stays in step.
   args.push("-fflags", "+genpts");
   if (start > 0) args.push("-ss", String(start));
+  // With the picture kept, the pictures for choosing a jump come from keyframes only
+  // (one every few seconds), so FFmpeg doesn't decode the whole film just for them:
+  // about a seventeenth of the work, which keeps a Raspberry Pi up with a 4K film. A
+  // converted picture is decoded in full anyway.
+  const keyframes = !!previews && video !== "convert" && !!probe && !!probe.video;
+  if (keyframes) args.push("-skip_frame:v", "nokey");
   // "V" leaves out cover pictures, which some files carry as a second video stream.
   args.push("-i", url, "-map", "0:V:0?", "-map", "0:a?", "-sn", "-dn");
   const codec = probe && probe.video ? probe.video.codec : "";

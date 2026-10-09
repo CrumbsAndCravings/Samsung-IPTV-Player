@@ -24,6 +24,7 @@ import {
   vodPieces,
   vodPlaylist,
   wantsGzip,
+  x264Args,
   xtreamQuery,
 } from "../helper/plan.mjs";
 
@@ -106,6 +107,23 @@ describe("the helper", () => {
     expect(fromStart).toContain("-vf fps=1/6,scale=-2:180");
     expect(fromStart).not.toContain("atomic_writing");
     expect(ffmpegArgs({ url: "http://p/1.mkv", start: 0, video: "copy", encoder: "libx264", probe: mkv }).join(" ")).not.toContain("image2");
+  });
+
+  it("makes the pictures from keyframes only when the picture is kept", () => {
+    const mkv = parseProbe(MKV);
+    const kept = ffmpegArgs({ url: "http://p/1.mkv", start: 754, video: "copy", encoder: "libx264", probe: mkv, previews: { dir: "/tmp/pv", atomic: true } }).join(" ");
+    // A decoder option, so it goes before the input; the stream itself is copied whole.
+    expect(kept).toContain("-skip_frame:v nokey -i http://p/1.mkv");
+    expect(kept).toContain("-c:v copy");
+    // Converted, every frame is decoded for the encoder, so nothing is skipped.
+    const avi = parseProbe(AVI);
+    expect(ffmpegArgs({ url: "http://p/1.avi", start: 0, video: "convert", encoder: "libx264", probe: avi, previews: { dir: "/tmp/pv", atomic: true } }).join(" ")).not.toContain("skip_frame");
+    expect(ffmpegArgs({ url: "http://p/1.mkv", start: 0, video: "copy", encoder: "libx264", probe: mkv }).join(" ")).not.toContain("skip_frame");
+  });
+
+  it("converts on the processor with quicker settings on a small computer", () => {
+    expect(x264Args("veryfast").join(" ")).toBe("-c:v libx264 -preset veryfast -crf 21 -pix_fmt yuv420p -profile:v high -level:v 4.1");
+    expect(x264Args("superfast").join(" ")).toContain("-preset superfast -crf 23");
   });
 
   it("writes HLS the iPhone plays", () => {

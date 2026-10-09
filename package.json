@@ -21,7 +21,8 @@
     "debug:tv": "node tools/tizen.mjs debug",
     "images": "python3 tools/make_images.py",
     "screens": "node dev/screens.mjs",
-    "helper": "node helper/aranplus-helper.mjs"
+    "helper": "node helper/aranplus-helper.mjs",
+    "helper:address": "node helper/address.mjs"
   },
   "dependencies": {
     "qrcode-generator": "^2.0.4"
