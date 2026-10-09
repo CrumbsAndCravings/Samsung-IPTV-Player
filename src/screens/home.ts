@@ -27,6 +27,7 @@ import { Backdrop } from "../ui/backdrop";
 import { CategoriesScreen } from "./categories";
 import { CategoryScreen } from "./category";
 import { DetailsScreen } from "./details";
+import { ServerScreen } from "./server";
 import { SetupChecksScreen } from "./setup";
 import { SearchScreen } from "./search";
 import { SubtitleSetupScreen } from "./subtitle-setup";
@@ -520,6 +521,7 @@ export class HomeScreen implements Screen {
         { label: "Keep watching" },
         { label: "Online subtitles", action: () => this.app.push(new SubtitleSetupScreen(this.app)) },
         { label: "Setup checks", action: () => this.app.push(new SetupChecksScreen(this.app)) },
+        { label: "Change server address", action: () => this.app.push(new ServerScreen(this.app)) },
         { label: "Sign out", action: () => this.app.signOut() },
       ],
     });

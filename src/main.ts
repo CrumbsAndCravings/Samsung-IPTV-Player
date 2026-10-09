@@ -4,6 +4,7 @@
 import "./styles/app.css";
 import { App } from "./app";
 import { log, logError } from "./core/log";
+import { noteLogin } from "./core/account";
 import { applyBuiltInLogin, applyBuiltInSubtitles, builtInCreds } from "./core/personal";
 import { loadCreds } from "./core/storage";
 import { registerKeys } from "./platform/keys";
@@ -39,6 +40,9 @@ function boot(): void {
   if (!root) return;
   const app = new App(root);
   app.onSignedIn = (creds) => {
+    // The same account at a new address keeps everything; another clears what this TV
+    // learnt about the last one.
+    noteLogin(creds);
     // A personal build's OpenSubtitles details, when the TV has none (signing out clears them).
     if (applyBuiltInSubtitles()) log("personal build: online subtitles set up");
     app.useCreds(creds);

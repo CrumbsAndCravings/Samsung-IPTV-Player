@@ -1,11 +1,14 @@
 // Online subtitles (plan 7.6; the Roku app's SubtitleSetupScreen): the OpenSubtitles API
 // key, username and password, typed with the TV's keyboard. Saved first, then checked,
-// so nothing typed is lost when the check fails (a Roku lesson). The key shows only its
-// last four characters, so a photo of the screen doesn't give it away.
+// so nothing typed is lost when the check fails (a Roku lesson); leaving with Back keeps
+// what was typed too, unchecked. After saving, the details are read back, since a TV
+// whose storage is full may not keep them. Remove turns online subtitles off on this TV,
+// a personal build's own details too, until sign-out. The key shows only its last four
+// characters, so a photo of the screen doesn't give it away.
 
 import type { App, Screen } from "../app";
 import { log } from "../core/log";
-import { readOsFields, regDelete, saveOsAccount } from "../core/storage";
+import { loadOsAccount, OsAccount, readOsFields, saveOsAccount, writeJson } from "../core/storage";
 import { OsClient } from "../data/opensubtitles";
 import type { Key } from "../platform/keys";
 import { h, setText, toggle } from "../ui/dom";
@@ -18,6 +21,8 @@ interface Field {
 
 type ButtonAction = "save" | "remove";
 
+const NOT_KEPT = "This TV didn't keep these details, so they'll be gone next time. Its storage for ARAN+ may be full: removing a few titles from Continue Watching makes room.";
+
 export class SubtitleSetupScreen implements Screen {
   readonly el: HTMLElement;
   private fields: Field[];
@@ -29,6 +34,7 @@ export class SubtitleSetupScreen implements Screen {
   private buttonIndex = 0;
   private busy = false;
   private alive = true;
+  private dirty = false; // typed something not yet saved
 
   constructor(private app: App) {
     const saved = readOsFields();
@@ -102,6 +108,8 @@ export class SubtitleSetupScreen implements Screen {
     if (!f) return;
     toggle(f.wrap, "is-editing", false);
     if (i !== 2) f.input.value = f.input.value.trim();
+    const saved = readOsFields();
+    if (f.input.value !== [saved.apiKey, saved.username, saved.password][i]) this.dirty = true;
     this.renderMask(f);
     // On to the next box, as on the sign-in screen.
     if (this.index === i) this.index = i + 1;
@@ -144,11 +152,13 @@ export class SubtitleSetupScreen implements Screen {
     const saved = readOsFields();
     const changed = saved.apiKey !== apiKey || saved.username !== username || saved.password !== password;
     const account = { apiKey, username, password, token: changed ? "" : saved.token, baseUrl: changed ? "" : saved.baseUrl };
-    saveOsAccount(account);
+    this.keep(account);
+    this.dirty = false;
     this.app.refreshSecrets();
     this.setButtons(true);
     this.busy = true;
-    this.say("Saved. Checking with OpenSubtitles…", true);
+    if (this.keptHere(apiKey, username)) this.say("Saved. Checking with OpenSubtitles…", true);
+    else this.say(NOT_KEPT + " They're being checked for now.", false);
     this.style();
     new OsClient(account).check().then((result) => {
       if (!this.alive) return;
@@ -158,14 +168,47 @@ export class SubtitleSetupScreen implements Screen {
         this.say(result.error, false);
         return;
       }
+      if (!this.keptHere(apiKey, username)) {
+        this.say("The details work, but " + NOT_KEPT.charAt(0).toLowerCase() + NOT_KEPT.slice(1), false);
+        return;
+      }
       let text = result.name ? "Connected as " + result.name + "." : "The key works. Without a login you get about 5 downloads a day.";
       if (result.name && result.allowed > 0) text += " " + result.allowed + " downloads a day.";
       this.say(text, true);
     });
   }
 
+  // Saves the account; a TV whose storage is full may refuse (keptHere says so).
+  private keep(account: OsAccount): void {
+    try {
+      saveOsAccount(account);
+    } catch (err) {
+      log("opensubtitles: not saved:", String(err));
+    }
+  }
+
+  // Reads the account back: a TV can refuse to keep it when its storage is full.
+  private keptHere(apiKey: string, username: string): boolean {
+    const kept = loadOsAccount();
+    return kept !== null && kept.apiKey === apiKey && kept.username === username;
+  }
+
+  // Leaving without "Save and check" keeps what was typed (checked the next time it's
+  // used), so nothing has to be typed again.
+  private keepTyped(): void {
+    const apiKey = this.fields[0].input.value.trim();
+    if (!this.dirty || apiKey === "") return;
+    const username = this.fields[1].input.value.trim();
+    const password = this.fields[2].input.value;
+    this.keep({ apiKey, username: username && password ? username : "", password: username && password ? password : "", token: "", baseUrl: "" });
+    this.dirty = false;
+    this.app.refreshSecrets();
+  }
+
   private remove(): void {
-    regDelete("opensubtitles", "account");
+    // The build's own details stay off too, until sign-out.
+    writeJson("opensubtitles", "account", { removed: true });
+    this.dirty = false;
     this.app.refreshSecrets();
     for (const f of this.fields) {
       f.input.value = "";
@@ -182,6 +225,7 @@ export class SubtitleSetupScreen implements Screen {
       if (key === "back") this.app.pop();
       return;
     }
+    if (key === "back") this.keepTyped();
     switch (key) {
       case "up":
         if (this.index > 0) this.index--;

@@ -2,6 +2,7 @@
 // tools/build.mjs), ported from the Roku app's Registry.brs (BuiltInCreds,
 // LanguagePrefs, SyncConfig) and MainScene.brs. docs/features.md §2.2, §4.2, §9.4.
 
+import { noteMovedFrom } from "./account";
 import { sha256Hex } from "./sha256";
 import { loadCreds, readJson, readOsFields, regDelete, regRead, regWrite, saveCreds, saveOsAccount } from "./storage";
 import { Creds, field, fieldStr, isArr, Json, normalizeServer, toStr } from "./utils";
@@ -51,11 +52,17 @@ export function applyBuiltInLogin(): boolean {
   const builtIn = builtInCreds();
   if (!builtIn) return false;
   const stamp = builtIn.server + " " + builtIn.username;
-  if (regRead("account", "builtIn") === stamp) return false;
+  const oldStamp = regRead("account", "builtIn") || "";
+  if (oldStamp === stamp) return false;
   regWrite("account", "builtIn", stamp);
+  // The build's address moved (the provider changed its domain): Continue Watching
+  // follows from the old one at the next sync.
+  const old = oldStamp.split(" ");
+  if (old.length === 2 && old[1] === builtIn.username && old[0].toLowerCase() !== builtIn.server.toLowerCase()) noteMovedFrom(old[0], builtIn);
   const saved = loadCreds();
   const sameServer = !!saved && normalizeServer(saved.server).toLowerCase() === builtIn.server.toLowerCase();
   if (saved && saved.username === builtIn.username && (sameServer || saved.password === builtIn.password)) {
+    if (!sameServer) noteMovedFrom(normalizeServer(saved.server), builtIn);
     if (!sameServer || saved.password !== builtIn.password) saveCreds(builtIn);
     return false;
   }
@@ -101,7 +108,10 @@ export function applyBuiltInSubtitles(): boolean {
   if (!builtIn) return false;
   const stamp = sha256Hex(builtIn.apiKey + "\n" + builtIn.username + "\n" + builtIn.password).slice(0, 16);
   const saved = readOsFields();
-  if (saved.apiKey !== "" && regRead("opensubtitles", "builtIn") === stamp) return false;
+  // Removed on the TV on purpose: the build's own stays off too, until sign-out or a build
+  // with other details.
+  const removed = field(readJson("opensubtitles", "account"), "removed") === true;
+  if ((saved.apiKey !== "" || removed) && regRead("opensubtitles", "builtIn") === stamp) return false;
   regWrite("opensubtitles", "builtIn", stamp);
   if (saved.apiKey === builtIn.apiKey && saved.username === builtIn.username && saved.password === builtIn.password) return false;
   saveOsAccount({ ...builtIn, token: "", baseUrl: "" });

@@ -15,9 +15,9 @@
 import { log } from "../core/log";
 import { mergeProgress, progressList, progressRemovedList, progressSave } from "../core/progress";
 import { syncConfig } from "../core/personal";
-import { sha256Hex } from "../core/sha256";
+import { forgetMovedFrom, movedFromSpace, spaceOf } from "../core/account";
 import { readSavedSubtitle, SavedSubtitle } from "../core/subtitles";
-import { Creds, fieldStr, isObj, syncSpaceText } from "../core/utils";
+import { Creds, fieldStr, isArr, isObj } from "../core/utils";
 import { send } from "../platform/http";
 
 const SOON_MS = 60000;
@@ -26,7 +26,7 @@ const SUBTITLE_MAX_BYTES = 4 * 1024 * 1024;
 
 // This login's list on the sync service: 16 hex digits of SHA-256 of syncSpaceText.
 export function syncSpace(creds: Creds): string {
-  return sha256Hex(syncSpaceText(creds)).slice(0, 16);
+  return spaceOf(creds);
 }
 
 export interface SaveResult {
@@ -134,18 +134,47 @@ export class ProgressSync {
     });
   }
 
+  // After the account moved to a new address, the old address's list and removals are
+  // fetched once and sent along to the new space (account.ts, noteMovedFrom).
+  private previous(): Promise<{ ok: boolean; entries: unknown[]; removed: unknown[] }> {
+    const space = movedFromSpace();
+    if (space === "" || space === syncSpace(this.creds)) return Promise.resolve({ ok: true, entries: [], removed: [] });
+    return send({ url: this.config.url + "/v1/progress?space=" + space, headers: { Authorization: "Bearer " + this.config.key }, timeoutMs: TIMEOUT_MS }).promise.then((res) => {
+      if (res.code !== 200) {
+        log("sync: the old address's list didn't come (" + (res.timedOut ? "no answer in time" : "HTTP " + res.code) + ")");
+        return { ok: false, entries: [], removed: [] };
+      }
+      let state: unknown;
+      try {
+        state = JSON.parse(res.text);
+      } catch {
+        state = undefined;
+      }
+      const entries = isObj(state) && isArr(state.entries) ? state.entries : [];
+      const removed = isObj(state) && isArr(state.removed) ? state.removed : [];
+      log("sync: bringing", entries.length, "titles over from the old address");
+      return { ok: true, entries, removed };
+    });
+  }
+
   private round(): void {
     this.running = true;
     this.lastAt = Date.now();
-    const body = JSON.stringify({ entries: progressList(), removed: progressRemovedList() });
-    send({
-      method: "POST",
-      url: this.config.url + "/v1/progress?space=" + syncSpace(this.creds),
-      headers: { Authorization: "Bearer " + this.config.key, "Content-Type": "application/json" },
-      body,
-      timeoutMs: TIMEOUT_MS,
-    })
-      .promise.then((res) => {
+    const moving = movedFromSpace() !== "";
+    this.previous()
+      .then((old) => {
+        // The new space waits until the old one has come, so nothing is left behind.
+        if (!old.ok) return { code: 0, timedOut: false, text: "", movedIn: false };
+        const body = JSON.stringify({ entries: (progressList() as unknown[]).concat(old.entries), removed: (progressRemovedList() as unknown[]).concat(old.removed) });
+        return send({
+          method: "POST",
+          url: this.config.url + "/v1/progress?space=" + syncSpace(this.creds),
+          headers: { Authorization: "Bearer " + this.config.key, "Content-Type": "application/json" },
+          body,
+          timeoutMs: TIMEOUT_MS,
+        }).promise.then((res) => ({ code: res.code, timedOut: res.timedOut, text: res.text, movedIn: moving }));
+      })
+      .then((res) => {
         if (this.ended) return;
         if (res.timedOut) return log("sync: the sync service took too long to answer");
         if (res.code !== 200) return log("sync: the sync service answered HTTP " + res.code);
@@ -156,6 +185,7 @@ export class ProgressSync {
           state = undefined;
         }
         if (!isObj(state)) return log("sync: the sync service's answer wasn't readable");
+        if (res.movedIn) forgetMovedFrom();
         const before = JSON.stringify(progressList());
         const merged = mergeProgress(progressList(), progressRemovedList(), state);
         progressSave(merged.entries, merged.removed);

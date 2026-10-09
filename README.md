@@ -24,7 +24,8 @@ What the app does now:
 - **The hero** at the top shows the focused title's backdrop, year, runtime, genre, rating and plot; movie details arrive after you rest on a poster for a moment.
 - **Details** for movies (Play, or Resume and Play from start) and series (seasons, with Specials first, and the episode list with stills, runtimes and synopses; **Left/Right** in the list switch seasons). A title on Continue Watching also gets **Remove from Continue Watching**.
 - **"Won't play"** marks titles this TV can't play (AVI, for now), with "Try anyway". Codecs that are really a file's cover picture (MJPEG, PNG) no longer count. With [the helper on your computer](#the-helper-on-your-computer), those titles play too, and a title that fails on its own is tried through it.
-- **Account menu** (the round button at the right of the tabs): Keep watching, Online subtitles, Setup checks, Sign out. Signing out also forgets the stored library.
+- **Account menu** (the round button at the right of the tabs): Keep watching, Online subtitles, Setup checks, Change server address, Sign out. Signing out also forgets the stored library; Continue Watching comes back from the sync service.
+- **When the provider moves.** Providers change their address now and then, keeping the titles and the account. **Change server address** checks the new address by signing in there first (one request), then carries on there with everything kept; a failed check changes nothing. The same username and password at a new address (typed at sign-in, or in a newer personal build) count as the same account too: the stored library stays, and the next sync brings Continue Watching over from the old address. The TV remembers the last account by a fingerprint of its password, never the password itself after a sign-out.
 - **The player.** Back and the title at the top; play/pause, the bar and the times at the bottom; Audio & subtitles, Episodes, Next episode and Restart underneath. The controls show when you press a key and hide after 5 seconds of playing.
 - **Long pauses and a failing server.** Paused for 3 minutes, a video straight from the provider lets go of the provider's one connection (which the provider may otherwise drop) and shows the title's picture; Play opens it again at the same spot, with the same sound and subtitles. When a video won't start, one small request for its first kilobyte tells the cases apart: the provider's server failing (HTTP 5xx) is asked again once, 5 seconds later, and the error screen then starts with plain words; a refusal goes straight to the error screen; a file the provider sent but this TV couldn't play goes to the helper, when there is one. Only that last case teaches the TV that files like it don't play.
 - **Jump preview.** Press or hold **Left/Right** (or Rewind/Fast forward) and the bar shows where you'll land before you get there; the longer you hold, the bigger the steps. The jump happens a moment after you let go, **OK** jumps straight away and **Back** cancels. Jumps go to the TV's player one at a time; one that fails is tried again, and if it still fails the reason shows under the bar.
@@ -82,7 +83,7 @@ A build can carry settings of your own in `personal.json` at the top of the repo
 - **`languages`:** whose categories to show, in order (`en`, `hi`, `pa`, `other`). Without it every language shows. This part holds nothing private.
 - **`sync`:** the address and key of your sync Worker, set up once with the Roku repo's [sync guide](https://github.com/CrumbsAndCravings/roku-iptv-player/blob/main/sync/README.md). Use the same key as the Roku build. Without it nothing syncs.
 - **`server`, `username`, `password`:** a login the TV signs in with by itself. Leave them out to type the login on the TV as usual. With them, the signed `.wgt` holds your login, so keep that file to yourself. When a newer build carries a different login, the TV replaces the saved one and clears Continue Watching (its titles belong to the old provider). A login typed on the TV for the same account is kept, Continue Watching and all. So is one where only the server changed and the username and password are the same (the provider's new address).
-- **`opensubtitles`:** your OpenSubtitles API key, and optionally your OpenSubtitles username and password, so online subtitles are set up without typing them on the TV. The TV takes them when it has none (the first start, or after signing out) or when a newer build carries different ones; details typed on the TV after that are kept.
+- **`opensubtitles`:** your OpenSubtitles API key, and optionally your OpenSubtitles username and password, so online subtitles are set up without typing them on the TV. The TV takes them when it has none (the first start, or after signing out) or when a newer build carries different ones; details typed on the TV after that are kept. **Remove** on the Online subtitles screen keeps the build's own off too, until you sign out. Leaving that screen with Back keeps what you typed, and after saving it reads the details back, saying so if the TV's storage didn't keep them.
 
 - **`transcoder`:** where [the helper on your computer](#the-helper-on-your-computer) is, and its key. The helper writes this itself the first time it runs. Optional extras the helper reads here: `webApp` (the folder of the [iPhone app](#the-iphone-app)'s build, when it isn't next to this repo) and `userAgent` (how the helper introduces itself to the provider; when left out, a desktop browser for lists and files, and FFmpeg's own name for conversions).
 
@@ -191,6 +192,7 @@ src/
     srt.ts                           new: SRT/WebVTT parsing and cue lookup with a delay
     compat.ts                        new: will it play on this TV (M0 results plus what it learns)
     device.ts redact.ts log.ts       engine and model year, secret hiding, on-screen log
+    account.ts                       the last account on this TV: the same account at a new address
   platform/                          Tizen and browser APIs
     http.ts keys.ts tizen.ts         XHR with timeouts, remote keys, device info
     files.ts                         big text kept between launches (IndexedDB, else localStorage)
@@ -203,7 +205,7 @@ src/
   data/transcoder.ts                 the helper on a computer at home
   data/opensubtitles.ts moviehash.ts OpenSubtitles calls; fingerprints from the helper
   screens/                           sign in, Home, Categories, a category's page, Search, Details,
-                                     player, Online subtitles, Setup checks
+                                     player, Online subtitles, Setup checks, Change server address
   probe/                             the M0 setup checks
   styles/                            design tokens, base styles, screen styles
 assets/fonts  assets/images          Fredoka and Nunito (SIL OFL), generated glows

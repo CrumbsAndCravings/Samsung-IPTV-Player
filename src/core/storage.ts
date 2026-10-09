@@ -83,11 +83,15 @@ export function saveCreds(creds: Creds): void {
 
 // Signing out forgets the login, Continue Watching and the OpenSubtitles account. The
 // stored library is deleted separately (data/library.ts), since it lives elsewhere.
+// Sign-out. Continue Watching comes back from the sync service. The watch history,
+// ratings and My List stay for the same account signing back in, at a new address too;
+// another account signing in clears them (account.ts, noteLogin).
 export function clearAccount(): void {
   regDelete("account", "creds");
   regDelete("progress", "items");
   regDelete("progress", "removed");
   regDelete("opensubtitles", "account");
+  regDelete("helper", "titles");
 }
 
 // Player preferences, e.g. { audio: "hin", subtitles: "eng" } (language codes, "off"
@@ -105,7 +109,8 @@ export function savePref(key: string, value: string): void {
   writeJson("prefs", "player", prefs);
 }
 
-// OpenSubtitles account. Stays on the TV.
+// OpenSubtitles account. Stays on the TV. { removed: true } when turned off here, so a
+// personal build's own stays off too (core/personal.ts), until sign-out.
 export interface OsAccount {
   apiKey: string;
   username: string;

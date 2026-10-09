@@ -108,6 +108,8 @@ describe("the library index", () => {
     expect(back && back.savedAt).toBe(1000);
     expect(back && indexSearch(back, "big", 40)[0].items[0].title).toBe("Big Thing");
     expect(parseIndex(text, "http://a.b joe", 2026)).toBeNull();
+    // The provider moved: the same username's library still counts.
+    expect(parseIndex(text, "http://new.b jane", 2026)).not.toBeNull();
     expect(parseIndex("", "http://a.b jane", 2026)).toBeNull();
   });
 

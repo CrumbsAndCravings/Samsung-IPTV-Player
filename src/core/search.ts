@@ -248,12 +248,22 @@ export function serializeIndex(index: SearchIndex, owner: string, savedAt: numbe
   return lines.join("\n");
 }
 
+// Whether a saved library belongs to this account: the same username ("<server>
+// <username>"), wherever the server is now, since a provider that moves to a new address
+// keeps its titles and their ids. The next daily refresh brings anything new.
+export function sameOwner(saved: string, owner: string): boolean {
+  if (saved === owner) return true;
+  const a = saved.split(" ");
+  const b = owner.split(" ");
+  return a.length === 2 && b.length === 2 && a[1] !== "" && a[1] === b[1];
+}
+
 // The saved index for `owner` (with savedAt set), or null.
 export function parseIndex(text: string, owner: string, year: number): SearchIndex | null {
   if (!text) return null;
   const lines = text.split("\n");
   const header = lines[0].split("\t");
-  if (header.length < 5 || header[0] !== FILE_FORMAT || header[1] !== owner.replace(/[\r\n\t]/g, " ")) return null;
+  if (header.length < 5 || header[0] !== FILE_FORMAT || !sameOwner(header[1], owner.replace(/[\r\n\t]/g, " "))) return null;
   const count = toInt(header[3]);
   const catCount = toInt(header[4]);
   if (count <= 0 || lines.length !== 1 + count * 2 + catCount) return null;
