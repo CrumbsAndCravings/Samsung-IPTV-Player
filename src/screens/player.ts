@@ -84,6 +84,7 @@ function fileLine(item: Item): string {
 }
 
 export class PlayerScreen implements Screen {
+  readonly instant = true; // no screen move: the video starts with nothing else to draw
   readonly el: HTMLElement;
   private player = getPlayer();
 
@@ -1419,7 +1420,7 @@ export class PlayerScreen implements Screen {
   private hush(on: boolean): void {
     if (on === this.hushed) return;
     this.hushed = on;
-    hushSounds(on);
+    hushSounds(on, true);
   }
 
   destroy(): void {

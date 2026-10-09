@@ -77,6 +77,7 @@ export function noteLogin(creds: Creds): void {
     else if (change === "other") {
       regDelete("taste", "history");
       regDelete("taste", "scores");
+      regDelete("taste", "picks");
       regDelete("mylist", "items");
       regDelete("sync", "previous");
     }

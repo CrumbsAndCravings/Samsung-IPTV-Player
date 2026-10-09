@@ -21,17 +21,17 @@ import { helperOn, languagePrefs } from "../core/personal";
 import { listItem, myList, myListHas, myListToggle, titleKey } from "../core/mylist";
 import { continueWatchingRow, progressList, progressRemove } from "../core/progress";
 import { isRefusalCode } from "../core/refusals";
-import { nowSeconds, Rating, ratingLabel, tasteBecause, tasteHistory, tasteNotForMe, tasteOrder, tasteRate, tasteRating, tasteSaveScores, tasteScores } from "../core/taste";
+import { nowSeconds, Rating, ratingLabel, savedPicks, savePicks, tasteBecause, tasteHistory, tasteNotForMe, tasteOrder, tasteRate, tasteRating, tasteSaveScores, tasteScores } from "../core/taste";
 import { Json, sizedImage } from "../core/utils";
 import { Category, POSTER_SIZE } from "../core/xtream";
 import { ApiError } from "../data/api";
-import { librarySaved } from "../data/library";
+import type { PickedRow } from "../data/library";
 import { savePref } from "../core/storage";
 import { soundsOn } from "../platform/sound";
 import { introOn, introReady } from "../ui/intro";
 import type { Key } from "../platform/keys";
 import { h, setText, toggle } from "../ui/dom";
-import { COL_W, itemKey, posterEl } from "../ui/poster";
+import { COL_W, isBlocked, itemKey, posterEl } from "../ui/poster";
 import { Backdrop } from "../ui/backdrop";
 import { CategoriesScreen } from "./categories";
 import { CategoryScreen } from "./category";
@@ -52,6 +52,7 @@ const ROW_BATCH = 5;
 const HOME_ROWS = 18;
 const HOLD_MS = 700; // holding OK this long on a poster opens its menu
 const PICKS_AFTER_MS = 6000; // the rows picked for you come after Home's own
+const PICKS_SETTLE_MS = 900; // back on Home, picks wait for the screen to settle
 
 interface PlanEntry {
   kind: "movie" | "series";
@@ -90,6 +91,15 @@ interface RowState {
   el: HTMLElement | null;
   strip: HTMLElement | null;
   posters: { [index: number]: HTMLElement };
+}
+
+function sameTitles(a: Item[], b: Item[]): boolean {
+  return a.length === b.length && a.every((item, n) => titleKey(item) === titleKey(b[n]));
+}
+
+// What a Continue Watching row shows: its titles, where they're at and their episodes.
+function continueStamp(items: Item[]): string {
+  return items.map((i) => i.kind + i.itemId + ":" + Math.round(i.progress * 1000) + ":" + i.caption).join(",");
 }
 
 function placeholders(): Item[] {
@@ -140,7 +150,6 @@ export class HomeScreen implements Screen {
   private unsubscribeSync: (() => void) | null = null;
   private picksTimer = 0;
   private picksStamp = ""; // what the rows picked for you were last picked from
-  private unsubscribeLibrary: (() => void) | null = null;
 
   constructor(private app: App) {
     this.tabEls = TABS.map((name) => h("div", { class: "nav-tab", text: name }));
@@ -267,7 +276,7 @@ export class HomeScreen implements Screen {
   }
 
   private rowState(title: string, items: Item[], isContinue = false, slot = ""): RowState {
-    return { title, items, isContinue, slot, arriving: !items.some((i) => i.placeholder), col: 0, scroll: 0, el: null, strip: null, posters: {} };
+    return { title, items, isContinue, slot, arriving: false, col: 0, scroll: 0, el: null, strip: null, posters: {} };
   }
 
   private appendRows(count: number): void {
@@ -286,6 +295,8 @@ export class HomeScreen implements Screen {
           // A See all tile ends the row; its page lists the whole category.
           const title = this.tab === 1 ? entry.title + "  ·  Movies" : this.tab === 2 ? entry.title + "  ·  Series" : entry.title;
           row.items = loaded.items.concat([makeItem({ kind: "seeAll", title, categoryId: entry.categoryId, listKind: entry.kind })]);
+          // Its titles build in, once (not again when the row is redrawn).
+          row.arriving = true;
           this.rebuildRow(row);
           if (this.focusedRow() === row) this.onFocusMoved();
           return undefined;
@@ -308,7 +319,7 @@ export class HomeScreen implements Screen {
     if (index < 0) return;
     if (row.el && row.el.parentNode) row.el.parentNode.removeChild(row.el);
     this.rows.splice(index, 1);
-    for (const r of this.rows) this.detachRow(r); // positions changed
+    // The others move up (renderRows); redrawing them would flicker on the TV.
     if (this.rowIndex > index || this.rowIndex >= this.rows.length) this.rowIndex = Math.max(0, Math.min(this.rowIndex - (this.rowIndex > index ? 1 : 0), this.rows.length - 1));
     if (next) this.appendRows(1);
     if (this.rows.length === 0) {
@@ -355,7 +366,6 @@ export class HomeScreen implements Screen {
 
   private rebuildRow(row: RowState): void {
     if (row.col >= row.items.length) row.col = Math.max(0, row.items.length - 1);
-    row.arriving = !row.items.some((i) => i.placeholder);
     this.detachRow(row);
     this.renderRows();
   }
@@ -467,7 +477,7 @@ export class HomeScreen implements Screen {
     toggle(this.heroMeta, "is-warning", blocked);
     setText(this.heroPlot, item.description);
     // A new title floats in; details arriving for the same title don't replay it.
-    if (this.heroItem !== item) {
+    if (!this.heroItem || this.heroItem.kind !== item.kind || this.heroItem.itemId !== item.itemId) {
       this.heroEl.classList.remove("hero-enter");
       void this.heroEl.offsetWidth;
       this.heroEl.classList.add("hero-enter");
@@ -495,10 +505,12 @@ export class HomeScreen implements Screen {
     api
       .vodInfo(item.itemId)
       .then((info) => {
+        const wasBlocked = isBlocked(item);
         applyInfo(item, info);
         if (!item.poster && info.poster) item.poster = sizedImage(info.poster, POSTER_SIZE);
-        // Codecs may change the Won't play tag on its poster.
-        for (const row of this.rows) if (row.items.indexOf(item) >= 0 && row.el) this.rebuildRow(row);
+        // Codecs may change the Won't play tag on its poster: only then is its row drawn
+        // again (never with the helper, which plays everything).
+        if (isBlocked(item) !== wasBlocked) for (const row of this.rows) if (row.items.indexOf(item) >= 0 && row.el) this.rebuildRow(row);
         if (this.focusedItem() === item) this.showHero(item);
       })
       .catch((err: Error) => log("vod info failed:", err.message));
@@ -680,22 +692,26 @@ export class HomeScreen implements Screen {
   //
   // My List, "Top picks for you" and "Because you watched" rows under Continue Watching,
   // from what you watch (core/taste.ts) and the library stored on the TV, so they cost
-  // the provider nothing. They're laid out as placeholders straight away, so nothing
-  // jumps when they arrive, and picked 6 s after Home's own rows. With no stored library
-  // yet (it's built the first time Search, Categories or a See all page is used), they
-  // wait for a launch that has one.
+  // the provider nothing. Home never reads the stored library itself (a big one stops
+  // the TV for seconds): the rows picked last time (taste/picks) show at once, and
+  // they're picked again only when Search, Categories or a See all page has the library
+  // in already, 6 s after Home's own rows or a moment after coming back to Home.
 
   private addPersonalRows(): void {
-    // My List first, as name cards until the library brings their pictures.
+    // The picks made last time, at once; My List with the pictures they found.
+    const cached = savedPicks();
+    const posters: { [key: string]: string } = {};
+    const listAnswer = cached.filter((r) => r.slot === "list")[0];
+    if (listAnswer) for (const item of listAnswer.items) posters[titleKey(item)] = item.poster;
     const list = myList();
-    if (list.length > 0) this.rows.push(this.rowState("My List", list.map((e) => listItem(e, "")), false, "list"));
-    if (librarySaved() && (tasteHistory().length > 0 || progressList().length > 0)) {
-      this.rows.push(this.rowState("Top picks for you", placeholders(), false, "picks"));
-      for (const title of tasteBecause(tasteHistory(), 2)) this.rows.push(this.rowState("Because you watched " + title.n, placeholders(), false, title.k));
-    }
+    if (list.length > 0) this.rows.push(this.rowState("My List", list.map((e) => listItem(e, posters[e.k] || "")), false, "list"));
+    for (const answer of cached) if (answer.slot !== "list" && answer.items.length > 0) this.rows.push(this.rowState(answer.title, answer.items, false, answer.slot));
     this.picksStamp = "";
     window.clearTimeout(this.picksTimer);
-    if (this.rows.some((r) => r.slot !== "")) this.picksTimer = window.setTimeout(() => this.askPicks(), PICKS_AFTER_MS);
+    // Picked again only when the library is in already (Search, Categories or a See all
+    // page loaded it this session): Home never loads it, since reading a big library
+    // stops the TV for seconds.
+    this.picksTimer = window.setTimeout(() => this.askPicks(), PICKS_AFTER_MS);
   }
 
   // What the picks depend on; when it hasn't changed, they aren't picked again.
@@ -705,41 +721,56 @@ export class HomeScreen implements Screen {
 
   private askPicks(): void {
     const library = this.app.library;
-    if (this.tab !== 0 || !library || !this.rows.some((r) => r.slot !== "")) return;
-    // Only with a stored library: building one asks the provider for every category.
-    if (!librarySaved() && !library.hasTitles) return;
-    library.start();
-    if (!library.hasTitles) {
-      // The saved library is still being read: pick once it's in.
-      if (!this.unsubscribeLibrary) {
-        this.unsubscribeLibrary = library.onChange(() => {
-          if (!library.hasTitles) return;
-          if (this.unsubscribeLibrary) this.unsubscribeLibrary();
-          this.unsubscribeLibrary = null;
-          this.askPicks();
-        });
-      }
-      return;
-    }
+    if (this.tab !== 0 || !library || !library.hasTitles) return;
+    if (tasteHistory().length === 0 && progressList().length === 0 && myList().length === 0) return;
     const stamp = this.personalStamp();
     if (stamp === this.picksStamp) return;
     this.picksStamp = stamp;
-    const because = this.rows.filter((r) => r.slot !== "" && r.slot !== "list" && r.slot !== "picks").map((r) => ({ k: r.slot, n: r.title.replace(/^Because you watched /, "") }));
     const generation = this.generation;
     const started = Date.now();
-    const picked = library.picks({ history: tasteHistory(), watching: progressList() as unknown as Json[], because, list: myList() }, nowSeconds());
+    const picked = library.picks({ history: tasteHistory(), watching: progressList() as unknown as Json[], because: tasteBecause(tasteHistory(), 2), list: myList() }, nowSeconds());
     log("picks:", picked.rows.map((r) => r.slot + " " + r.items.length).join(", "), "in", Date.now() - started, "ms");
     if (generation !== this.generation) return;
-    // Kept to order the rows next time.
+    // Kept to order the rows next time, and the rows to show at once next launch.
     tasteSaveScores(picked.scores);
-    for (const answer of picked.rows) {
-      const row = this.rows.filter((r) => r.slot === answer.slot)[0];
-      if (!row) continue;
-      if (answer.items.length > 0) {
-        row.items = answer.items;
-        this.rebuildRow(row);
-      } else if (answer.slot !== "list") this.dropRow(row, false); // nothing to pick: the row goes
+    savePicks(picked.rows);
+    this.applyPicks(picked.rows);
+  }
+
+  // Puts the rows picked for you in place, after Continue Watching and My List: one with
+  // the same titles stays as it is, a new one builds in, and one not picked now goes.
+  private applyPicks(answers: PickedRow[]): void {
+    const focused = this.rows[this.rowIndex] || null;
+    const listRow = this.rows.filter((r) => r.slot === "list")[0] || null;
+    const picked: RowState[] = [];
+    for (const answer of answers) {
+      if (answer.slot === "list") {
+        // My List's pictures, from the library.
+        if (listRow && sameTitles(listRow.items, answer.items) && listRow.items.some((i, n) => i.poster !== answer.items[n].poster)) {
+          listRow.items = answer.items;
+          this.rebuildRow(listRow);
+        }
+        continue;
+      }
+      if (answer.items.length === 0) continue;
+      const old = this.rows.filter((r) => r.slot === answer.slot && r.title === answer.title)[0];
+      if (old && sameTitles(old.items, answer.items)) {
+        picked.push(old);
+        continue;
+      }
+      if (old) this.detachRow(old);
+      const row = this.rowState(answer.title, answer.items, false, answer.slot);
+      row.arriving = true;
+      picked.push(row);
     }
+    for (const row of this.rows) if (row.slot !== "" && row.slot !== "list" && picked.indexOf(row) < 0) this.detachRow(row);
+    const others = this.rows.filter((r) => r.slot === "" || r.slot === "list");
+    const at = (others[0] && others[0].isContinue ? 1 : 0) + (listRow ? 1 : 0);
+    this.rows = others.slice(0, at).concat(picked, others.slice(at));
+    // The focus stays on the same row when it's still there.
+    const index = focused ? this.rows.indexOf(focused) : -1;
+    this.rowIndex = index >= 0 ? index : Math.max(0, Math.min(this.rowIndex, this.rows.length - 1));
+    this.renderRows();
     if (!this.navFocused) this.onFocusMoved();
   }
 
@@ -755,11 +786,12 @@ export class HomeScreen implements Screen {
         this.detachRow(old);
         this.rows.splice(at, 1);
         if (this.rowIndex > at || this.rowIndex >= this.rows.length) this.rowIndex = Math.max(0, this.rowIndex - 1);
-        for (const row of this.rows) this.detachRow(row);
         this.renderRows();
       }
       return;
     }
+    // The same titles: nothing to draw again.
+    if (old && old.items.map(titleKey).join(",") === list.map((e) => e.k).join(",")) return;
     const posters: { [key: string]: string } = {};
     if (old) for (const item of old.items) posters[titleKey(item)] = item.poster;
     const items = list.map((e) => listItem(e, posters[e.k] || ""));
@@ -774,7 +806,6 @@ export class HomeScreen implements Screen {
     const index = this.rows.length > 0 && this.rows[0].isContinue ? 1 : 0;
     this.rows.splice(index, 0, this.rowState("My List", items, false, "list"));
     if (this.rowIndex >= index && this.rows.length > 1 && !this.navFocused) this.rowIndex++;
-    for (const row of this.rows) this.detachRow(row);
     this.renderRows();
   }
 
@@ -841,22 +872,26 @@ export class HomeScreen implements Screen {
     return this.focusedItem();
   }
 
+  // Continue Watching changed (back from a video, another device, a removal): only its
+  // row is drawn again, and only when it really changed; the rows below just move.
   private refreshContinueWatching(): void {
     if (this.tab !== 0 || !this.movieCats) return;
     const cw = continueWatchingRow();
     const had = this.rows.length > 0 && this.rows[0].isContinue;
-    if (had) this.detachRow(this.rows[0]);
+    if (!cw && !had) return;
+    if (cw && had && continueStamp(cw.items) === continueStamp(this.rows[0].items)) return;
     if (cw && had) {
       this.rows[0].items = cw.items;
       this.rows[0].col = Math.max(0, Math.min(this.rows[0].col, cw.items.length - 1));
+      this.rebuildRow(this.rows[0]);
     } else if (cw) {
       this.rows.unshift(this.rowState(cw.title, cw.items, true));
       if (this.rows.length > 1) this.rowIndex++;
     } else if (had) {
+      this.detachRow(this.rows[0]);
       this.rows.shift();
       this.rowIndex = Math.max(0, this.rowIndex - 1);
     }
-    for (const row of this.rows) this.detachRow(row);
     if (this.rows.length > 0) setText(this.status, "");
     this.renderRows();
     if (!this.navFocused) this.onFocusMoved();
@@ -895,7 +930,9 @@ export class HomeScreen implements Screen {
     // watched may have changed.
     this.refreshContinueWatching();
     this.syncListRow();
-    if (this.picksStamp !== "") this.askPicks();
+    // Picked again after the screen has settled, and only when the library is in.
+    window.clearTimeout(this.picksTimer);
+    this.picksTimer = window.setTimeout(() => this.askPicks(), PICKS_SETTLE_MS);
     this.backdrop.pause(false);
     // Pick up what other devices watched (at most once a minute).
     if (this.app.sync) this.app.sync.soon();
@@ -909,6 +946,7 @@ export class HomeScreen implements Screen {
     window.clearTimeout(this.heroTimer);
     window.clearTimeout(this.heroDebounce);
     window.clearTimeout(this.holdTimer);
+    window.clearTimeout(this.picksTimer);
     this.holdTimer = 0;
   }
 
@@ -917,7 +955,6 @@ export class HomeScreen implements Screen {
     this.generation++;
     window.clearTimeout(this.picksTimer);
     if (this.unsubscribeSync) this.unsubscribeSync();
-    if (this.unsubscribeLibrary) this.unsubscribeLibrary();
   }
 
   // For the screenshot script and tests.

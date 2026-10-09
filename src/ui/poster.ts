@@ -46,9 +46,11 @@ export function posterEl(item: Item): HTMLElement {
   const img = h("img", { class: "poster-img", attrs: { alt: "" } });
   if (item.poster) {
     img.onerror = () => img.parentNode && img.parentNode.removeChild(img);
-    // Faded in once it's here (motion.css).
+    // Faded in once it's here (motion.css); one the TV holds already (a row drawn again)
+    // shows at once.
     img.onload = () => img.classList.add("is-loaded");
     img.src = item.poster;
+    if (img.complete && img.naturalWidth > 0) img.classList.add("is-loaded");
   }
   const card = h("div", { class: "poster-card" }, [h("div", { class: "poster-fallback", text: item.title }), item.poster ? img : null]);
   const badge = blocked ? "Won't play" : item.caption;

@@ -1,11 +1,11 @@
 // Ported from the Roku app's tests/parse_test.brs: the watch history, ratings, likings,
 // the picks from the stored library, and My List (docs/features.md §5.1.1, §5.1.2).
 import { beforeEach, describe, expect, it } from "vitest";
-import { Item } from "../src/core/items";
+import { Item, makeItem } from "../src/core/items";
 import { listItem, myListToggle, myListWith, titleKey } from "../src/core/mylist";
 import { categoriesFrom, indexAdd, indexFind, indexPersonal, indexSetCategories, listItems, newSearchIndex, titleStem } from "../src/core/search";
 import { MemoryStore, useStore } from "../src/core/storage";
-import { likingFrom, ratingLabel, TASTE_MAX, tasteBecause, TasteEntry, tasteHistory, tasteOrder, tasteRated, tasteWeightFor, tasteWith } from "../src/core/taste";
+import { likingFrom, ratingLabel, savedPicks, savePicks, TASTE_MAX, tasteBecause, TasteEntry, tasteHistory, tasteOrder, tasteRated, tasteWeightFor, tasteWith } from "../src/core/taste";
 import { normalizeSearch } from "../src/core/utils";
 
 const now = 1790000000;
@@ -153,6 +153,23 @@ describe("picked for you, from the stored library", () => {
     ];
     const items = listItems(saved, indexFind(lib, ["m:4", "m:77", "s:1"]), (entry) => listItem(entry as (typeof saved)[0], ""));
     expect(items[0].title + ", " + items[1].title + " " + items[1].ext + ", " + items[2].kind).toBe("Jatt & Juliet, Not Here avi, series");
+  });
+});
+
+describe("the rows picked last time", () => {
+  beforeEach(() => useStore(new MemoryStore()));
+
+  it("come back as they were, for the next launch", () => {
+    expect(savedPicks()).toEqual([]);
+    savePicks([
+      { slot: "picks", title: "Top picks for you", items: [makeItem({ kind: "movie", itemId: "4", title: "Jatt & Juliet", poster: "http://img/4.jpg", ext: "mkv", year: "2012" }), makeItem({ kind: "series", itemId: "1", seriesId: "1", title: "Panchayat" })] },
+      { slot: "s:1", title: "Because you watched Panchayat", items: [] },
+    ]);
+    const back = savedPicks();
+    expect(back.map((r) => r.slot + " " + r.title + " " + r.items.length)).toEqual(["picks Top picks for you 2", "s:1 Because you watched Panchayat 0"]);
+    const [movie, series] = back[0].items;
+    expect([movie.kind, movie.itemId, movie.title, movie.poster, movie.ext, movie.year].join("|")).toBe("movie|4|Jatt & Juliet|http://img/4.jpg|mkv|2012");
+    expect([series.kind, series.itemId, series.seriesId, series.title].join("|")).toBe("series|1|1|Panchayat");
   });
 });
 

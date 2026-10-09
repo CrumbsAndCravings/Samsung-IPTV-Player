@@ -20,10 +20,13 @@ export interface Screen extends KeyTarget {
   onShow?(): void;
   onHide?(): void;
   destroy?(): void;
+  // Comes and goes without a move (the player, so the video starts with nothing else
+  // for the TV to draw).
+  readonly instant?: boolean;
 }
 
 const MOVE_IN_MS = 400; // the longest screen arrival (Details, 380 ms)
-const MOVE_OUT_MS = 260; // a screen leaving or sinking back (240 ms)
+const MOVE_OUT_MS = 260; // a screen leaving (240 ms)
 
 export class App {
   private stack: Screen[] = [];
@@ -66,20 +69,21 @@ export class App {
     setSecrets(secrets);
   }
 
-  // Screens move (motion.css): the new one slides in while the one underneath sinks back
-  // and is then hidden; leaving, the top one goes back the way it came and the one
-  // underneath comes up again. Keys belong to the new top screen at once.
+  // Screens move (motion.css): the new one slides in over the dark page, the one
+  // underneath hidden at once; leaving, the top one goes back the way it came over the
+  // one underneath, which is simply there again. Only one screen moves at a time, since
+  // the TV slows down drawing two whole screens at once. Keys belong to the new top
+  // screen at once.
   push(screen: Screen): void {
     const below = this.top;
     if (below) {
       if (below.onHide) below.onHide();
-      this.animate(below.el, "is-sinking", MOVE_OUT_MS, () => {
-        if (this.top !== below) below.el.style.display = "none";
-      });
+      this.still(below.el);
+      below.el.style.display = "none";
     }
     this.stack.push(screen);
     this.root.appendChild(screen.el);
-    this.animate(screen.el, "is-entering", MOVE_IN_MS);
+    if (!screen.instant) this.animate(screen.el, "is-entering", MOVE_IN_MS);
     setKeyTarget(screen);
     if (screen.onShow) screen.onShow();
   }
@@ -89,12 +93,17 @@ export class App {
     const top = this.stack.pop() as Screen;
     if (top.onHide) top.onHide();
     if (top.destroy) top.destroy();
-    this.animate(top.el, "is-leaving", MOVE_OUT_MS, () => {
+    const remove = (): void => {
       if (top.el.parentNode) top.el.parentNode.removeChild(top.el);
-    });
+    };
+    if (top.instant) {
+      this.still(top.el);
+      remove();
+    } else {
+      this.animate(top.el, "is-leaving", MOVE_OUT_MS, remove);
+    }
     const below = this.top as Screen;
     below.el.style.display = "";
-    this.animate(below.el, "is-returning", MOVE_IN_MS);
     setKeyTarget(below);
     if (below.onShow) below.onShow();
   }
@@ -112,12 +121,8 @@ export class App {
   // Plays one of motion.css's screen moves on `el`, then `done`. A newer move on the same
   // screen replaces it.
   private animate(el: HTMLElement, name: string, ms: number, done?: () => void): void {
-    const pending = this.moving.get(el);
-    if (pending) {
-      window.clearTimeout(pending.timer);
-      el.classList.remove(pending.name);
-    }
-    void el.offsetWidth;
+    // Started again from the top when a move was still playing.
+    if (this.still(el)) void el.offsetWidth;
     el.classList.add(name);
     const timer = window.setTimeout(() => {
       this.moving.delete(el);
@@ -125,6 +130,16 @@ export class App {
       if (done) done();
     }, ms);
     this.moving.set(el, { name, timer });
+  }
+
+  // Stops a move still playing on `el` (its `done` doesn't run).
+  private still(el: HTMLElement): boolean {
+    const pending = this.moving.get(el);
+    if (!pending) return false;
+    window.clearTimeout(pending.timer);
+    el.classList.remove(pending.name);
+    this.moving.delete(el);
+    return true;
   }
 
 

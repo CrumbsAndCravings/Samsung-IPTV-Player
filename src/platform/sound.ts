@@ -1,9 +1,9 @@
 // Soft click sounds (the Roku app's 0.5.5; docs/features.md §10): a glassy tick for
 // moving, a little rising pop with a ping for choosing, the pop falling for going back.
 // The same files as the Roku's (its tools/make_sounds.py), quiet by design. Played
-// through Web Audio, which starts them at once; none while a video plays or the intro
-// runs, and none when turned off in the account menu. Moves closer than 60 ms apart (a
-// key held down) tick once.
+// through Web Audio, which starts them at once; none while a video plays (Web Audio
+// sleeps through it) or the intro runs, and none when turned off in the account menu.
+// Moves closer than 60 ms apart (a key held down) tick once.
 
 import backUrl from "../../assets/sounds/back.wav";
 import moveUrl from "../../assets/sounds/move.wav";
@@ -63,9 +63,18 @@ export function loadSounds(): void {
   }
 }
 
-// Keeps the sounds off while something plays (`on`), and on again after.
-export function hushSounds(on: boolean): void {
+// Keeps the sounds off while something plays (`on`), and on again after. A video also
+// puts Web Audio to sleep (`sleep`), so it doesn't hold the TV's sound output while the
+// player opens and plays.
+export function hushSounds(on: boolean, sleep = false): void {
   quiet = Math.max(0, quiet + (on ? 1 : -1));
+  if (!sleep || !ctx) return;
+  try {
+    if (on && ctx.state === "running") void ctx.suspend();
+    else if (!on && ctx.state === "suspended") void ctx.resume();
+  } catch {
+    // Asleep or not, never worth an error.
+  }
 }
 
 export function playSound(name: SoundName): void {

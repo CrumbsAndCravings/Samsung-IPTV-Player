@@ -1,9 +1,11 @@
 // The ARAN+ sting, played with the intro (intro.ts): ARAN+'s own take on a streaming
 // service's opening sound, made here with Web Audio rather than recorded. The iPhone app's
-// (web-iptv-player, src/ui/sting.ts), as it is; the Roku plays a recording of it. A soft low
+// (web-iptv-player, src/ui/sting.ts), with one change for the TV: its room echo is two
+// short delays fed back, not a convolution reverb, which took the TV's processor (making
+// the impulse, then convolving it) just as the intro had to move smoothly. A soft low
 // knock; then a big boom with a dreamy chord (D major 9) blooming out of it through an
 // opening filter; two bell-like pings for the plus; and a rising whoosh as the intro
-// flies into the app. About three seconds, with a reverb tail.
+// flies into the app. About three seconds, with an echo tail.
 //
 // It works on any BaseAudioContext, so it can also be rendered offline (to listen to it
 // as a file, or to test it).
@@ -13,7 +15,10 @@
 // the app, whenever that is (playWhoosh).
 export const BEAT = { knock: 0.1, boom: 0.5, pings: [0.68, 0.82] };
 export const STING_SECONDS = 3.4; // until the chord has died away (the reverb rings on)
-const REVERB_SECONDS = 2.4;
+const ECHOES: [number, number][] = [
+  [0.113, 0.42],
+  [0.187, 0.36],
+];
 
 // D3, A3, E4, F#4, C#5: open, warm and a little wistful.
 const CHORD = [146.83, 220.0, 329.63, 369.99, 554.37];
@@ -32,11 +37,25 @@ export function playSting(ctx: BaseAudioContext, start = ctx.currentTime + 0.05)
   master.connect(limiter);
   limiter.connect(ctx.destination);
 
-  const reverb = ctx.createConvolver();
-  reverb.buffer = impulse(ctx, REVERB_SECONDS);
+  // The room: two delays, each fed back into itself, through a low-pass so the echoes
+  // darken as they die away.
+  const reverb = ctx.createGain();
   const wet = ctx.createGain();
-  wet.gain.value = 0.38;
-  reverb.connect(wet);
+  wet.gain.value = 0.3;
+  const darken = ctx.createBiquadFilter();
+  darken.type = "lowpass";
+  darken.frequency.value = 3200;
+  reverb.connect(darken);
+  for (const [seconds, feedback] of ECHOES) {
+    const delay = ctx.createDelay(1);
+    delay.delayTime.value = seconds;
+    const back = ctx.createGain();
+    back.gain.value = feedback;
+    darken.connect(delay);
+    delay.connect(back);
+    back.connect(delay);
+    delay.connect(wet);
+  }
   wet.connect(master);
 
   // A sound's way out: straight on, and some of it into the reverb.
@@ -180,13 +199,3 @@ function noiseBuffer(ctx: BaseAudioContext, seconds: number): AudioBuffer {
   return buffer;
 }
 
-// A room's echo: two channels of noise fading away, a little differently on each side.
-function impulse(ctx: BaseAudioContext, seconds: number): AudioBuffer {
-  const length = Math.floor(ctx.sampleRate * seconds);
-  const buffer = ctx.createBuffer(2, length, ctx.sampleRate);
-  for (let channel = 0; channel < 2; channel++) {
-    const data = buffer.getChannelData(channel);
-    for (let i = 0; i < length; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, 2.8);
-  }
-  return buffer;
-}

@@ -47,7 +47,7 @@ export function showIntro(host: HTMLElement): void {
   }
   // Drawn, not typed: a drawn plus's middle is exactly the middle of its box, which the
   // flight through it centres on.
-  const plus = h("span", { class: "intro-plus" }, [h("span", { class: "intro-plus-mark" }), ...sparks]);
+  const plus = h("span", { class: "intro-plus" }, [h("span", { class: "intro-plus-glow" }), h("span", { class: "intro-plus-mark" }), ...sparks]);
   const logo = h("div", { class: "intro-logo" }, [...letters, plus]);
   const rays: HTMLElement[] = [];
   for (let i = 0; i < RAYS; i++) {

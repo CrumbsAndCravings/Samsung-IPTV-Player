@@ -37,9 +37,11 @@ describe("signing in", () => {
     noteLogin(jane);
     writeJson("mylist", "items", [{ k: "m:1" }]);
     writeJson("taste", "history", [{ k: "m:1" }]);
+    writeJson("taste", "picks", [{ s: "picks", t: "Top picks for you", i: [["m", "1", "Jawan", "", "mkv", "2023"]] }]);
     noteLogin({ server: "http://other.example", username: "sam", password: "x" });
     expect(readJson("mylist", "items")).toBeUndefined();
     expect(readJson("taste", "history")).toBeUndefined();
+    expect(readJson("taste", "picks")).toBeUndefined();
     expect(movedFromSpace()).toBe("");
   });
 

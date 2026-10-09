@@ -7,8 +7,9 @@
 /* --- Screens ------------------------------------------------------------------------ */
 
 /* A page slides in from the right and leaves the same way; Details rises like a card and
-   drops away; the player, Home and sign-in fade. The page underneath sinks back and
-   comes up again when you return (app.ts). */
+   drops away; Home and sign-in fade. Only one screen moves at a time: the page underneath
+   is hidden at once and simply there again when you return, and the player comes and
+   goes without a move (app.ts). */
 .screen.is-entering {
   animation: screen-in 300ms var(--ease-emphasized) both;
 }
@@ -16,7 +17,6 @@
   animation-name: details-in;
   animation-duration: 380ms;
 }
-.screen.player.is-entering,
 .screen.home.is-entering,
 .screen.login.is-entering {
   animation-name: fade-in;
@@ -27,15 +27,6 @@
 }
 .screen.details.is-leaving {
   animation-name: details-out;
-}
-.screen.player.is-leaving {
-  animation-name: fade-out;
-}
-.screen.is-sinking {
-  animation: sink 240ms var(--ease-exit) forwards;
-}
-.screen.is-returning {
-  animation: rise-back 300ms var(--ease-emphasized) both;
 }
 @keyframes screen-in {
   from {
@@ -67,27 +58,6 @@
   to {
     opacity: 0;
     transform: translateY(60px);
-  }
-}
-@keyframes fade-out {
-  to {
-    opacity: 0;
-  }
-}
-@keyframes sink {
-  to {
-    opacity: 0;
-    transform: scale(0.97);
-  }
-}
-@keyframes rise-back {
-  from {
-    opacity: 0;
-    transform: scale(0.97);
-  }
-  to {
-    opacity: 1;
-    transform: none;
   }
 }
 
@@ -167,9 +137,11 @@
 .poster-img.is-loaded {
   opacity: 1;
 }
-/* Progress bars fill in after the pictures. */
+/* Progress bars fill in after the pictures, as their row arrives. */
 .poster-fill {
   transform-origin: 0 50%;
+}
+.poster.is-arriving .poster-fill {
   animation: fill-in 800ms var(--ease-emphasized) 300ms both;
 }
 @keyframes fill-in {

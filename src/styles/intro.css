@@ -1,7 +1,11 @@
 /* The intro when ARAN+ opens (src/ui/intro.ts), in time with its sting (src/ui/sting.ts:
    knock 0.1 s, boom 0.5 s, pings 0.68 and 0.82 s), after the iPhone app's intro.css. For
    the TV's Chromium 69: no inset or clamp(), and no custom properties inside keyframes
-   (each ray and spark is turned on its own arm instead, and delays are set inline). */
+   (each ray and spark is turned on its own arm instead, and delays are set inline). And
+   for its speed, only transform and opacity move: no animated filters (a blur or a glow
+   redrawn every frame), the plus's glow is a soft picture of its own, and the logo is
+   drawn once and only moved (will-change), so the flight through the plus doesn't
+   redraw it 70 times bigger. */
 
 .intro {
   position: absolute;
@@ -20,6 +24,7 @@
 /* --- The logo --- */
 .intro-logo {
   position: relative;
+  will-change: transform;
   display: flex;
   align-items: baseline;
   font-family: var(--font-display);
@@ -32,7 +37,6 @@
 .intro-letter {
   display: inline-block;
   opacity: 0;
-  text-shadow: 0 0 36px rgba(201, 184, 255, 0.45);
 }
 /* The plus: two pink bars, sitting where the font's own plus would. */
 .intro-plus {
@@ -48,7 +52,16 @@
   top: 0;
   right: 0;
   bottom: 0;
-  filter: drop-shadow(0 0 0.1em rgba(255, 158, 207, 0.9)) drop-shadow(0 0 0.28em rgba(255, 158, 207, 0.45));
+}
+/* The plus's glow: a soft pink light behind it, faded rather than filtered. */
+.intro-plus-glow {
+  position: absolute;
+  left: -0.45em;
+  top: -0.45em;
+  width: 1.5em;
+  height: 1.5em;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 158, 207, 0.75) 0%, rgba(255, 158, 207, 0.25) 35%, rgba(255, 158, 207, 0) 68%);
 }
 .intro-plus-mark::before,
 .intro-plus-mark::after {
@@ -74,7 +87,12 @@
 @keyframes plus-breathe {
   50% {
     transform: scale(1.12);
-    filter: drop-shadow(0 0 0.14em rgba(255, 158, 207, 1)) drop-shadow(0 0 0.4em rgba(255, 158, 207, 0.6));
+  }
+}
+@keyframes glow-breathe {
+  50% {
+    opacity: 1;
+    transform: scale(1.18);
   }
 }
 
@@ -90,7 +108,6 @@
   }
   25% {
     transform: scale(1.55);
-    filter: brightness(1.6);
   }
 }
 .intro.is-playing .intro-letter {
@@ -106,12 +123,10 @@
   from {
     opacity: 0;
     transform: scale(1.5);
-    filter: blur(12px);
   }
   to {
     opacity: 1;
     transform: none;
-    filter: none;
   }
 }
 @keyframes letter-out {
@@ -131,21 +146,23 @@
     plus-ping 300ms var(--ease-emphasized) 820ms,
     plus-breathe 2.2s ease-in-out 1300ms infinite;
 }
-.intro.is-leaving .intro-plus-mark {
-  animation: glow-off 160ms ease-out forwards;
+.intro.is-playing .intro-plus-glow {
+  opacity: 0.7;
+  animation: glow-breathe 2.2s ease-in-out 1300ms infinite;
 }
-@keyframes glow-off {
+/* Its glow goes before the flight through the plus. */
+.intro.is-leaving .intro-plus-glow {
+  animation: fade-away 160ms ease-out forwards;
+}
+@keyframes fade-away {
   to {
-    filter: none;
+    opacity: 0;
   }
 }
 /* A quarter turn: a plus looks the same after it, so it reads as a spin. */
 @keyframes plus-ping {
   0% {
     transform: rotate(0deg);
-  }
-  40% {
-    filter: brightness(1.8) drop-shadow(0 0 0.14em rgba(255, 158, 207, 1));
   }
   50% {
     transform: rotate(45deg) scale(1.25);
@@ -169,7 +186,6 @@
   height: 8px;
   border-radius: 50%;
   background: #fff;
-  box-shadow: 0 0 15px var(--pink);
   opacity: 0;
 }
 .intro.is-playing .intro-spark {
@@ -193,15 +209,18 @@
 }
 
 /* The boom's glow, and light rays bursting out behind the logo. */
+/* Drawn small and shown big: a soft gradient loses nothing, and the TV moves a quarter of
+   the picture. */
 .intro-glow {
   position: absolute;
-  left: 0;
-  top: -420px;
-  width: 1920px;
-  height: 1920px;
+  left: 480px;
+  top: 60px;
+  width: 960px;
+  height: 960px;
   background: radial-gradient(circle, rgba(201, 184, 255, 0.55) 0%, rgba(255, 158, 207, 0.22) 22%, rgba(21, 16, 40, 0) 48%);
   opacity: 0;
   pointer-events: none;
+  will-change: transform, opacity;
 }
 .intro.is-playing .intro-glow {
   animation: glow-bloom 1500ms var(--ease-emphasized) 480ms both;
@@ -209,15 +228,15 @@
 @keyframes glow-bloom {
   0% {
     opacity: 0;
-    transform: scale(0.3);
+    transform: scale(0.6);
   }
   22% {
     opacity: 1;
-    transform: scale(1.08);
+    transform: scale(2.16);
   }
   100% {
     opacity: 0.4;
-    transform: scale(1);
+    transform: scale(2);
   }
 }
 .intro-rays {

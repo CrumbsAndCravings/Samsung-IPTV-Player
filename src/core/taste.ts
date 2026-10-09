@@ -3,7 +3,8 @@
 // (taste/history). The stored library knows every title's category, so the history
 // turns into a liking for each category (likingFrom) and titles are picked from there
 // (core/search.ts, indexPersonal) without asking the provider for anything. Home keeps
-// the likings (taste/scores) to order its rows.
+// the likings (taste/scores) to order its rows, and the rows picked last (taste/picks)
+// to show at once at the next launch.
 //
 // History entries, newest first, at most TASTE_MAX:
 //   k   "m:<streamId>" or "s:<seriesId>"
@@ -16,8 +17,9 @@
 //       off the history.
 //   t   when (seconds)
 
+import { Item, makeItem } from "./items";
 import { readJson, writeJson } from "./storage";
-import { fieldStr, isArr, isObj, Json } from "./utils";
+import { field, fieldStr, isArr, isObj, Json, toStr } from "./utils";
 
 export const TASTE_MAX = 30;
 
@@ -205,6 +207,44 @@ export function tasteSaveScores(scores: { [key: string]: number }): void {
   const kept: { [key: string]: number } = {};
   for (const key of ranked) kept[key] = Math.floor(scores[key] * 100) / 100;
   writeJson("taste", "scores", kept);
+}
+
+// A row picked for you: "list" (My List's pictures), "picks" (Top picks for you) or the
+// key of the title a "Because you watched" row is about.
+export interface SavedPicks {
+  slot: string;
+  title: string;
+  items: Item[];
+}
+
+// The rows picked for you last time, kept small: each title as [m or s, id, name,
+// poster, extension, year].
+export function savedPicks(): SavedPicks[] {
+  const raw = readJson("taste", "picks");
+  if (!isArr(raw)) return [];
+  const out: SavedPicks[] = [];
+  for (const row of raw) {
+    const items = field(row, "i");
+    if (!isArr(items)) continue;
+    out.push({
+      slot: fieldStr(row, "s"),
+      title: fieldStr(row, "t"),
+      items: items.filter(isArr).map((v: Json[]) => {
+        const series = v[0] === "s";
+        return makeItem({ kind: series ? "series" : "movie", itemId: toStr(v[1]), seriesId: series ? toStr(v[1]) : "", title: toStr(v[2]), poster: toStr(v[3]), ext: toStr(v[4]), year: toStr(v[5]) });
+      }),
+    });
+  }
+  return out;
+}
+
+export function savePicks(rows: SavedPicks[]): void {
+  const compact = rows.map((row) => ({ s: row.slot, t: row.title, i: row.items.map((i) => [i.kind === "series" ? "s" : "m", i.itemId, i.title, i.poster, i.ext, i.year]) }));
+  try {
+    writeJson("taste", "picks", compact);
+  } catch {
+    // Kept for next time only when there's room.
+  }
 }
 
 // The likings key of a category: "vod:12" or "series:7".
