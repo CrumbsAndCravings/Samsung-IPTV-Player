@@ -33,9 +33,19 @@ try {
   await page.goto(`http://localhost:${port}/`);
   await page.evaluate(() => {
     localStorage.clear();
+    globalThis.indexedDB.deleteDatabase("aranplus");
+  });
+  // The intro, mid-way (ARAN punched in, rays out), then off for the rest: it keeps the
+  // keys while it plays.
+  await page.reload();
+  await page.waitForSelector(".intro.is-playing");
+  await page.waitForTimeout(500);
+  await page.screenshot({ path: path.join(out, "intro.png") });
+  console.log("saved out/screens/intro.png");
+  await page.evaluate(() => {
     // The languages a personal build would set (English, Hindi, Punjabi).
     localStorage.setItem("aranplus:prefs:languages", JSON.stringify(["en", "hi", "pa"]));
-    globalThis.indexedDB.deleteDatabase("aranplus");
+    localStorage.setItem("aranplus:prefs:player", JSON.stringify({ intro: "off" }));
   });
   await page.reload();
   await page.waitForSelector(".screen.login");

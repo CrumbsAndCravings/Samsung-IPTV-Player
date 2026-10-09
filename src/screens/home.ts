@@ -26,6 +26,9 @@ import { Json, sizedImage } from "../core/utils";
 import { Category, POSTER_SIZE } from "../core/xtream";
 import { ApiError } from "../data/api";
 import { librarySaved } from "../data/library";
+import { savePref } from "../core/storage";
+import { soundsOn } from "../platform/sound";
+import { introOn, introReady } from "../ui/intro";
 import type { Key } from "../platform/keys";
 import { h, setText, toggle } from "../ui/dom";
 import { COL_W, itemKey, posterEl } from "../ui/poster";
@@ -40,6 +43,7 @@ import { SubtitleSetupScreen } from "./subtitle-setup";
 
 const TABS = ["Home", "Movies", "Series", "Categories", "Search"];
 const ACCOUNT = TABS.length; // nav cursor index of the account button
+const TAB_W = 168; // the glass bar's equal tab slots (the Roku's 112 px at 720p)
 
 const ROW_H = 345; // title, poster and the gap below
 const FULL_COLS = 9; // posters fully in view
@@ -80,6 +84,7 @@ interface RowState {
   // Rows picked for you: "list" (My List), "picks" (Top picks for you), or the key of the
   // title a "Because you watched" row is about.
   slot: string;
+  arriving: boolean; // its titles just came: they build in when next drawn
   col: number; // focused poster
   scroll: number; // first poster in view
   el: HTMLElement | null;
@@ -96,7 +101,13 @@ function placeholders(): Item[] {
 export class HomeScreen implements Screen {
   readonly el: HTMLElement;
   private tabEls: HTMLElement[];
-  private navHighlight: HTMLElement;
+  private navEl: HTMLElement;
+  private lens: HTMLElement; // the glass lens on the current tab (moves)
+  private lensBody: HTMLElement; // its shape (stretches, lifts, wobbles)
+  private lensCopy: HTMLElement; // the tab names again, inside the lens
+  private lensCopies: HTMLElement[];
+  private lensAt = -1;
+  private pressTimer = 0;
   private accountEl: HTMLElement;
   private heroEl: HTMLElement;
   private heroTitle: HTMLElement;
@@ -133,7 +144,14 @@ export class HomeScreen implements Screen {
 
   constructor(private app: App) {
     this.tabEls = TABS.map((name) => h("div", { class: "nav-tab", text: name }));
-    this.navHighlight = h("div", { class: "nav-highlight" });
+    // The glass bar (the Roku app's 0.5.5, after iOS 26's tab bar): a lens rests on the
+    // current tab; with the bar focused it's lit lavender, follows the cursor and springs
+    // from tab to tab, the names inside it a second, dark copy clipped to it.
+    this.lensCopies = TABS.map((name) => h("div", { class: "nav-lens-name", text: name }));
+    this.lensCopy = h("div", { class: "nav-lens-copy" }, this.lensCopies);
+    this.lensBody = h("div", { class: "nav-lens-body" }, [this.lensCopy]);
+    this.lens = h("div", { class: "nav-lens" }, [this.lensBody]);
+    this.navEl = h("div", { class: "nav" }, this.tabEls.concat([this.lens]));
     this.accountEl = h("div", { class: "nav-account", attrs: { "aria-label": "Account" } });
     this.accountEl.innerHTML =
       '<svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true"><circle cx="12" cy="8.5" r="4.2" fill="currentColor"/><path d="M3.8 20.5c1.2-4.1 4.4-6.2 8.2-6.2s7 2.1 8.2 6.2" fill="currentColor"/></svg>';
@@ -151,7 +169,7 @@ export class HomeScreen implements Screen {
       h("div", { class: "glow glow-lavender" }),
       h("div", { class: "glow glow-pink" }),
       h("div", { class: "logo home-logo" }, [h("span", { class: "logo-name", text: "ARAN" }), h("span", { class: "logo-plus", text: "+" })]),
-      h("div", { class: "nav" }, [this.navHighlight].concat(this.tabEls)),
+      this.navEl,
       this.accountEl,
       this.heroEl,
       h("div", { class: "rows-viewport" }, [this.track]),
@@ -237,6 +255,8 @@ export class HomeScreen implements Screen {
       return;
     }
     setText(this.status, "");
+    // The intro may fly in now (ui/intro.ts).
+    introReady();
     if (this.firstLoad) {
       this.firstLoad = false;
       this.navFocused = false;
@@ -247,7 +267,7 @@ export class HomeScreen implements Screen {
   }
 
   private rowState(title: string, items: Item[], isContinue = false, slot = ""): RowState {
-    return { title, items, isContinue, slot, col: 0, scroll: 0, el: null, strip: null, posters: {} };
+    return { title, items, isContinue, slot, arriving: !items.some((i) => i.placeholder), col: 0, scroll: 0, el: null, strip: null, posters: {} };
   }
 
   private appendRows(count: number): void {
@@ -304,6 +324,7 @@ export class HomeScreen implements Screen {
   // Wraps to three lines; refusals add the usual causes.
   private showLoadError(): void {
     this.failed = true;
+    introReady();
     let text = "Couldn't load your library. " + this.lastError;
     if (this.lastRefused) {
       text += " The provider may have moved to a new address (ask them, then sign out from the account button and back in), the trial may have ended, or they may be blocking your connection for a while.";
@@ -334,6 +355,7 @@ export class HomeScreen implements Screen {
 
   private rebuildRow(row: RowState): void {
     if (row.col >= row.items.length) row.col = Math.max(0, row.items.length - 1);
+    row.arriving = !row.items.some((i) => i.placeholder);
     this.detachRow(row);
     this.renderRows();
   }
@@ -377,11 +399,17 @@ export class HomeScreen implements Screen {
       if (!el) {
         el = posterEl(row.items[i]);
         el.style.transform = "translateX(" + i * COL_W + "px)";
+        // A row's titles build in from the right, 45 ms apart, when they arrive.
+        if (row.arriving && el.firstChild) {
+          el.classList.add("is-arriving");
+          (el.firstChild as HTMLElement).style.animationDelay = Math.max(0, i - row.scroll) * 45 + "ms";
+        }
         row.strip.appendChild(el);
         row.posters[i] = el;
       }
       toggle(el, "is-focused", hasFocus && i === row.col);
     }
+    row.arriving = false;
   }
 
   private moveRow(delta: number): void {
@@ -432,7 +460,9 @@ export class HomeScreen implements Screen {
         meta = "Won't play on this TV (" + check.label + ")" + (meta ? "   ·   " + meta : "");
       }
     }
-    if (titleKey(item) !== "") meta += "   ·   Hold OK for more";
+    // Where it matters most: taking a title off Continue Watching or My List.
+    const row = this.focusedRow();
+    if (titleKey(item) !== "" && row && row.items.indexOf(item) >= 0 && (row.isContinue || row.slot === "list")) meta += "   ·   Hold OK for more";
     setText(this.heroMeta, meta);
     toggle(this.heroMeta, "is-warning", blocked);
     setText(this.heroPlot, item.description);
@@ -477,17 +507,48 @@ export class HomeScreen implements Screen {
   // --- Nav ----------------------------------------------------------------------------
 
   private styleNav(): void {
-    const target = this.navFocused ? this.navCursor : this.tab;
+    const target = Math.min(this.navFocused ? this.navCursor : this.tab, TABS.length - 1);
     this.tabEls.forEach((el, i) => {
       toggle(el, "is-current", i === this.tab);
       toggle(el, "is-focused", this.navFocused && i === this.navCursor);
     });
     toggle(this.accountEl, "is-focused", this.navFocused && this.navCursor === ACCOUNT);
-    const tabEl = this.tabEls[Math.min(target, TABS.length - 1)];
-    toggle(this.navHighlight, "is-active", this.navFocused);
-    toggle(this.navHighlight, "is-hidden", this.navFocused && this.navCursor === ACCOUNT);
-    this.navHighlight.style.transform = "translateX(" + tabEl.offsetLeft + "px)";
-    this.navHighlight.style.width = tabEl.offsetWidth + "px";
+    toggle(this.navEl, "is-focused", this.navFocused);
+    toggle(this.lens, "is-hidden", this.navFocused && this.navCursor === ACCOUNT);
+    // The lens springs to its tab, stretching more the further it goes; the copy inside
+    // moves back by as much, so its names stay over the tabs.
+    if (target !== this.lensAt) {
+      if (this.lensAt >= 0) this.restart(this.lensBody, Math.abs(target - this.lensAt) > 1 ? "is-stretch-far" : "is-stretch", ["is-stretch", "is-stretch-far", "is-jelly"]);
+      this.lensAt = target;
+      this.lens.style.transform = "translateX(" + target * TAB_W + "px)";
+      this.lensCopy.style.transform = "translateX(" + -target * TAB_W + "px)";
+    }
+  }
+
+  // Replays one of the lens's animations (motion: the stretch, the wobble, the pop).
+  private restart(el: HTMLElement, name: string, others: string[]): void {
+    for (const other of others) el.classList.remove(other);
+    void el.offsetWidth;
+    el.classList.add(name);
+  }
+
+  // OK on the bar: it swells and the lens lifts while held; let go (or after a moment,
+  // when OK opened another screen), both spring back, the lens wobbling, its name popping.
+  private pressBar(down: boolean): void {
+    window.clearTimeout(this.pressTimer);
+    if (down) {
+      this.navEl.classList.add("is-pressed");
+      this.pressTimer = window.setTimeout(() => this.pressBar(false), 600);
+      return;
+    }
+    if (!this.navEl.classList.contains("is-pressed")) return;
+    this.navEl.classList.remove("is-pressed");
+    this.restart(this.lensBody, "is-jelly", ["is-stretch", "is-stretch-far", "is-jelly"]);
+    const at = Math.min(this.lensAt, TABS.length - 1);
+    if (at >= 0) {
+      this.restart(this.tabEls[at], "is-popping", ["is-popping"]);
+      this.restart(this.lensCopies[at], "is-popping", ["is-popping"]);
+    }
   }
 
   private focusNav(): void {
@@ -538,6 +599,8 @@ export class HomeScreen implements Screen {
       buttons: [
         { label: "Keep watching" },
         { label: "Online subtitles", action: () => this.app.push(new SubtitleSetupScreen(this.app)) },
+        { label: soundsOn() ? "Turn click sounds off" : "Turn click sounds on", action: () => savePref("sounds", soundsOn() ? "off" : "on") },
+        { label: introOn() ? "Turn the intro off" : "Turn the intro on", action: () => savePref("intro", introOn() ? "off" : "on") },
         { label: "Setup checks", action: () => this.app.push(new SetupChecksScreen(this.app)) },
         { label: "Change server address", action: () => this.app.push(new ServerScreen(this.app)) },
         { label: "Sign out", action: () => this.app.signOut() },
@@ -597,6 +660,7 @@ export class HomeScreen implements Screen {
   }
 
   onKeyUp(key: Key): void {
+    if (key === "ok") this.pressBar(false);
     if (key !== "ok" || !this.holdTimer) return;
     window.clearTimeout(this.holdTimer);
     this.holdTimer = 0;
@@ -809,6 +873,7 @@ export class HomeScreen implements Screen {
         this.styleNav();
         break;
       case "ok":
+        if (this.navCursor !== ACCOUNT) this.pressBar(true);
         this.activateNav();
         break;
       case "down":
@@ -840,6 +905,7 @@ export class HomeScreen implements Screen {
 
   onHide(): void {
     this.backdrop.pause(true);
+    this.pressBar(false);
     window.clearTimeout(this.heroTimer);
     window.clearTimeout(this.heroDebounce);
     window.clearTimeout(this.holdTimer);

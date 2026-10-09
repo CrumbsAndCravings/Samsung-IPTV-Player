@@ -58,18 +58,6 @@ body.playing .screen:not(.player) {
   width: 1920px;
   height: 1080px;
   overflow: hidden;
-  animation: screen-enter 300ms var(--ease-out) both;
-}
-
-@keyframes screen-enter {
-  from {
-    opacity: 0;
-    transform: translateY(27px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
 }
 
 /* Two soft glows behind each screen, from pre-rendered PNGs (no CSS blur on a TV). */

@@ -13,6 +13,7 @@ import { Creds, normalizeServer, parseProviderLink } from "../core/utils";
 import { checkLogin } from "../data/api";
 import type { Key } from "../platform/keys";
 import { h, setText, toggle } from "../ui/dom";
+import { introReady } from "../ui/intro";
 
 interface Field {
   wrap: HTMLElement;
@@ -35,6 +36,8 @@ export class LoginScreen implements Screen {
     private app: App,
     private autoSignIn = false,
   ) {
+    // Nothing to load: the intro may fly in when it's ready (ui/intro.ts).
+    introReady();
     const saved = loadCreds() || builtInCreds();
     this.fields = [
       this.field("Server", "text", "e.g. http://line.example.com:8080", saved ? saved.server : ""),

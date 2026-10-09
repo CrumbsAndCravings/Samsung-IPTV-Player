@@ -46,6 +46,8 @@ export function posterEl(item: Item): HTMLElement {
   const img = h("img", { class: "poster-img", attrs: { alt: "" } });
   if (item.poster) {
     img.onerror = () => img.parentNode && img.parentNode.removeChild(img);
+    // Faded in once it's here (motion.css).
+    img.onload = () => img.classList.add("is-loaded");
     img.src = item.poster;
   }
   const card = h("div", { class: "poster-card" }, [h("div", { class: "poster-fallback", text: item.title }), item.poster ? img : null]);

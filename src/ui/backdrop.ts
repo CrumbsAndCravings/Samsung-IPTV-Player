@@ -26,7 +26,11 @@ export class Backdrop {
   private paused = false;
 
   constructor() {
-    this.layers = [0, 1].map(() => h("img", { class: "backdrop-img", attrs: { alt: "" } }));
+    this.layers = [0, 1].map(() => {
+      const layer = h("img", { class: "backdrop-img", attrs: { alt: "" } });
+      layer.addEventListener("animationend", () => layer.classList.remove("is-settling"));
+      return layer;
+    });
     this.el = h("div", { class: "backdrop" }, [this.layers[0], this.layers[1], h("div", { class: "backdrop-shade" })]);
   }
 
@@ -95,6 +99,12 @@ export class Backdrop {
       const back = this.layers[1 - this.front];
       back.classList.toggle("is-slide", slide);
       back.style.transform = "";
+      // A new title's picture settles from 106 % as it fades in (motion.css).
+      back.classList.remove("is-settling");
+      if (!slide) {
+        void back.offsetWidth;
+        back.classList.add("is-settling");
+      }
       back.src = url;
       back.style.opacity = String(this.opacity);
       const old = this.layers[this.front];
@@ -108,8 +118,18 @@ export class Backdrop {
     probe.src = url;
   }
 
-  // A slow push in, a little longer than the picture shows.
+  // A slow push in, a little longer than the picture shows; after the settle, when the
+  // picture is still settling.
   private zoom(layer: HTMLImageElement): void {
+    if (layer.classList.contains("is-settling")) {
+      const after = () => {
+        layer.removeEventListener("animationend", after);
+        layer.classList.remove("is-settling");
+        if (this.pictures.length > 1 && layer.getAttribute("src") === this.current) this.zoom(layer);
+      };
+      layer.addEventListener("animationend", after);
+      return;
+    }
     layer.classList.add("is-slide");
     layer.style.transform = "scale(1)";
     void layer.offsetWidth;

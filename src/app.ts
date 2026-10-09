@@ -22,8 +22,12 @@ export interface Screen extends KeyTarget {
   destroy?(): void;
 }
 
+const MOVE_IN_MS = 400; // the longest screen arrival (Details, 380 ms)
+const MOVE_OUT_MS = 260; // a screen leaving or sinking back (240 ms)
+
 export class App {
   private stack: Screen[] = [];
+  private moving = new Map<HTMLElement, { name: string; timer: number }>();
   api: XtreamApi | null = null;
   // The whole library for this login: searched, browsed by category and counted. It
   // starts on the first search, category page or Categories tab.
@@ -62,14 +66,20 @@ export class App {
     setSecrets(secrets);
   }
 
+  // Screens move (motion.css): the new one slides in while the one underneath sinks back
+  // and is then hidden; leaving, the top one goes back the way it came and the one
+  // underneath comes up again. Keys belong to the new top screen at once.
   push(screen: Screen): void {
     const below = this.top;
     if (below) {
       if (below.onHide) below.onHide();
-      below.el.style.display = "none";
+      this.animate(below.el, "is-sinking", MOVE_OUT_MS, () => {
+        if (this.top !== below) below.el.style.display = "none";
+      });
     }
     this.stack.push(screen);
     this.root.appendChild(screen.el);
+    this.animate(screen.el, "is-entering", MOVE_IN_MS);
     setKeyTarget(screen);
     if (screen.onShow) screen.onShow();
   }
@@ -79,13 +89,12 @@ export class App {
     const top = this.stack.pop() as Screen;
     if (top.onHide) top.onHide();
     if (top.destroy) top.destroy();
-    if (top.el.parentNode) top.el.parentNode.removeChild(top.el);
+    this.animate(top.el, "is-leaving", MOVE_OUT_MS, () => {
+      if (top.el.parentNode) top.el.parentNode.removeChild(top.el);
+    });
     const below = this.top as Screen;
     below.el.style.display = "";
-    // Replay the enter animation so returning feels like arriving.
-    below.el.classList.remove("screen");
-    void below.el.offsetWidth;
-    below.el.classList.add("screen");
+    this.animate(below.el, "is-returning", MOVE_IN_MS);
     setKeyTarget(below);
     if (below.onShow) below.onShow();
   }
@@ -99,6 +108,25 @@ export class App {
     }
     this.push(screen);
   }
+
+  // Plays one of motion.css's screen moves on `el`, then `done`. A newer move on the same
+  // screen replaces it.
+  private animate(el: HTMLElement, name: string, ms: number, done?: () => void): void {
+    const pending = this.moving.get(el);
+    if (pending) {
+      window.clearTimeout(pending.timer);
+      el.classList.remove(pending.name);
+    }
+    void el.offsetWidth;
+    el.classList.add(name);
+    const timer = window.setTimeout(() => {
+      this.moving.delete(el);
+      el.classList.remove(name);
+      if (done) done();
+    }, ms);
+    this.moving.set(el, { name, timer });
+  }
+
 
   dialog(options: DialogOptions): void {
     new Dialog(this.root, options, this.top).open();

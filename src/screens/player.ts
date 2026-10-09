@@ -34,6 +34,7 @@ import { send } from "../platform/http";
 import type { Key } from "../platform/keys";
 import { errorLabel, PlayerEvents } from "../platform/player";
 import { getPlayer } from "../platform/players";
+import { hushSounds } from "../platform/sound";
 import { append, clear, h, setText, toggle } from "../ui/dom";
 import { SubtitleSetupScreen } from "./subtitle-setup";
 
@@ -240,19 +241,22 @@ export class PlayerScreen implements Screen {
     this.bubbleEl = h("div", { class: "player-bubble" });
     this.noteEl = h("div", { class: "player-note" });
     this.buttonsEl = h("div", { class: "player-buttons" });
+    // Dragged on (the Roku app's 0.5.14): Back and the title slide in from the left, the
+    // bar, the times and the buttons come up from under the screen (motion.css).
     this.controlsEl = h("div", { class: "player-controls" }, [
       h("div", { class: "player-top-fade" }),
       h("div", { class: "player-bottom-fade" }),
-      this.backEl,
-      this.titleEl,
-      this.playEl,
-      this.elapsedEl,
-      h("div", { class: "player-bar" }, [h("div", { class: "bar-track" }), this.fillEl, this.previewEl]),
-      this.knobEl,
-      this.bubbleEl,
-      this.remainingEl,
-      this.noteEl,
-      this.buttonsEl,
+      h("div", { class: "player-drag player-drag-top" }, [this.backEl, this.titleEl]),
+      h("div", { class: "player-drag player-drag-bottom" }, [
+        this.playEl,
+        this.elapsedEl,
+        h("div", { class: "player-bar" }, [h("div", { class: "bar-track" }), this.fillEl, this.previewEl]),
+        this.knobEl,
+        this.bubbleEl,
+        this.remainingEl,
+        this.noteEl,
+        this.buttonsEl,
+      ]),
     ]);
     this.coverEl = h("div", { class: "player-cover is-visible" });
     this.restEl = h("div", { class: "player-rest" });
@@ -862,7 +866,20 @@ export class PlayerScreen implements Screen {
   }
 
   private renderPlayButton(): void {
-    this.playEl.innerHTML = this.paused ? PLAY_ICON : PAUSE_ICON;
+    const shows = this.paused ? "play" : "pause";
+    if (this.playEl.getAttribute("data-icon") !== shows) {
+      const first = !this.playEl.getAttribute("data-icon");
+      this.playEl.setAttribute("data-icon", shows);
+      this.playEl.innerHTML = this.paused ? PLAY_ICON : PAUSE_ICON;
+      if (first) {
+        toggle(this.playEl, "is-focused", this.row === "bar");
+        return;
+      }
+      // Play turning into pause (and back) pops (motion.css).
+      this.playEl.classList.remove("is-popping");
+      void this.playEl.offsetWidth;
+      this.playEl.classList.add("is-popping");
+    }
     toggle(this.playEl, "is-focused", this.row === "bar");
   }
 
@@ -1290,6 +1307,8 @@ export class PlayerScreen implements Screen {
   onShow(): void {
     document.body.classList.add("playing");
     if (this.app.library) this.app.library.hold(true);
+    // No click sounds over a video.
+    this.hush(true);
     if (this.booted) {
       // Back from the online subtitles setup: pick up the account, panel still open.
       this.online.configured = loadOsAccount() !== null;
@@ -1308,6 +1327,15 @@ export class PlayerScreen implements Screen {
   onHide(): void {
     document.body.classList.remove("playing");
     if (this.app.library) this.app.library.hold(false);
+    this.hush(false);
+  }
+
+  private hushed = false;
+
+  private hush(on: boolean): void {
+    if (on === this.hushed) return;
+    this.hushed = on;
+    hushSounds(on);
   }
 
   destroy(): void {

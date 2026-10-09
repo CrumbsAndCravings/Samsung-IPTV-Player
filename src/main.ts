@@ -8,10 +8,12 @@ import { noteLogin } from "./core/account";
 import { applyBuiltInLogin, applyBuiltInSubtitles, builtInCreds } from "./core/personal";
 import { loadCreds } from "./core/storage";
 import { registerKeys } from "./platform/keys";
+import { loadSounds } from "./platform/sound";
 import { getPlayer } from "./platform/players";
 import { HomeScreen } from "./screens/home";
 import { LoginScreen } from "./screens/login";
 import { startKeys } from "./ui/focus";
+import { showIntro } from "./ui/intro";
 
 function boot(): void {
   log("ARAN+ " + __APP_VERSION__ + " starting");
@@ -20,6 +22,7 @@ function boot(): void {
 
   registerKeys();
   startKeys();
+  loadSounds();
 
   // AVPlay must let go of the decoder while the app is in the background.
   document.addEventListener("visibilitychange", () => {
@@ -38,6 +41,8 @@ function boot(): void {
 
   const root = document.getElementById("app");
   if (!root) return;
+  // The intro plays over the first screen, which loads underneath (ui/intro.ts).
+  showIntro(root);
   const app = new App(root);
   app.onSignedIn = (creds) => {
     // The same account at a new address keeps everything; another clears what this TV

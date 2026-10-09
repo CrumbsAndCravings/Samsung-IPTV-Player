@@ -6,6 +6,8 @@
   top: 0;
   width: 1410px;
   height: 810px;
+  /* The moving banner zooms its pictures: they stay inside, under the shade. */
+  overflow: hidden;
 }
 .backdrop-img {
   position: absolute;
@@ -50,62 +52,184 @@
 }
 
 /* Nav bar: tab labels over one highlight that glides between them. */
+/* The glass tab bar (the Roku app's 0.5.5, after iOS 26's): a translucent plum pill with
+   light along its top, a rim and a soft shadow (drawn: the TV can't blur what's behind).
+   A glass lens rests on the current tab, clear with the name in white; with the bar
+   focused it's lit lavender and follows the cursor, the names inside it dark (a second
+   copy of the names, clipped to the lens). It springs from tab to tab, stretching by how
+   far it goes; OK swells the bar and lifts the lens, which wobbles back like jelly. */
 .nav {
   position: absolute;
-  left: 348px;
-  top: 36px;
-  height: 60px;
+  left: 342px;
+  top: 30px;
+  width: 852px;
+  height: 72px;
+  box-sizing: border-box;
+  padding: 6px;
+  border-radius: 36px;
   white-space: nowrap;
+  background: linear-gradient(rgba(67, 55, 122, 0.66), rgba(36, 28, 66, 0.66));
+  box-shadow:
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.24),
+    inset 0 0 0 1.5px rgba(201, 184, 255, 0.18),
+    0 15px 42px rgba(0, 0, 0, 0.45);
+  transition: transform 420ms var(--ease-spring);
 }
-.nav-tab {
-  position: relative;
+.nav.is-pressed {
+  transform: scale(1.04);
+  transition: transform 160ms ease-out;
+}
+.nav-tab,
+.nav-lens-name {
   display: inline-block;
+  width: 168px;
   height: 60px;
   line-height: 60px;
-  padding: 0 30px;
-  margin-right: 6px;
-  border-radius: var(--radius-button);
+  text-align: center;
   font-family: var(--font-display);
   font-weight: 500;
   font-size: 28px;
+}
+.nav-tab {
+  position: relative;
+  vertical-align: top;
   color: #a195cc;
   transition: color 150ms linear;
 }
 .nav-tab.is-current {
   color: var(--text);
 }
-.nav-tab.is-focused {
-  color: var(--on-focus);
+.nav-lens {
+  position: absolute;
+  left: 6px;
+  top: 6px;
+  width: 168px;
+  height: 60px;
+  transition:
+    transform 620ms var(--ease-spring),
+    opacity 150ms linear;
 }
-.nav-highlight {
+.nav-lens.is-hidden {
+  opacity: 0;
+}
+.nav-lens-body {
   position: absolute;
   left: 0;
   top: 0;
+  width: 168px;
   height: 60px;
-  width: 0;
-  border-radius: var(--radius-button);
-  background: var(--pill);
-  transition: transform 220ms var(--ease-out), width 220ms var(--ease-out), background-color 150ms linear, opacity 150ms linear;
+  border-radius: 30px;
+  overflow: hidden;
+  background: linear-gradient(rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0.06) 55%, rgba(255, 255, 255, 0.1));
+  box-shadow:
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.45),
+    inset 0 0 0 1.5px rgba(255, 255, 255, 0.22),
+    0 6px 18px rgba(0, 0, 0, 0.25);
+  transition:
+    transform 160ms ease-out,
+    background-color 150ms linear;
 }
-.nav-highlight.is-active {
-  background: var(--focus);
+.nav.is-focused .nav-lens-body {
+  background-color: var(--focus);
+  background-image: linear-gradient(rgba(255, 255, 255, 0.4), rgba(255, 255, 255, 0) 60%);
 }
-.nav-highlight.is-hidden {
-  opacity: 0;
+.nav.is-pressed .nav-lens-body {
+  transform: scale(1.1, 1.22);
+  box-shadow:
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.7),
+    inset 0 0 0 2px rgba(255, 158, 207, 0.55),
+    0 9px 24px rgba(0, 0, 0, 0.3);
+}
+/* The names inside the lens move back by as much as the lens moves, so they stay over the
+   tabs (home.ts). */
+.nav-lens-copy {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 840px;
+  white-space: nowrap;
+  color: var(--text);
+  transition: transform 620ms var(--ease-spring);
+}
+.nav.is-focused .nav-lens-copy {
+  color: var(--on-focus);
+}
+/* Springing to another tab, it stretches the way it goes: more, further. */
+.nav-lens-body.is-stretch {
+  animation: lens-stretch 620ms var(--ease-emphasized);
+}
+.nav-lens-body.is-stretch-far {
+  animation: lens-stretch-far 620ms var(--ease-emphasized);
+}
+@keyframes lens-stretch {
+  30% {
+    transform: scale(1.16, 0.9);
+  }
+}
+@keyframes lens-stretch-far {
+  30% {
+    transform: scale(1.32, 0.84);
+  }
+}
+/* Let go: it wobbles back into shape like jelly. */
+.nav-lens-body.is-jelly {
+  animation: lens-jelly 760ms linear;
+}
+@keyframes lens-jelly {
+  0% {
+    transform: scale(1.1, 1.22);
+  }
+  18% {
+    transform: scale(0.94, 0.9);
+  }
+  36% {
+    transform: scale(1.05, 1.06);
+  }
+  54% {
+    transform: scale(0.98, 0.97);
+  }
+  74% {
+    transform: scale(1.01, 1.01);
+  }
+  100% {
+    transform: none;
+  }
+}
+.nav-tab.is-popping,
+.nav-lens-name.is-popping {
+  animation: tab-pop 360ms var(--ease-emphasized);
+}
+@keyframes tab-pop {
+  0% {
+    transform: scale(0.8);
+  }
+  55% {
+    transform: scale(1.12);
+  }
+  100% {
+    transform: none;
+  }
 }
 .nav-account {
   position: absolute;
-  left: 1788px;
-  top: 36px;
-  width: 60px;
-  height: 60px;
+  left: 1782px;
+  top: 30px;
+  width: 72px;
+  height: 72px;
   border-radius: 50%;
-  background: var(--pill);
+  background: linear-gradient(rgba(67, 55, 122, 0.66), rgba(36, 28, 66, 0.66));
+  box-shadow:
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.24),
+    inset 0 0 0 1.5px rgba(201, 184, 255, 0.18),
+    0 15px 42px rgba(0, 0, 0, 0.45);
   color: var(--lavender);
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: transform 150ms var(--ease-out), background-color 150ms linear, color 150ms linear;
+  transition:
+    transform 420ms var(--ease-spring),
+    background-color 150ms linear,
+    color 150ms linear;
 }
 .nav-account.is-focused {
   background: var(--focus);

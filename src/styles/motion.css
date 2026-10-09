@@ -1,0 +1,257 @@
+/* Motion (the Roku app's 0.5.5 and 0.5.14, after the iPhone app's motion.css): screens
+   slide in and the one underneath sinks back, the banner's lines come up one after
+   another, rows of posters build in, pictures fade in once loaded, progress bars fill,
+   focused buttons spring, and the player's controls are dragged on. Only opacity and
+   transform move, which the TV animates without effort. */
+
+/* --- Screens ------------------------------------------------------------------------ */
+
+/* A page slides in from the right and leaves the same way; Details rises like a card and
+   drops away; the player, Home and sign-in fade. The page underneath sinks back and
+   comes up again when you return (app.ts). */
+.screen.is-entering {
+  animation: screen-in 300ms var(--ease-emphasized) both;
+}
+.screen.details.is-entering {
+  animation-name: details-in;
+  animation-duration: 380ms;
+}
+.screen.player.is-entering,
+.screen.home.is-entering,
+.screen.login.is-entering {
+  animation-name: fade-in;
+  animation-timing-function: ease-out;
+}
+.screen.is-leaving {
+  animation: screen-out 240ms var(--ease-exit) forwards;
+}
+.screen.details.is-leaving {
+  animation-name: details-out;
+}
+.screen.player.is-leaving {
+  animation-name: fade-out;
+}
+.screen.is-sinking {
+  animation: sink 240ms var(--ease-exit) forwards;
+}
+.screen.is-returning {
+  animation: rise-back 300ms var(--ease-emphasized) both;
+}
+@keyframes screen-in {
+  from {
+    opacity: 0;
+    transform: translateX(42px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes details-in {
+  from {
+    opacity: 0;
+    transform: translateY(60px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes screen-out {
+  to {
+    opacity: 0;
+    transform: translateX(42px);
+  }
+}
+@keyframes details-out {
+  to {
+    opacity: 0;
+    transform: translateY(60px);
+  }
+}
+@keyframes fade-out {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes sink {
+  to {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+@keyframes rise-back {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* --- The banner ---------------------------------------------------------------------- */
+
+/* A new title's lines come up one after another, 70 ms apart (Details: 40 ms). */
+.hero-enter .hero-title,
+.hero-enter .hero-meta,
+.hero-enter .hero-plot {
+  animation: line-up 420ms var(--ease-emphasized) both;
+}
+.hero-enter .hero-meta {
+  animation-delay: 70ms;
+}
+.hero-enter .hero-plot {
+  animation-delay: 140ms;
+}
+.details.is-entering .details-title,
+.details.is-entering .details-meta,
+.details.is-entering .details-plot,
+.details.is-entering .details-credits {
+  animation: line-up 420ms var(--ease-emphasized) both;
+}
+.details.is-entering .details-meta {
+  animation-delay: 40ms;
+}
+.details.is-entering .details-plot {
+  animation-delay: 80ms;
+}
+.details.is-entering .details-credits {
+  animation-delay: 120ms;
+}
+@keyframes line-up {
+  from {
+    opacity: 0;
+    transform: translateY(21px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* A new title's picture settles as it fades in. */
+.backdrop-img.is-settling {
+  animation: settle 1600ms var(--ease-emphasized) both;
+}
+@keyframes settle {
+  from {
+    transform: scale(1.06);
+  }
+  to {
+    transform: scale(1);
+  }
+}
+
+/* --- Posters ------------------------------------------------------------------------- */
+
+/* A row's posters build in from the right, 45 ms apart, when the row arrives. */
+.poster.is-arriving .poster-frame {
+  animation: poster-in 480ms var(--ease-emphasized) both;
+}
+@keyframes poster-in {
+  from {
+    opacity: 0;
+    transform: translateX(60px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* Pictures fade in once they're here. */
+.poster-img {
+  opacity: 0;
+  transition: opacity 320ms ease-out;
+}
+.poster-img.is-loaded {
+  opacity: 1;
+}
+/* Progress bars fill in after the pictures. */
+.poster-fill {
+  transform-origin: 0 50%;
+  animation: fill-in 800ms var(--ease-emphasized) 300ms both;
+}
+@keyframes fill-in {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: none;
+  }
+}
+
+/* --- Buttons ------------------------------------------------------------------------- */
+
+/* Glass: a sheen and a rim over the tint; unfocused ones a little see-through. The
+   focused one springs up. */
+.pill {
+  background-color: rgba(48, 39, 90, 0.82);
+  background-image: linear-gradient(rgba(255, 255, 255, 0.13), rgba(255, 255, 255, 0.02) 55%, rgba(255, 255, 255, 0));
+  box-shadow:
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.2),
+    inset 0 0 0 1.5px rgba(201, 184, 255, 0.16);
+  transition:
+    transform 420ms var(--ease-spring),
+    background-color 150ms linear,
+    color 150ms linear;
+}
+.pill.is-selected {
+  background-color: rgba(67, 55, 122, 0.9);
+}
+.pill.is-focused {
+  background-color: var(--focus);
+  background-image: linear-gradient(rgba(255, 255, 255, 0.35), rgba(255, 255, 255, 0) 60%);
+  box-shadow:
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.5),
+    0 9px 24px rgba(0, 0, 0, 0.3);
+}
+
+/* --- The player ------------------------------------------------------------------------ */
+
+/* Dragged on: Back and the title slide in from the left, the bar, the times and the
+   buttons come up from under the screen, fading in; they go back the same way, and turn
+   round from where they are when brought back while leaving. */
+.player-drag {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1920px;
+  height: 1080px;
+  opacity: 0;
+  transition:
+    transform 320ms ease-in,
+    opacity 320ms ease-in;
+}
+.player-drag-top {
+  transform: translateX(-270px);
+}
+.player-drag-bottom {
+  transform: translateY(270px);
+}
+.player-controls.is-visible .player-drag {
+  opacity: 1;
+  transform: none;
+  transition:
+    transform 420ms var(--ease-out),
+    opacity 420ms var(--ease-out);
+}
+/* The shades fade with them, and the controls box itself stays put. */
+.player-controls {
+  transition: opacity 320ms ease-in;
+}
+.player-controls.is-visible {
+  transition: opacity 420ms var(--ease-out);
+}
+/* Play turning into pause (and back) pops. */
+.player-play.is-popping svg {
+  animation: pop-in 360ms var(--ease-spring);
+}
+@keyframes pop-in {
+  from {
+    transform: scale(0.6);
+  }
+  to {
+    transform: none;
+  }
+}

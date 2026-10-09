@@ -6,3 +6,9 @@ declare const __PERSONAL__: unknown;
 
 // Stylesheets are bundled by esbuild.
 declare module "*.css";
+
+// Sound files are copied next to the app by esbuild; importing one gives its address.
+declare module "*.wav" {
+  const url: string;
+  export default url;
+}
