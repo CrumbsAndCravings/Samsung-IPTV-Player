@@ -17,7 +17,7 @@ import { mergeProgress, progressList, progressRemovedList, progressSave } from "
 import { syncConfig } from "../core/personal";
 import { sha256Hex } from "../core/sha256";
 import { readSavedSubtitle, SavedSubtitle } from "../core/subtitles";
-import { Creds, isObj, syncSpaceText } from "../core/utils";
+import { Creds, fieldStr, isObj, syncSpaceText } from "../core/utils";
 import { send } from "../platform/http";
 
 const SOON_MS = 60000;
@@ -27,6 +27,12 @@ const SUBTITLE_MAX_BYTES = 4 * 1024 * 1024;
 // This login's list on the sync service: 16 hex digits of SHA-256 of syncSpaceText.
 export function syncSpace(creds: Creds): string {
   return sha256Hex(syncSpaceText(creds)).slice(0, 16);
+}
+
+export interface SaveResult {
+  ok: boolean;
+  code: number; // the service's HTTP code; 0 for no answer
+  error: string; // why not, in words
 }
 
 export class ProgressSync {
@@ -80,32 +86,33 @@ export class ProgressSync {
     return this.config.url + "/v1/subtitles?space=" + syncSpace(this.creds) + "&k=" + encodeURIComponent(title);
   }
 
-  // The subtitles saved for this title by any device, or null (none, or no answer).
-  savedSubtitle(title: string): Promise<SavedSubtitle | null> {
+  // The subtitles saved for this title by any device (null for none, or no answer), and
+  // the service's HTTP code: 404 from a service older than saved subtitles.
+  savedSubtitle(title: string): Promise<{ saved: SavedSubtitle | null; code: number }> {
     return send({ url: this.subtitlesUrl(title), headers: { Authorization: "Bearer " + this.config.key }, timeoutMs: TIMEOUT_MS, maxBytes: SUBTITLE_MAX_BYTES }).promise.then((res) => {
       if (res.code !== 200) {
         log("sync: no saved subtitles (" + (res.timedOut ? "no answer in time" : "HTTP " + res.code) + ")");
-        return null;
+        return { saved: null, code: res.code };
       }
       try {
-        return readSavedSubtitle(JSON.parse(res.text));
+        return { saved: readSavedSubtitle(JSON.parse(res.text)), code: res.code };
       } catch {
-        return null;
+        return { saved: null, code: res.code };
       }
     });
   }
 
-  // Saves subtitles for this title, for every device; resolves to whether it worked.
-  saveSubtitle(title: string, subtitle: SavedSubtitle): Promise<boolean> {
+  // Saves subtitles for this title, for every device: whether it worked, and why not.
+  saveSubtitle(title: string, subtitle: SavedSubtitle): Promise<SaveResult> {
     return this.postSubtitle(title, JSON.stringify(subtitle));
   }
 
   // The nudges of the subtitles saved for this title.
-  saveSubtitleDelay(title: string, fileId: string, delayMs: number): Promise<boolean> {
+  saveSubtitleDelay(title: string, fileId: string, delayMs: number): Promise<SaveResult> {
     return this.postSubtitle(title, JSON.stringify({ fileId, delayMs }));
   }
 
-  private postSubtitle(title: string, body: string): Promise<boolean> {
+  private postSubtitle(title: string, body: string): Promise<SaveResult> {
     return send({
       method: "POST",
       url: this.subtitlesUrl(title),
@@ -113,8 +120,17 @@ export class ProgressSync {
       body,
       timeoutMs: TIMEOUT_MS,
     }).promise.then((res) => {
-      if (res.code !== 200) log("sync: subtitles not saved (" + (res.timedOut ? "no answer in time" : "HTTP " + res.code) + ")");
-      return res.code === 200;
+      if (res.code === 200) return { ok: true, code: 200, error: "" };
+      const why = res.timedOut ? "The sync service didn't answer in time." : res.code === 0 ? "The sync service couldn't be reached." : "The sync service answered HTTP " + res.code + ".";
+      // The service's own words, when it said why.
+      let said: string;
+      try {
+        said = fieldStr(JSON.parse(res.text), "error");
+      } catch {
+        said = "";
+      }
+      log("sync: subtitles not saved (" + (res.timedOut ? "no answer in time" : "HTTP " + res.code) + ")");
+      return { ok: false, code: res.code, error: said ? why + " " + said : why };
     });
   }
 

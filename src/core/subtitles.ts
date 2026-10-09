@@ -147,3 +147,12 @@ export function audioPlan(pref: string, audio: TrackOption[]): string {
   const index = optionIndex(audio, "language", pref);
   return index >= 0 ? audio[index].id : "";
 }
+
+// Saved subtitles need the sync service from October 2026 on; an older one answers 404.
+export const OLD_SYNC_TEXT = "Subtitles can't be saved for next time, because your sync service is an older version. Update it in Cloudflare: see “Update it” in the Roku repo's sync/README.md.";
+
+// Why downloaded subtitles weren't saved for next time.
+export function subtitleSaveText(code: number, error: string): string {
+  if (code === 404) return OLD_SYNC_TEXT;
+  return "These subtitles couldn't be saved for next time." + (error ? " " + error : "");
+}

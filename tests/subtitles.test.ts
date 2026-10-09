@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { findQueries, FindRequest, OsCandidate } from "../src/core/opensubtitles";
 import { cleanCueText } from "../src/core/srt";
-import { activeSubtitle, audioPlan, delayText, freshOnline, OnlineStatus, readSavedSubtitle, savedCandidate, showsSaved, subtitleMenu, subtitlePlan, tracksNote } from "../src/core/subtitles";
+import { activeSubtitle, audioPlan, delayText, freshOnline, OLD_SYNC_TEXT, OnlineStatus, readSavedSubtitle, savedCandidate, showsSaved, subtitleMenu, subtitlePlan, subtitleSaveText, tracksNote } from "../src/core/subtitles";
 import { audioOptions, subtitleOptions } from "../src/core/tracks";
 
 const movie: FindRequest = { kind: "movie", title: "EN - The Batman (2022)", tmdbId: "414906", season: 0, episode: 0, hash: "" };
@@ -134,5 +134,13 @@ describe("subtitles saved for a title on the sync service", () => {
     expect(showsSaved("off", subtitlePlan("off", none, true))).toBe(false);
     expect(showsSaved("hin", subtitlePlan("hin", none, true))).toBe(false);
     expect(showsSaved("online", subtitlePlan("online", embedded, true))).toBe(false);
+  });
+});
+
+describe("subtitles that couldn't be saved", () => {
+  it("say why, naming an old sync service", () => {
+    expect(subtitleSaveText(404, "The sync service answered HTTP 404.")).toBe(OLD_SYNC_TEXT);
+    expect(subtitleSaveText(0, "The sync service couldn't be reached.")).toBe("These subtitles couldn't be saved for next time. The sync service couldn't be reached.");
+    expect(subtitleSaveText(500, "")).toBe("These subtitles couldn't be saved for next time.");
   });
 });

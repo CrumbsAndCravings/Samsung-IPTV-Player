@@ -1,6 +1,6 @@
 // Ported from the Roku app's tests/utils_test.brs (seeking).
 import { describe, expect, it } from "vitest";
-import { barFraction, clampSeek, holdStep } from "../src/core/playback";
+import { barFraction, clampSeek, holdStep, providerServerTrouble } from "../src/core/playback";
 
 describe("hold to seek", () => {
   it("steps 10 s, then 30 s, then doubles every 1.5 s up to 10 min", () => {
@@ -24,5 +24,16 @@ describe("hold to seek", () => {
     expect(Math.floor(barFraction(1800, 3600) * 100)).toBe(50);
     expect(Math.floor(barFraction(10, 0) * 100)).toBe(0);
     expect(Math.floor(barFraction(4000, 3600) * 100)).toBe(100);
+  });
+});
+
+describe("the provider's server failing", () => {
+  it("is an HTTP 5xx, or FFmpeg's word for one", () => {
+    expect(providerServerTrouble("Asked the server for the stream again: HTTP 502 from nginx")).toBe(true);
+    expect(providerServerTrouble("Couldn't read movie 1.mkv from the provider: Server returned 5XX Server Error reply")).toBe(true);
+    expect(providerServerTrouble("HTTP 503")).toBe(true);
+    expect(providerServerTrouble("HTTP 404 from nginx")).toBe(false);
+    expect(providerServerTrouble("PLAYER_ERROR_CONNECTION_FAILED")).toBe(false);
+    expect(providerServerTrouble("")).toBe(false);
   });
 });

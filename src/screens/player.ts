@@ -14,18 +14,18 @@ import { FileFacts, learnResult, playCheck, PlayCheck } from "../core/compat";
 import type { Item } from "../core/items";
 import { log, logError } from "../core/log";
 import type { FindRequest } from "../core/opensubtitles";
-import { barFraction } from "../core/playback";
+import { barFraction, providerServerTrouble, SERVER_TROUBLE_TEXT } from "../core/playback";
 import { progressPut, progressRemove } from "../core/progress";
 import { redact } from "../core/redact";
 import { httpDetail, isRefusalCode } from "../core/refusals";
 import { COMMIT_AFTER_MS, JumpResult, SeekPreview, SeekRunner, TICK_MS } from "../core/seek";
 import { cleanCueText, CueTrack, parseSubtitles } from "../core/srt";
 import { loadOsAccount, loadPrefs, savePref } from "../core/storage";
-import { activeSubtitle, audioPlan, freshOnline, NUDGE_MS, OnlineStatus, SavedSubtitle, savedCandidate, showsSaved, SubtitleSource, subtitleMenu, subtitlePlan, tracksNote } from "../core/subtitles";
+import { activeSubtitle, audioPlan, freshOnline, NUDGE_MS, OLD_SYNC_TEXT, OnlineStatus, SavedSubtitle, savedCandidate, showsSaved, SubtitleSource, subtitleMenu, subtitlePlan, subtitleSaveText, tracksNote } from "../core/subtitles";
 import { audioNowText, audioOptions, audioRescue, fromAvplay, optionIndex, subtitleOptions, TrackOption } from "../core/tracks";
 import { codecLabel, describeCodecs, episodeCode, formatClock, streamUrl } from "../core/utils";
 import { currentOf, dueForSave, entryFor, finishedChange, hasNext, resumeFrom, saveAction, Watching } from "../core/watch";
-import { knownHash, movieHash, rememberHash } from "../data/moviehash";
+import { knownHash, rememberHash } from "../data/moviehash";
 import { HELPER_NO_ANSWER, helperAddress, helperInfo, HelperInfo, helperLastError, helperStreamUrl, learnedMode, learnMode, needsHelper, rememberNeedsHelper, VideoMode } from "../data/transcoder";
 import { helperOn } from "../core/personal";
 import { OsClient } from "../data/opensubtitles";
@@ -57,6 +57,8 @@ const SYNC_EVERY_MS = 5 * 60000;
 const CHECK_STREAM_MS = 10000;
 const HELPER_NEVER_STARTED_MS = 45000; // the provider, then FFmpeg, then the TV
 const REOPEN_AFTER_MS = 300;
+const SERVER_RETRY_MS = 5000; // the provider's server failing is often over in a moment
+const RELEASE_AFTER_MS = 3 * 60000; // paused this long, a direct stream lets go of the provider
 
 const PLAY_ICON = '<svg viewBox="0 0 24 24" width="36" height="36"><path d="M7 4.5v15l12.5-7.5z" fill="currentColor"/></svg>';
 const PAUSE_ICON = '<svg viewBox="0 0 24 24" width="36" height="36"><rect x="5.5" y="4" width="4.5" height="16" rx="1.2" fill="currentColor"/><rect x="14" y="4" width="4.5" height="16" rx="1.2" fill="currentColor"/></svg>';
@@ -139,7 +141,19 @@ export class PlayerScreen implements Screen {
   private helperPlayed = false; // its stream has played, so a failure gets two reopens
   private offsetMs = 0;
   private jumpTo = -1; // reopen the helper's stream here
-  private helperHash = false; // ask the helper for the moviehash
+  // The provider's server failed (a 5xx): asked again once, then only after a minute of
+  // playing since.
+  private serverRetried = false;
+  private retryFrom = 0;
+  private serverTrouble = false;
+  private directPlayed = false; // played straight from the provider at least once
+  private checkLine = ""; // what the stream check before the error screen found
+  // Paused for long, a direct stream lets go of the provider's connection
+  // (releaseConnection); play opens it again at `releasedAt`.
+  private released = false;
+  private releasedAt = 0;
+  private releaseTimer = 0;
+  private restEl: HTMLElement;
 
   private controlsVisible = false;
   private row: Row = "bar";
@@ -166,6 +180,7 @@ export class PlayerScreen implements Screen {
   private subsGen = 0; // which video the saved subtitles below belong to
   private saved: SavedSubtitle | null = null; // saved for this title on the sync service
   private savedLookup: Promise<SavedSubtitle | null> = Promise.resolve(null);
+  private subsProblem = ""; // why subtitles can't be saved for next time, when they can't
   private delaySave: { title: string; fileId: string; delayMs: number } | null = null;
   private delaySaveTimer = 0;
   private hash = "";
@@ -238,6 +253,7 @@ export class PlayerScreen implements Screen {
       this.buttonsEl,
     ]);
     this.coverEl = h("div", { class: "player-cover is-visible" });
+    this.restEl = h("div", { class: "player-rest" });
     this.spinnerEl = h("div", { class: "player-spinner" });
     this.upNextTitle = h("div", { class: "upnext-title" });
     this.upNextHint = h("div", { class: "upnext-hint" });
@@ -260,7 +276,7 @@ export class PlayerScreen implements Screen {
       this.subsList,
       this.tracksNoteEl,
     ]);
-    this.el = h("div", { class: "screen player" }, [this.coverEl, this.subtitleEl, this.controlsEl, this.spinnerEl, this.upNextEl, this.errorEl, this.panelEl, this.tracksEl]);
+    this.el = h("div", { class: "screen player" }, [this.coverEl, this.restEl, this.subtitleEl, this.controlsEl, this.spinnerEl, this.upNextEl, this.errorEl, this.panelEl, this.tracksEl]);
   }
 
   private get item(): Item {
@@ -303,6 +319,11 @@ export class PlayerScreen implements Screen {
     this.helperPlayed = false;
     this.offsetMs = 0;
     this.jumpTo = -1;
+    this.serverRetried = false;
+    this.serverTrouble = false;
+    this.directPlayed = false;
+    this.checkLine = "";
+    this.resetRelease();
     setText(this.noteEl, "");
     this.resetSubtitles();
 
@@ -330,30 +351,14 @@ export class PlayerScreen implements Screen {
     this.hashThenLoad();
   }
 
-  // Online subtitles "timed for this file" need the file's moviehash, read from its
-  // first and last 64 KB. The provider allows one connection, so that happens before
-  // the video opens (a moment's wait, once per title), and only when OpenSubtitles is
-  // set up and subtitles weren't turned off.
+  // Online subtitles "timed for this file" need the file's moviehash. The helper reads it
+  // in the reads it makes anyway (loadHelperStream); a file played straight from the
+  // provider gets none, since reading its start and end took the provider's one
+  // connection (the Roku app's 0.5.15), and the search goes by TMDB id or name. One
+  // remembered from an earlier play through the helper still counts.
   private hashThenLoad(): void {
-    const api = this.app.api;
-    const key = factsOf(this.item).key;
-    this.hash = knownHash(key);
-    const wanted = this.online.configured && loadPrefs().subtitles !== "off";
-    // Through the helper, it fingerprints the file in the reads it makes anyway.
-    this.helperHash = wanted && !this.hash && this.route === "helper";
-    if (this.hash || !wanted || !api || this.route === "helper") {
-      this.loadStream();
-      return;
-    }
-    const token = ++this.streamToken;
-    const item = this.item;
-    this.show(this.spinnerEl, true);
-    movieHash(key, streamUrl(api.creds, item.kind === "episode" ? "series" : "movie", item.itemId, (item.ext || "mp4").toLowerCase())).then((hash) => {
-      if (token !== this.streamToken || this.closing) return;
-      log("moviehash", hash ? "ready" : "unavailable");
-      this.hash = hash;
-      this.loadStream();
-    });
+    this.hash = knownHash(factsOf(this.item).key);
+    this.loadStream();
   }
 
   private loadStream(): void {
@@ -409,7 +414,9 @@ export class PlayerScreen implements Screen {
     if (this.helper) return this.openHelper(token);
     log("helper: asking about", factsOf(item).key);
     const from = this.jumpTo >= 0 ? this.jumpTo : resumeFrom(this.startSecs);
-    helperInfo(item, from, this.helperHash).then(
+    // The fingerprint for online subtitles, from the reads the helper makes anyway.
+    const wantHash = this.online.configured && loadPrefs().subtitles !== "off" && !this.hash;
+    helperInfo(item, from, wantHash).then(
       (info) => {
         if (token !== this.streamToken || this.closing) return;
         this.helper = info;
@@ -425,7 +432,13 @@ export class PlayerScreen implements Screen {
         this.openHelper(token);
       },
       (err: Error) => {
-        if (token === this.streamToken) this.handleError("HELPER: " + err.message);
+        if (token !== this.streamToken) return;
+        if (providerServerTrouble(err.message) && !this.serverRetried) {
+          log("helper: the provider's server failed; asking again in a moment");
+          this.retryLater();
+          return;
+        }
+        this.handleError("HELPER: " + err.message);
       },
     );
   }
@@ -510,6 +523,8 @@ export class PlayerScreen implements Screen {
   private onTime(ms: number): void {
     this.positionMs = this.offsetMs + ms;
     this.timeAt = Date.now();
+    // A minute of playing since asking again after a server error: another may ask again.
+    if (this.serverRetried && this.positionMs / 1000 - this.retryFrom > 60) this.serverRetried = false;
     if (this.firstTimeMs < 0 && ms > 0) {
       this.firstTimeMs = ms;
       this.show(this.coverEl, false);
@@ -539,6 +554,7 @@ export class PlayerScreen implements Screen {
       const total = this.player.durationMs();
       if (total > 0) this.durationMs = total;
       learnResult(factsOf(this.item), true, "");
+      this.directPlayed = true;
     }
     this.applyTracks();
     if (this.pendingSeekSecs > 0) {
@@ -556,7 +572,7 @@ export class PlayerScreen implements Screen {
   // --- Progress ---------------------------------------------------------------------
 
   private saveProgress(): void {
-    if (!this.started || this.failed) return;
+    if ((!this.started && !this.released) || this.failed) return;
     const pos = Math.floor(this.positionMs / 1000);
     const dur = Math.floor(this.durationMs / 1000);
     const action = saveAction(pos, dur);
@@ -594,7 +610,6 @@ export class PlayerScreen implements Screen {
     this.errors.push(label);
     logError("playback error:", label, "(" + this.route + ")");
     window.clearTimeout(this.stallTimer);
-    if (!this.started && this.route === "direct") learnResult(factsOf(this.item), false, label);
     this.stopStream();
     this.clearSubtitle();
     // The TV refused the repackaged picture: convert it instead, and remember that.
@@ -619,43 +634,95 @@ export class PlayerScreen implements Screen {
       this.retryTimer = window.setTimeout(() => this.loadStream(), RETRY_AFTER_MS);
       return;
     }
-    // It didn't play on its own: try it through the helper on your computer.
-    if (this.route === "direct" && helperOn() && !this.helperTried) {
-      this.switchToHelper("it didn't play on its own");
-      return;
-    }
+    // Out of tries. First a word from whoever knows more than the TV's player.
+    if (this.route === "direct") return this.afterDirectFailed();
+    const last = this.errors[this.errors.length - 1] || "";
+    if (last.indexOf("HELPER: ") === 0) return this.showError("");
+    // The TV's player only says the stream failed; the helper knows why.
+    const token = this.streamToken;
+    this.show(this.spinnerEl, true);
+    helperLastError().then((said) => {
+      if (token !== this.streamToken || this.closing || this.failed) return;
+      if (providerServerTrouble(said) && !this.serverRetried) {
+        log("helper: the provider's server failed; asking again in a moment");
+        this.retryLater();
+        return;
+      }
+      this.showError(said);
+    });
+  }
+
+  // The direct stream failed after its retry. One small request for the stream's start,
+  // a moment later so the provider has let go of the player's connection, says whether
+  // the provider's server is failing (asked again once, 5 s later), turned the stream
+  // away (the helper would fare no better), or sent it (so this TV couldn't play it, and
+  // the helper on your computer may).
+  private afterDirectFailed(): void {
+    const token = this.streamToken;
+    this.show(this.spinnerEl, true);
+    window.clearTimeout(this.retryTimer);
+    this.retryTimer = window.setTimeout(() => {
+      this.checkStream().then((check) => {
+        if (token !== this.streamToken || this.closing || this.failed) return;
+        this.checkLine = check.line;
+        this.serverTrouble = check.code >= 500;
+        // The provider sent the file, so this TV couldn't play it: remembered for next
+        // time (a format error only). A server failing or refusing teaches nothing.
+        if (!this.directPlayed && (check.code === 200 || check.code === 206)) learnResult(factsOf(this.item), false, this.errors[this.errors.length - 1] || "");
+        if (this.serverTrouble && !this.serverRetried) {
+          log("the provider's server failed; asking again in a moment");
+          this.retryLater();
+          return;
+        }
+        if (helperOn() && !this.helperTried && !isRefusalCode(check.code)) {
+          this.switchToHelper("it didn't play on its own");
+          return;
+        }
+        this.showError("");
+      });
+    }, RETRY_AFTER_MS);
+  }
+
+  // The provider's server failed (a 5xx), which is often over in a moment: the stream
+  // is asked for again once, 5 s later, from where it was.
+  private retryLater(): void {
+    this.serverRetried = true;
+    if (this.started) this.startSecs = Math.floor(this.positionMs / 1000);
+    this.retryFrom = this.startSecs;
+    this.started = false;
+    this.firstTimeMs = -1;
+    window.clearTimeout(this.stallTimer);
+    this.stopStream();
+    this.show(this.errorEl, false);
+    this.show(this.spinnerEl, true);
+    window.clearTimeout(this.retryTimer);
+    this.retryTimer = window.setTimeout(() => this.loadStream(), SERVER_RETRY_MS);
+  }
+
+  // `helperSaid`: why the helper's last stream failed (/v1/last-error), when asked.
+  private showError(helperSaid: string): void {
     this.failed = true;
     this.mode = "error";
+    if (providerServerTrouble(helperSaid)) this.serverTrouble = true;
     this.show(this.spinnerEl, false);
     this.show(this.coverEl, true);
     this.hideControls();
     this.closePanel(false);
     setText(this.errorTitle, "This video didn't play");
-    setText(this.errorDetail, this.diagnosis());
+    setText(this.errorDetail, this.diagnosis(helperSaid));
     setText(this.errorHint, "OK to try again   ·   Back to return");
     this.show(this.errorEl, true);
-    // Through the helper, the provider's answers come from the helper (below).
-    if (this.route === "direct") this.checkStream();
-    // The TV's player only says the stream failed; the helper knows why.
-    if (this.route === "helper" && (this.errors[this.errors.length - 1] || "").indexOf("HELPER: ") !== 0) {
-      const token = this.streamToken;
-      helperLastError().then((said) => {
-        if (said && token === this.streamToken && this.failed && !this.closing) setText(this.errorDetail, this.diagnosis(said));
-      });
-    }
   }
 
   // Asks the server for the start of the stream, to say whether it refused it (a trial
-  // that doesn't include it, one device at a time, an ended trial) rather than the TV
-  // failing to play it. The player has let go of the connection by now.
-  private checkStream(): void {
+  // that doesn't include it, one device at a time, an ended trial) or its server failed,
+  // rather than the TV failing to play it. The player has let go of the connection.
+  private checkStream(): Promise<{ code: number; line: string }> {
     const api = this.app.api;
-    if (!api) return;
+    if (!api) return Promise.resolve({ code: 0, line: "" });
     const item = this.item;
-    const token = this.streamToken;
     const url = streamUrl(api.creds, item.kind === "episode" ? "series" : "movie", item.itemId, (item.ext || "mp4").toLowerCase());
-    send({ url, headers: { Range: "bytes=0-1023" }, timeoutMs: CHECK_STREAM_MS, maxBytes: 65536 }).promise.then((res) => {
-      if (token !== this.streamToken || this.closing || !this.failed) return;
+    return send({ url, headers: { Range: "bytes=0-1023" }, timeoutMs: CHECK_STREAM_MS, maxBytes: 65536 }).promise.then((res) => {
       let line = "";
       if (res.timedOut) line = "Asked the server for the stream again: no answer in 10 seconds.";
       else if (res.code === 0) line = "Asked the server for the stream again: the connection failed.";
@@ -664,7 +731,7 @@ export class PlayerScreen implements Screen {
         if (isRefusalCode(res.code)) line += " The provider refused it. The trial may not include it, may allow one device at a time, or may have ended.";
       }
       log("stream check:", res.code, line);
-      if (line) setText(this.errorDetail, this.diagnosis() + "\n" + line);
+      return { code: res.timedOut ? 0 : res.code, line };
     });
   }
 
@@ -674,6 +741,8 @@ export class PlayerScreen implements Screen {
     const item = this.item;
     const last = this.errors[this.errors.length - 1] || "";
     const lines = [last.indexOf("HELPER: ") === 0 ? last.slice(8) : "Samsung's player says: " + last];
+    // Plain words first when the provider's server is the trouble.
+    if (this.serverTrouble || providerServerTrouble(last)) lines.unshift(SERVER_TROUBLE_TEXT);
     if (helperSaid) lines.push("Your computer says: " + helperSaid);
     const tries = this.errors.length === 2 ? "twice" : this.errors.length + " times";
     if (this.helperFromStart) lines.push("Tried " + tries + " through the helper on your computer.");
@@ -693,6 +762,7 @@ export class PlayerScreen implements Screen {
       const ext = (item.ext || "mp4").toLowerCase();
       lines.push("Stream: " + redact(streamUrl(api.creds, item.kind === "episode" ? "series" : "movie", item.itemId, ext)));
     }
+    if (this.checkLine && this.route === "direct") lines.push(this.checkLine);
     return lines.join("\n");
   }
 
@@ -812,6 +882,8 @@ export class PlayerScreen implements Screen {
   }
 
   private resume(): void {
+    if (this.released) return this.resumeReleased();
+    window.clearTimeout(this.releaseTimer);
     this.player.play();
     this.paused = false;
     if (this.controlsVisible) {
@@ -821,6 +893,7 @@ export class PlayerScreen implements Screen {
   }
 
   private togglePause(): void {
+    if (this.released) return this.resumeReleased();
     if (!this.started) return;
     if (this.paused) {
       this.resume();
@@ -829,13 +902,63 @@ export class PlayerScreen implements Screen {
     this.player.pause();
     this.paused = true;
     this.saveProgress();
+    // Paused for long, a direct stream lets go of the provider (releaseConnection).
+    window.clearTimeout(this.releaseTimer);
+    if (this.route === "direct") this.releaseTimer = window.setTimeout(() => this.releaseConnection(), RELEASE_AFTER_MS);
     this.showControls(this.controlsVisible ? this.row : "bar");
+  }
+
+  // --- Long pauses (the Roku app's 0.5.15) --------------------------------------------
+  //
+  // A paused stream holds the provider's one connection, idle, and the provider may drop
+  // it; resuming then stalls or is turned away. So after 3 minutes paused a direct stream
+  // lets go of it, and play opens it again at the same spot, with the same sound and
+  // subtitles. A helper stream is left alone: its connection is the helper's, which goes
+  // on converting while you're paused.
+
+  private releaseConnection(): void {
+    if (this.closing || this.released || this.failed || this.route !== "direct" || !this.started || !this.paused) return;
+    this.saveProgress();
+    this.releasedAt = Math.floor(this.positionMs / 1000);
+    this.chosenAudio = this.currentAudio; // put back when the stream opens again
+    this.released = true;
+    this.started = false;
+    this.firstTimeMs = -1;
+    window.clearTimeout(this.stallTimer);
+    this.stopTick();
+    this.clearSubtitle();
+    this.stopStream();
+    log("paused for long: let go of the provider's connection at", this.releasedAt);
+    // The title's picture stands in for the paused frame.
+    const picture = (this.watching.kind === "movie" ? this.item.backdrop : this.watching.backdrop) || "";
+    this.restEl.style.backgroundImage = picture ? 'url("' + picture.replace(/"/g, "%22") + '")' : "";
+    this.show(this.coverEl, true);
+    this.show(this.restEl, picture !== "");
+  }
+
+  // Play after a long pause: the stream opens again where it was let go (or where a jump
+  // since moved it).
+  private resumeReleased(): void {
+    const at = this.releasedAt;
+    this.resetRelease();
+    this.paused = false;
+    this.startSecs = at;
+    this.show(this.spinnerEl, true);
+    if (this.controlsVisible) this.renderPlayButton();
+    this.loadStream();
+  }
+
+  private resetRelease(): void {
+    window.clearTimeout(this.releaseTimer);
+    this.released = false;
+    this.releasedAt = 0;
+    this.show(this.restEl, false);
   }
 
   // --- Jump preview -----------------------------------------------------------------
 
   private beginHold(key: Key, direction: number): void {
-    if (!this.started) return;
+    if (!this.started && !this.released) return;
     if (this.seekBroken) {
       if (!this.controlsVisible) this.showControls("bar");
       this.note("Jumping isn't working in this video (" + this.seekError + ").");
@@ -883,6 +1006,11 @@ export class PlayerScreen implements Screen {
     this.timeAt = Date.now();
     this.renderBar();
     this.restartHideTimer();
+    // Let go after a long pause: play opens the stream at the new spot.
+    if (this.released) {
+      this.releasedAt = Math.floor(targetSecs);
+      return;
+    }
     if (this.route === "helper") this.reopenAt(targetSecs);
     else if (this.seeker) this.seeker.jump(targetSecs * 1000);
   }
@@ -1049,6 +1177,7 @@ export class PlayerScreen implements Screen {
     window.clearInterval(this.subtitleTick);
     this.subtitleTick = 0;
     window.clearTimeout(this.autoTimer);
+    window.clearTimeout(this.releaseTimer);
   }
 
   // --- Keys -------------------------------------------------------------------------
@@ -1240,6 +1369,10 @@ export class PlayerScreen implements Screen {
   }
 
   private selectAudio(id: string): void {
+    if (this.released) {
+      this.currentAudio = id;
+      return;
+    }
     try {
       this.player.selectTrack("AUDIO", Number(id));
       this.currentAudio = id;
@@ -1252,6 +1385,10 @@ export class PlayerScreen implements Screen {
   private showEmbedded(id: string): void {
     this.stopTick();
     this.clearSubtitle();
+    if (this.released) {
+      this.source = { kind: "embedded", id };
+      return;
+    }
     try {
       this.player.selectTrack("TEXT", Number(id));
       this.player.setSubtitlesHidden(false);
@@ -1371,7 +1508,18 @@ export class PlayerScreen implements Screen {
     const gen = ++this.subsGen;
     this.saved = null;
     const sync = this.app.sync;
-    this.savedLookup = sync ? sync.savedSubtitle(factsOf(this.item).key) : Promise.resolve(null);
+    this.subsProblem = "";
+    this.savedLookup = sync
+      ? sync.savedSubtitle(factsOf(this.item).key).then((found) => {
+          // A sync service from before saved subtitles: said in the panel, so the next
+          // download isn't a surprise.
+          if (found.code === 404 && gen === this.subsGen) {
+            this.subsProblem = OLD_SYNC_TEXT;
+            this.refreshTracks();
+          }
+          return found.saved;
+        })
+      : Promise.resolve(null);
     this.savedLookup.then((saved) => {
       if (gen !== this.subsGen || !saved) return;
       this.saved = saved;
@@ -1413,8 +1561,15 @@ export class PlayerScreen implements Screen {
     const gen = this.subsGen;
     const found = this.online.candidates.filter((c) => c.fileId === fileId && !c.saved)[0];
     const subtitle: SavedSubtitle = { fileId, name: found ? found.release : "", delayMs: 0, text };
-    sync.saveSubtitle(factsOf(this.item).key, subtitle).then((ok) => {
-      if (!ok || gen !== this.subsGen) return;
+    sync.saveSubtitle(factsOf(this.item).key, subtitle).then((result) => {
+      if (gen !== this.subsGen) return;
+      if (!result.ok) {
+        // Said straight away, and kept in the panel.
+        this.subsProblem = subtitleSaveText(result.code, result.error);
+        this.note(this.subsProblem, RESCUE_NOTE_MS);
+        this.refreshTracks();
+        return;
+      }
       this.saved = subtitle;
       this.online.savedFileId = fileId;
       // What was saved before is replaced.
@@ -1464,7 +1619,7 @@ export class PlayerScreen implements Screen {
     const audioActive = optionIndex(this.audioOpts, "id", this.currentAudio);
     this.renderOptions(this.audioList, this.audioOpts.map((o) => o.label), audioActive, this.audioCursor, this.column === 0, TRACK_ROWS);
     this.renderOptions(this.subsList, this.subMenu.map((o) => o.label), activeSubtitle(this.subMenu, this.source), this.subCursor, this.column === 1, TRACK_ROWS);
-    const notes = [audioNowText(this.audioOpts, this.currentAudio), tracksNote(this.online, this.embeddedOpts.length - 1)];
+    const notes = [audioNowText(this.audioOpts, this.currentAudio), tracksNote(this.online, this.embeddedOpts.length - 1), this.subsProblem];
     setText(this.tracksNoteEl, notes.filter((n) => n !== "").join(" "));
   }
 

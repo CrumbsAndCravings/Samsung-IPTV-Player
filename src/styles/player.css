@@ -16,6 +16,23 @@
   opacity: 1;
 }
 
+/* A long pause let go of the stream: the title's picture stands in for the frame. */
+.player-rest {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1920px;
+  height: 1080px;
+  background-size: cover;
+  background-position: center;
+  opacity: 0;
+  transition: opacity 500ms linear;
+}
+
+.player-rest.is-visible {
+  opacity: 1;
+}
+
 .player-controls {
   position: absolute;
   left: 0;
