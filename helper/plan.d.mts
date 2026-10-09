@@ -13,7 +13,7 @@ export const ENCODERS: { [name: string]: string[] };
 export const TARGET_SECONDS: number;
 export const MAX_SUBTITLES: number;
 export const HLS_SECONDS: number;
-export function ffmpegArgs(options: { url: string; start: number; video: "copy" | "convert"; encoder: string; probe: ProbeResult | null }): string[];
+export function ffmpegArgs(options: { url: string; start: number; video: "copy" | "convert"; encoder: string; probe: ProbeResult | null; previews?: { dir: string; atomic: boolean } | null }): string[];
 export function hlsArgs(options: {
   url: string;
   start: number;

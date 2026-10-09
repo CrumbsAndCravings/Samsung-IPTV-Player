@@ -15,8 +15,13 @@
 //   GET /v1/info?key&kind&id&ext&hash=1
 //                                 what the file holds and how it would be converted; with
 //                                 hash=1, its OpenSubtitles moviehash too
-//   GET /v1/stream?key&kind&id&ext&start&video=copy|convert
-//                                 the file as MPEG-TS, from `start` seconds
+//   GET /v1/stream?key&kind&id&ext&start&video=copy|convert[&previews=1]
+//                                 the file as MPEG-TS, from `start` seconds; with
+//                                 previews=1, a small picture every six seconds of the
+//                                 film too, for choosing a jump (/v1/info says where)
+//   GET /v1/preview/<kind>/<id>/p<n>.jpg?key
+//                                 the picture for n x 6 seconds into the film, or a quick
+//                                 404 when FFmpeg hasn't made it
 //   GET /v1/last-error?key        why the last stream failed (and how long ago), for the TVs
 //
 // For the iPhone:
@@ -45,7 +50,7 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { createReadStream, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -83,7 +88,7 @@ import {
 import { httpGet } from "./http-get.mjs";
 import { parseRange, SourceFiles } from "./source.mjs";
 
-const VERSION = "1.2";
+const VERSION = "1.3";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const personalPath = process.env.ARANPLUS_PERSONAL || path.join(root, "personal.json");
 const DEFAULT_PORT = 8090;
@@ -409,6 +414,8 @@ function readQuery(url) {
     vod: p.get("vod") === "1",
     // /v1/info: the file's moviehash too, for online subtitles (the Samsung TV).
     hash: p.get("hash") === "1",
+    // /v1/stream: pictures for choosing a jump (the Samsung TV).
+    previews: p.get("previews") === "1",
   };
   if (!/^[0-9A-Za-z_-]{1,40}$/.test(q.id) || !/^[0-9a-z]{1,5}$/.test(q.ext) || q.start > 86400 || q.audioTrack > 50 || q.height > 4320) return null;
   if (q.audioLanguage && !/^[a-z]{2,3}$/.test(q.audioLanguage)) return null;
@@ -428,6 +435,56 @@ function describePlan(described, video) {
   return picture + "; sound " + sound;
 }
 
+// --- Pictures for choosing a jump (the TV) ----------------------------------------------
+//
+// With previews=1, the TV's stream also writes a 180-line picture every six seconds of the
+// film, into a folder for the title under the temp folder, named by the film's own time
+// (helper/plan.mjs, ffmpegArgs). Pictures from earlier streams of the title stay, so
+// what's been played, behind and ahead of where you are, has them; a jump further on
+// fills in from there. Only the three titles played last keep theirs.
+
+const PREVIEW_ROOT = path.join(HLS_ROOT, "previews");
+const PREVIEWS_KEPT = 3;
+
+function previewDir(q) {
+  return path.join(PREVIEW_ROOT, q.kind + "-" + q.id);
+}
+
+// Makes `dir`, and drops the folders of all but the titles played last.
+function keepPreviews(dir) {
+  mkdirSync(dir, { recursive: true });
+  try {
+    const now = Date.now();
+    utimesSync(dir, now / 1000, now / 1000);
+    const folders = readdirSync(PREVIEW_ROOT)
+      .map((name) => path.join(PREVIEW_ROOT, name))
+      .map((folder) => ({ folder, at: statSync(folder).mtimeMs }))
+      .sort((a, b) => b.at - a.at);
+    for (const old of folders.slice(PREVIEWS_KEPT)) rmSync(old.folder, { recursive: true, force: true });
+  } catch {
+    // Tidied next time.
+  }
+}
+
+function servePreview(res, kind, id, name) {
+  const file = path.join(PREVIEW_ROOT, kind + "-" + id, name);
+  let size;
+  try {
+    size = statSync(file).size;
+  } catch {
+    return sendJson(res, 404, { error: "Not made yet." });
+  }
+  res.writeHead(200, { "Content-Type": "image/jpeg", "Content-Length": size, "Cache-Control": "private, max-age=86400", ...CORS });
+  createReadStream(file)
+    .on("error", () => res.destroy())
+    .pipe(res);
+}
+
+// Where the TV finds a title's pictures: <prefix><5-digit n>.jpg for n x every seconds.
+function previewsFor(q) {
+  return { every: VOD_SECONDS, prefix: "/v1/preview/" + q.kind + "/" + encodeURIComponent(q.id) + "/p" };
+}
+
 async function stream(req, res, q) {
   let described;
   try {
@@ -439,7 +496,9 @@ async function stream(req, res, q) {
   if (res.destroyed) return;
   // Pictures that can't be repackaged are converted whatever the TV asked for.
   const video = q.video === "convert" || described.videoPlan === "convert" ? "convert" : "copy";
-  const args = ffmpegArgs({ url: sourceUrl(q), start: q.start, video, encoder, probe: described });
+  const previews = q.previews && described.video ? { dir: previewDir(q), atomic: atomicPictures } : null;
+  if (previews) keepPreviews(previews.dir);
+  const args = ffmpegArgs({ url: sourceUrl(q), start: q.start, video, encoder, probe: described, previews });
   await takeSlot();
   if (res.destroyed) return;
   say(`Playing ${q.kind} ${q.id}.${q.ext} from ${clock(q.start)}: ${describePlan(described, video)}`);
@@ -1375,6 +1434,8 @@ const server = http.createServer((req, res) => {
     const q = { kind: source[1], id: source[2], ext: source[3] };
     return serveSource(req, res, sourceFile(q), { exclusive: true, type: FILE_TYPES[q.ext] || "application/octet-stream", what: q.kind + " " + q.id + "." + q.ext }).catch((err) => failed(res, err));
   }
+  const picture = /^\/v1\/preview\/(movie|series)\/([0-9A-Za-z_-]{1,40})\/(p\d{5}\.jpg)$/.exec(pathname);
+  if (picture) return servePreview(res, picture[1], picture[2], picture[3]);
   const file = /^\/v1\/file\/(movie|series)\/([0-9A-Za-z_-]{1,40})\.([0-9a-z]{1,5})$/.exec(pathname);
   if (file) return passFile(req, res, { kind: file[1], id: file[2], ext: file[3] }).catch((err) => failed(res, err));
   const q = readQuery(url);
@@ -1382,7 +1443,11 @@ const server = http.createServer((req, res) => {
   if (pathname === "/v1/info") {
     // With hash=1, read from the start and end the helper keeps once it's described.
     return info(q).then(
-      async (described) => sendJson(res, 200, q.hash ? { ...described, hash: (await fileHash(q)).hash } : described),
+      async (described) => {
+        // Where the pictures for choosing a jump will be (with previews=1 on the stream).
+        const answer = described.video ? { ...described, previews: previewsFor(q) } : described;
+        sendJson(res, 200, q.hash ? { ...answer, hash: (await fileHash(q)).hash } : answer);
+      },
       (err) => {
         noteError("Couldn't read " + q.kind + " " + q.id + "." + q.ext + " from the provider: " + err.message);
         sendJson(res, 502, { error: lastError.error });

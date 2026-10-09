@@ -214,6 +214,33 @@
   opacity: 1;
 }
 
+/* The picture of the jump target, through the helper: a dark card with the lavender
+   ring, its bottom 15 px above the bubble; wider films are letterboxed in it. */
+.player-thumb {
+  position: absolute;
+  left: 0;
+  top: 564px;
+  width: 384px;
+  height: 216px;
+  border-radius: var(--radius-ring);
+  overflow: hidden;
+  background: #0d0a1a;
+  box-shadow:
+    0 0 0 4px var(--focus),
+    0 12px 30px rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  transition: opacity 150ms linear;
+}
+.player-thumb.is-visible {
+  opacity: 1;
+}
+.player-thumb-img {
+  display: block;
+  width: 384px;
+  height: 216px;
+  object-fit: contain;
+}
+
 .player-note {
   position: absolute;
   left: 180px;

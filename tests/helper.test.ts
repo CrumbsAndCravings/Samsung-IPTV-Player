@@ -93,6 +93,21 @@ describe("the helper", () => {
     expect(converted).toContain("-c:a:0 aac");
   });
 
+  it("writes a picture every six seconds of the film for choosing a jump, when asked", () => {
+    const mkv = parseProbe(MKV);
+    const args = ffmpegArgs({ url: "http://p/1.mkv", start: 754, video: "copy", encoder: "libx264", probe: mkv, previews: { dir: "/tmp/pv", atomic: true } });
+    const text = args.join(" ");
+    // The stream comes first, then the pictures, named by the film's own time.
+    expect(text.indexOf("pipe:1")).toBeLessThan(text.indexOf("-f image2"));
+    expect(text).toContain("-map 0:V:0 -an -sn -dn -vf setpts=PTS+754/TB,fps=1/6,scale=-2:180");
+    expect(text).toContain("-frame_pts 1 -atomic_writing 1");
+    expect(args[args.length - 1]).toMatch(/pv.p%05d\.jpg$/);
+    const fromStart = ffmpegArgs({ url: "http://p/1.mkv", start: 0, video: "copy", encoder: "libx264", probe: mkv, previews: { dir: "/tmp/pv", atomic: false } }).join(" ");
+    expect(fromStart).toContain("-vf fps=1/6,scale=-2:180");
+    expect(fromStart).not.toContain("atomic_writing");
+    expect(ffmpegArgs({ url: "http://p/1.mkv", start: 0, video: "copy", encoder: "libx264", probe: mkv }).join(" ")).not.toContain("image2");
+  });
+
   it("writes HLS the iPhone plays", () => {
     const mkv = parseProbe(MKV);
     const args = hlsArgs({ url: "http://p/1.mkv", start: 754, video: "copy", encoder: "libx264", probe: mkv, dir: "/tmp/s1", audioTrack: 1, subtitles: true, userAgent: "Browser/1" });

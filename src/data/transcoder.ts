@@ -18,6 +18,9 @@ export interface HelperInfo {
   videoPlan: "copy" | "try" | "convert";
   audio: { codec: string; plan: string }[];
   hash: string; // the OpenSubtitles moviehash, when asked for ("" otherwise)
+  // Where the pictures for choosing a jump are (helper 1.3): <prefix><5-digit n>.jpg for
+  // n x every seconds into the film; null from an older helper.
+  previews: { every: number; prefix: string } | null;
 }
 
 const TITLES_MAX = 200;
@@ -75,14 +78,31 @@ export function helperInfo(item: Item, startSecs = 0, wantHash = false): Promise
       videoPlan: plan === "try" || plan === "convert" ? plan : "copy",
       audio: isArr(audio) ? audio.filter(isObj).map((a) => ({ codec: fieldStr(a, "codec"), plan: fieldStr(a, "plan") })) : [],
       hash: /^[0-9a-f]{16}$/.test(fieldStr(data, "hash")) ? fieldStr(data, "hash") : "",
+      previews: parsePreviews(field(data, "previews")),
     };
   });
 }
 
-// The converted stream, from `startSecs`.
-export function helperStreamUrl(item: Item, startSecs: number, video: VideoMode): string {
+// `previews` from /v1/info: a prefix that's a path on the helper, and a step in seconds.
+export function parsePreviews(value: unknown): { every: number; prefix: string } | null {
+  const every = toInt(field(value, "every"));
+  const prefix = fieldStr(value, "prefix");
+  if (every <= 0 || prefix.charAt(0) !== "/" || prefix.indexOf("//") >= 0) return null;
+  return { every, prefix };
+}
+
+// The converted stream, from `startSecs`; with `previews`, the helper also makes a picture
+// every few seconds of the film, for choosing a jump.
+export function helperStreamUrl(item: Item, startSecs: number, video: VideoMode, previews = false): string {
   const config = base();
-  return config.url + "/v1/stream?key=" + encodeURIComponent(config.key) + "&" + params(item) + "&start=" + Math.max(0, Math.floor(startSecs)) + "&video=" + video;
+  return config.url + "/v1/stream?key=" + encodeURIComponent(config.key) + "&" + params(item) + "&start=" + Math.max(0, Math.floor(startSecs)) + "&video=" + video + (previews ? "&previews=1" : "");
+}
+
+// The picture for `secs` into the film, on the helper.
+export function helperPreviewUrl(previews: { every: number; prefix: string }, secs: number): string {
+  const config = base();
+  const n = String(Math.max(0, Math.floor(secs / previews.every)));
+  return config.url + previews.prefix + "00000".slice(n.length) + n + ".jpg?key=" + encodeURIComponent(config.key);
 }
 
 // Why the helper's last stream failed ("" when it doesn't say).

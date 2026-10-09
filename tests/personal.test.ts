@@ -154,3 +154,19 @@ describe("the helper on a computer at home", () => {
     expect(helperAddress()).toBe("");
   });
 });
+
+describe("pictures for choosing a jump", () => {
+  afterEach(() => usePersonal(null));
+
+  it("come from the helper, named by the film's time", async () => {
+    const { helperPreviewUrl, helperStreamUrl, parsePreviews } = await import("../src/data/transcoder");
+    const { makeItem } = await import("../src/core/items");
+    usePersonal({ transcoder: { url: "http://192.168.1.50:8090", key: "k" } });
+    const previews = parsePreviews({ every: 6, prefix: "/v1/preview/movie/12/p" })!;
+    expect(helperPreviewUrl(previews, 757)).toBe("http://192.168.1.50:8090/v1/preview/movie/12/p00126.jpg?key=k");
+    expect(parsePreviews({ every: 6, prefix: "http://elsewhere/p" })).toBeNull();
+    expect(parsePreviews({ every: 0, prefix: "/p" })).toBeNull();
+    expect(parsePreviews(undefined)).toBeNull();
+    expect(helperStreamUrl(makeItem({ kind: "movie", itemId: "12", ext: "mkv" }), 0, "copy", true)).toContain("&previews=1");
+  });
+});

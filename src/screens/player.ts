@@ -27,7 +27,7 @@ import { tasteEpisodeDone, tasteFinished, tasteWatched, tasteWeightFor } from ".
 import { codecLabel, describeCodecs, episodeCode, formatClock, streamUrl } from "../core/utils";
 import { currentOf, dueForSave, entryFor, finishedChange, hasNext, resumeFrom, saveAction, Watching } from "../core/watch";
 import { knownHash, rememberHash } from "../data/moviehash";
-import { HELPER_NO_ANSWER, helperAddress, helperInfo, HelperInfo, helperLastError, helperStreamUrl, learnedMode, learnMode, needsHelper, rememberNeedsHelper, VideoMode } from "../data/transcoder";
+import { HELPER_NO_ANSWER, helperAddress, helperInfo, HelperInfo, helperLastError, helperPreviewUrl, helperStreamUrl, learnedMode, learnMode, needsHelper, rememberNeedsHelper, VideoMode } from "../data/transcoder";
 import { helperOn } from "../core/personal";
 import { OsClient } from "../data/opensubtitles";
 import { send } from "../platform/http";
@@ -60,6 +60,9 @@ const CHECK_STREAM_MS = 10000;
 const HELPER_NEVER_STARTED_MS = 45000; // the provider, then FFmpeg, then the TV
 const REOPEN_AFTER_MS = 300;
 const SERVER_RETRY_MS = 5000; // the provider's server failing is often over in a moment
+const THUMB_W = 384; // the picture while choosing a jump (the Roku's 256 x 144 at 720p)
+const THUMB_WAIT_MS = 4000;
+const THUMB_RETRY_MS = 10000;
 const RELEASE_AFTER_MS = 3 * 60000; // paused this long, a direct stream lets go of the provider
 
 const PLAY_ICON = '<svg viewBox="0 0 24 24" width="36" height="36"><path d="M7 4.5v15l12.5-7.5z" fill="currentColor"/></svg>';
@@ -95,6 +98,16 @@ export class PlayerScreen implements Screen {
   private previewEl: HTMLElement;
   private knobEl: HTMLElement;
   private bubbleEl: HTMLElement;
+  // The picture above the bubble while choosing a jump through the helper (helper 1.3;
+  // the Roku app's 0.5.6): one loads at a time; until it's ready the last one stays up;
+  // one that isn't made yet (404) or takes over 4 s isn't asked for again for 10 s.
+  private thumbEl: HTMLElement;
+  private thumbImg: HTMLImageElement;
+  private thumbShown = -1; // the piece showing
+  private thumbLoading = -1; // the piece on its way
+  private thumbWanted = -1; // the piece the jump target is in
+  private thumbFailed: { [piece: number]: number } = {};
+  private thumbTimer = 0;
   private noteEl: HTMLElement;
   private buttonsEl: HTMLElement;
   private spinnerEl: HTMLElement;
@@ -239,6 +252,8 @@ export class PlayerScreen implements Screen {
     this.previewEl = h("div", { class: "bar-preview" });
     this.knobEl = h("div", { class: "bar-knob" });
     this.bubbleEl = h("div", { class: "player-bubble" });
+    this.thumbImg = h("img", { class: "player-thumb-img", attrs: { alt: "" } });
+    this.thumbEl = h("div", { class: "player-thumb" }, [this.thumbImg]);
     this.noteEl = h("div", { class: "player-note" });
     this.buttonsEl = h("div", { class: "player-buttons" });
     // Dragged on (the Roku app's 0.5.14): Back and the title slide in from the left, the
@@ -252,6 +267,7 @@ export class PlayerScreen implements Screen {
         this.elapsedEl,
         h("div", { class: "player-bar" }, [h("div", { class: "bar-track" }), this.fillEl, this.previewEl]),
         this.knobEl,
+        this.thumbEl,
         this.bubbleEl,
         this.remainingEl,
         this.noteEl,
@@ -330,6 +346,7 @@ export class PlayerScreen implements Screen {
     this.directPlayed = false;
     this.checkLine = "";
     this.resetRelease();
+    this.forgetThumbs();
     setText(this.noteEl, "");
     this.resetSubtitles();
 
@@ -459,7 +476,7 @@ export class PlayerScreen implements Screen {
     const uhd = !!helper && helper.width > 1920 && this.helperVideo === "copy";
     log("play via helper", factsOf(item).key, "from", from, this.helperVideo, "attempt", this.attempt + 1);
     this.player
-      .open(helperStreamUrl(item, from, this.helperVideo), this.events(token), { uhd })
+      .open(helperStreamUrl(item, from, this.helperVideo, !!(helper && helper.previews)), this.events(token), { uhd })
       .then(() => {
         if (token !== this.streamToken) return;
         this.stallTimer = window.setTimeout(() => {
@@ -908,6 +925,73 @@ export class PlayerScreen implements Screen {
       const x = Math.max(BAR_X - 60, Math.min(1848 - 156, knobX - 78));
       this.bubbleEl.style.transform = "translateX(" + Math.round(x) + "px)";
     }
+    this.renderThumb(this.preview.active ? shown : -1, knobX);
+  }
+
+  // --- Pictures while choosing a jump (through the helper) -----------------------------
+
+  // The picture for `secs` (-1: none) over the knob, kept on screen.
+  private renderThumb(secs: number, knobX: number): void {
+    const previews = this.route === "helper" && this.helper ? this.helper.previews : null;
+    if (!previews || secs < 0) return this.hideThumb();
+    this.thumbEl.style.transform = "translateX(" + Math.round(Math.max(72, Math.min(1848 - THUMB_W, knobX - THUMB_W / 2))) + "px)";
+    const piece = Math.floor(secs / previews.every);
+    this.thumbWanted = piece;
+    if (piece === this.thumbShown) {
+      toggle(this.thumbEl, "is-visible", true);
+      return;
+    }
+    const failed = this.thumbFailed[piece];
+    if (failed && Date.now() - failed < THUMB_RETRY_MS) {
+      // Not made yet: just the time, for now.
+      toggle(this.thumbEl, "is-visible", false);
+      return;
+    }
+    if (this.thumbLoading < 0) this.loadThumb(piece);
+  }
+
+  private loadThumb(piece: number): void {
+    const previews = this.helper ? this.helper.previews : null;
+    if (!previews) return;
+    this.thumbLoading = piece;
+    const token = this.streamToken;
+    const img = new Image();
+    const done = (ok: boolean) => {
+      window.clearTimeout(this.thumbTimer);
+      if (this.thumbLoading !== piece) return;
+      this.thumbLoading = -1;
+      if (token !== this.streamToken || !this.preview.active) return;
+      if (ok) {
+        this.thumbImg.src = img.src;
+        this.thumbShown = piece;
+        toggle(this.thumbEl, "is-visible", true);
+      } else {
+        this.thumbFailed[piece] = Date.now();
+        if (this.thumbWanted === piece) toggle(this.thumbEl, "is-visible", false);
+      }
+      // The target moved on meanwhile: that one next.
+      if (this.thumbWanted !== piece && this.thumbWanted >= 0) this.renderBar();
+    };
+    img.onload = () => done(true);
+    img.onerror = () => done(false);
+    this.thumbTimer = window.setTimeout(() => done(false), THUMB_WAIT_MS);
+    img.src = helperPreviewUrl(previews, piece * previews.every);
+  }
+
+  private hideThumb(): void {
+    this.thumbWanted = -1;
+    toggle(this.thumbEl, "is-visible", false);
+  }
+
+  // A new stream's pictures are its own (another title, or another run of this one).
+  private forgetThumbs(): void {
+    window.clearTimeout(this.thumbTimer);
+    this.thumbShown = -1;
+    this.thumbLoading = -1;
+    this.thumbWanted = -1;
+    this.thumbFailed = {};
+    this.thumbImg.removeAttribute("src");
+    toggle(this.thumbEl, "is-visible", false);
   }
 
   private note(text: string, ms = 4000): void {

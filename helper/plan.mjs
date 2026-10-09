@@ -87,7 +87,10 @@ export const ENCODERS = {
 };
 
 // The FFmpeg arguments for one stream. `start` in seconds; `video` "copy" or "convert".
-export function ffmpegArgs({ url, start, video, encoder, probe }) {
+// With `previews` ({ dir, atomic }), FFmpeg also writes a small picture every six seconds
+// of the film into `dir` (p<n>.jpg, n being the film's own time over six, as the whole
+// film's playlists name theirs), for the TV to show while choosing a jump.
+export function ffmpegArgs({ url, start, video, encoder, probe, previews = null }) {
   const args = ["-hide_banner", "-nostdin", "-loglevel", "error"];
   // Picks up again if the provider's connection drops for a moment.
   args.push("-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5");
@@ -115,6 +118,13 @@ export function ffmpegArgs({ url, start, video, encoder, probe }) {
   });
   if (audio.length === 0) args.push("-c:a", "aac", "-b:a", "192k");
   args.push("-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0", "pipe:1");
+  if (previews && probe && probe.video) {
+    // The stream starts at `start`, so its frames are moved on by that much first: the
+    // pictures are named by the film's own time wherever the stream began.
+    const shift = start > 0 ? "setpts=PTS+" + start + "/TB," : "";
+    args.push("-map", "0:V:0", "-an", "-sn", "-dn", "-vf", shift + "fps=1/" + VOD_SECONDS + ",scale=-2:" + PREVIEW_HEIGHT, "-q:v", "5");
+    args.push("-f", "image2", "-frame_pts", "1", ...(previews.atomic ? ["-atomic_writing", "1"] : []), path.join(previews.dir, "p%05d.jpg"));
+  }
   return args;
 }
 
