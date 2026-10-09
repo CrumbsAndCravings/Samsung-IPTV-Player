@@ -3,6 +3,7 @@
 
 import { Item, makeItem, Row } from "./items";
 import {
+  backdropList,
   clockToSeconds,
   field,
   fieldStr,
@@ -96,6 +97,7 @@ export interface VodInfo extends CodecInfo {
   directedBy: string;
   durationSecs: number;
   backdrop: string;
+  backdrops: string[];
   poster: string;
   ext: string;
   tmdbId: string;
@@ -119,6 +121,7 @@ export function parseVodInfo(data: Json): VodInfo {
     directedBy: fieldStr(info, "director"),
     durationSecs: duration,
     backdrop: sizedImage(firstUrl(info.backdrop_path), BACKDROP_SIZE),
+    backdrops: backdropList(info.backdrop_path, BACKDROP_SIZE),
     poster: firstText([info.movie_image, info.cover_big]),
     ext: fieldStr(movie, "container_extension"),
     tmdbId: firstText([info.tmdb_id, info.tmdb]),
@@ -156,6 +159,7 @@ export interface SeriesInfo {
   starring: string;
   directedBy: string;
   backdrop: string;
+  backdrops: string[];
   poster: string;
   tmdbId: string;
 }
@@ -239,6 +243,7 @@ export function parseSeriesInfo(data: Json): { info: SeriesInfo; seasons: Season
       starring: fieldStr(info, "cast"),
       directedBy: fieldStr(info, "director"),
       backdrop: sizedImage(firstUrl(info.backdrop_path), BACKDROP_SIZE),
+      backdrops: backdropList(info.backdrop_path, BACKDROP_SIZE),
       poster: fieldStr(info, "cover"),
       tmdbId: firstText([info.tmdb_id, info.tmdb]),
     },
@@ -339,6 +344,7 @@ function seriesItem(raw: JsonObject): Item {
     seriesId: fieldStr(raw, "series_id"),
     tmdbId: firstText([raw.tmdb, raw.tmdb_id]),
     backdrop: sizedImage(firstUrl(raw.backdrop_path), BACKDROP_SIZE),
+    backdrops: backdropList(raw.backdrop_path, BACKDROP_SIZE),
     description: fieldStr(raw, "plot"),
     year: yearOf(firstText([raw.releaseDate, raw.release_date, raw.year])) || named.year,
     genre: fieldStr(raw, "genre"),

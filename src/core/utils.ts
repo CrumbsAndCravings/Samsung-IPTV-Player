@@ -65,6 +65,18 @@ export function firstUrl(value: Json): string {
   return toStr(value).trim();
 }
 
+// Up to 5 backdrops from backdrop_path (a list, or one URL), sized and each once: the
+// pictures of a title's moving banner (ui/backdrop.ts; the Roku app's BackdropList).
+export function backdropList(value: Json, size: string): string[] {
+  const list = isArr(value) ? value : [value];
+  const urls: string[] = [];
+  for (const entry of list) {
+    const url = sizedImage(toStr(entry).trim(), size);
+    if (url !== "" && urls.indexOf(url) < 0 && urls.length < 5) urls.push(url);
+  }
+  return urls;
+}
+
 // TMDB serves every size from the same path, so ask for one that fits the screen.
 export function sizedImage(url: string, size: string): string {
   const marker = "image.tmdb.org/t/p/";

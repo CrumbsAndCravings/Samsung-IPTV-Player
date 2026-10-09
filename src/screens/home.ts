@@ -15,7 +15,7 @@
 import type { App, Screen } from "../app";
 import { languageTurns, organizeCategories, OrganizedCategory, takeTurns } from "../core/categories";
 import { playCheck } from "../core/compat";
-import { applyInfo, Item, makeItem, metaLine } from "../core/items";
+import { applyInfo, backdropPictures, Item, makeItem, metaLine } from "../core/items";
 import { log } from "../core/log";
 import { helperOn, languagePrefs } from "../core/personal";
 import { listItem, myList, myListHas, myListToggle, titleKey } from "../core/mylist";
@@ -446,6 +446,8 @@ export class HomeScreen implements Screen {
     if (item.backdrop) this.backdrop.show(item.backdrop, 1);
     else if (item.poster) this.backdrop.show(sizedImage(item.poster, POSTER_SIZE), 0.35);
     else this.backdrop.show("", 0);
+    // The moving banner, once the details are in (straight away for series).
+    if (item.hasInfo) this.backdrop.slides(backdropPictures(item));
   }
 
   private clearHero(): void {
@@ -829,6 +831,7 @@ export class HomeScreen implements Screen {
     this.refreshContinueWatching();
     this.syncListRow();
     if (this.picksStamp !== "") this.askPicks();
+    this.backdrop.pause(false);
     // Pick up what other devices watched (at most once a minute).
     if (this.app.sync) this.app.sync.soon();
     this.styleNav();
@@ -836,6 +839,7 @@ export class HomeScreen implements Screen {
   }
 
   onHide(): void {
+    this.backdrop.pause(true);
     window.clearTimeout(this.heroTimer);
     window.clearTimeout(this.heroDebounce);
     window.clearTimeout(this.holdTimer);

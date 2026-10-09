@@ -154,3 +154,20 @@ describe("provider quirks found later", () => {
     expect(tagged.items[0].year).toBe("2026");
   });
 });
+
+describe("the moving banner's pictures", () => {
+  it("keeps up to five backdrops, sized, each once", async () => {
+    const { backdropList } = await import("../src/core/utils");
+    const { backdropPictures, makeItem } = await import("../src/core/items");
+    const tmdb = (n: number) => "https://image.tmdb.org/t/p/original/b" + n + ".jpg";
+    const list = backdropList([tmdb(1), tmdb(2), tmdb(1), "", tmdb(3), tmdb(4), tmdb(5), tmdb(6)], "w1280");
+    expect(list.length).toBe(5);
+    expect(list[0]).toBe("https://image.tmdb.org/t/p/w1280/b1.jpg");
+    expect(backdropList("https://img.example/one.jpg", "w1280")).toEqual(["https://img.example/one.jpg"]);
+    expect(backdropList(undefined, "w1280")).toEqual([]);
+    const item = makeItem({ backdrop: list[1], backdrops: list });
+    expect(backdropPictures(item)[0]).toBe(list[1]);
+    expect(backdropPictures(item).length).toBe(5);
+    expect(backdropPictures(makeItem({}))).toEqual([]);
+  });
+});

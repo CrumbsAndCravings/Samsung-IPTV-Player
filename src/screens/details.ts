@@ -10,7 +10,7 @@
 import type { App, Screen } from "../app";
 import { FileFacts, playCheck } from "../core/compat";
 import { helperOn } from "../core/personal";
-import { applyInfo, Item, metaLine } from "../core/items";
+import { applyInfo, backdropPictures, Item, metaLine } from "../core/items";
 import { log } from "../core/log";
 import { myListHas, myListToggle } from "../core/mylist";
 import { Rating, ratingLabel, tasteNotForMe, tasteRate, tasteRating } from "../core/taste";
@@ -127,6 +127,8 @@ export class DetailsScreen implements Screen {
     setText(this.creditsEl, credits.join("   ·   "));
     if (item.backdrop) this.backdrop.show(item.backdrop, 1);
     else if (item.poster) this.backdrop.show(sizedImage(item.poster, POSTER_SIZE), 0.35);
+    // The moving banner, once the details are in (series lists carry them already).
+    if (item.hasInfo) this.backdrop.slides(backdropPictures(item));
   }
 
   // --- Movies ---------------------------------------------------------------------
@@ -584,11 +586,18 @@ export class DetailsScreen implements Screen {
   // --- Screen -----------------------------------------------------------------------
 
   onShow(): void {
+    this.backdrop.pause(false);
     if (this.item.kind === "movie" || this.seasons.length > 0) this.refreshAfterPlay();
     this.enterZone(this.zone);
   }
 
+  // The moving banner waits while another screen is on top.
+  onHide(): void {
+    this.backdrop.pause(true);
+  }
+
   destroy(): void {
     this.alive = false;
+    this.backdrop.pause(true);
   }
 }

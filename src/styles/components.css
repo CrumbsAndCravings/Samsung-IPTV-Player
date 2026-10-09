@@ -17,7 +17,14 @@
   opacity: 0;
   transition: opacity 500ms ease-out;
   /* Kept on its own layer, so each cross-fade doesn't repaint a 1410 px picture. */
-  will-change: opacity;
+  will-change: opacity, transform;
+  transform-origin: 60% 45%;
+}
+/* The moving banner: a slow cross-fade, and a slow push in while each picture shows. */
+.backdrop-img.is-slide {
+  transition:
+    opacity 1400ms ease-in-out,
+    transform 9000ms linear;
 }
 /* Fades the picture into the background on the left and at the bottom. */
 .backdrop-shade {

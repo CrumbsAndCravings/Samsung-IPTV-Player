@@ -16,6 +16,7 @@ export interface Item {
   description: string;
   poster: string;
   backdrop: string;
+  backdrops: string[]; // up to 5, for the moving banner (the first is usually `backdrop`)
   ext: string;
   year: string;
   genre: string;
@@ -53,6 +54,7 @@ export function makeItem(values: Partial<Item>): Item {
     description: "",
     poster: "",
     backdrop: "",
+    backdrops: [],
     ext: "",
     year: "",
     genre: "",
@@ -100,6 +102,8 @@ export function applyInfo(item: Item, info: Partial<Record<keyof Item, unknown>>
     const value = toStr(info[key] as string).trim();
     if (value !== "") target[key] = value;
   }
+  const backdrops = info.backdrops;
+  if (Array.isArray(backdrops) && backdrops.length > 0) item.backdrops = backdrops.map((b) => String(b));
   const duration = toInt(info.durationSecs as number);
   if (duration > 0) item.durationSecs = duration;
   const width = toInt(info.width as number);
@@ -121,4 +125,10 @@ export function metaLine(item: Pick<Item, "year" | "durationSecs" | "genre" | "s
   const tenths = Math.floor(parseFloat(item.score || "0") * 10 + 0.5);
   if (tenths > 0) parts.push("Rated " + Math.floor(tenths / 10) + "." + (tenths % 10));
   return parts.join("   ·   ");
+}
+
+// A title's pictures for the moving banner: its backdrop first, then the others.
+export function backdropPictures(item: Item): string[] {
+  if (!item.backdrop) return [];
+  return [item.backdrop].concat(item.backdrops.filter((url) => url !== item.backdrop));
 }

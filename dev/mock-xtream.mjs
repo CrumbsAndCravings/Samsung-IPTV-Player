@@ -148,7 +148,8 @@ function buildLibrary() {
         releaseDate: 1990 + Math.floor(r() * 36) + "-0" + (1 + Math.floor(r() * 9)) + "-15",
         last_modified: String(BASE_TIME - Math.floor(r() * 300) * 86400),
         rating: (6 + r() * 3).toFixed(1),
-        backdrop_path: ["/mock-art/backdrop/s" + id + ".svg"],
+        // Several backdrops, as real details list them (the moving banner).
+        backdrop_path: ["/mock-art/backdrop/s" + id + ".svg", "/mock-art/backdrop/s" + id + "-2.svg"],
         category_id: String(catId),
         is_adult: catName.indexOf("18+") >= 0 ? "1" : "0",
       };
@@ -190,7 +191,7 @@ function vodInfo(id) {
     rating: String(movie.rating),
     cast: pick(r, PEOPLE) + ", " + pick(r, PEOPLE),
     director: pick(r, PEOPLE),
-    backdrop_path: ["/mock-art/backdrop/m" + id + ".svg"],
+    backdrop_path: ["/mock-art/backdrop/m" + id + ".svg", "/mock-art/backdrop/m" + id + "-2.svg", "/mock-art/backdrop/m" + id + "-3.svg"],
     movie_image: movie.stream_icon,
     tmdb_id: movie.tmdb || String(movie.tmdb_id || ""),
     ...codecsFor(r, movie.container_extension),
@@ -270,7 +271,7 @@ function escapeXml(text) {
 
 function nameFor(key) {
   const kind = key[0];
-  const id = key.slice(1);
+  const id = key.slice(1).replace(/-\d$/, "");
   if (kind === "m") return (LIBRARY.movies.find((m) => String(m.stream_id) === id) || {}).name || "Movie";
   if (kind === "s") return (LIBRARY.series.find((s) => String(s.series_id) === id) || {}).name || "Series";
   return "Episode " + id;
@@ -381,7 +382,7 @@ export function handleMock(req, res) {
     }, delay);
     return true;
   }
-  const artMatch = /^\/mock-art\/(poster|backdrop|still)\/([mse]\d+)\.svg$/.exec(url.pathname);
+  const artMatch = /^\/mock-art\/(poster|backdrop|still)\/([mse]\d+(?:-\d)?)\.svg$/.exec(url.pathname);
   if (artMatch) {
     res.writeHead(200, { "Content-Type": "image/svg+xml", "Cache-Control": "max-age=3600" });
     res.end(art(artMatch[1], artMatch[2]));
