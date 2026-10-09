@@ -230,6 +230,181 @@ export function indexCounts(index: SearchIndex): { [key: string]: number } {
   return counts;
 }
 
+// --- Picked for you ------------------------------------------------------------------
+//
+// Home's My List, "Top picks for you" and "Because you watched" rows, from the stored
+// library and what you watch (core/taste.ts), so nothing is asked of the provider. Two
+// passes over the library, as on the Roku: one to find the titles named (indexFind), one
+// to pick (indexPersonal).
+
+// The records of the titles in `keys` ("m:<id>" or "s:<id>"): { "m:123": parts }. Titles
+// the library doesn't hold (other languages) are left out.
+export function indexFind(index: SearchIndex, keys: string[]): { [key: string]: string[] } {
+  const wanted: { [prefix: string]: string } = {};
+  for (const key of keys) if (key.length > 2) wanted[key.charAt(0) + SEP + key.slice(2) + SEP] = key;
+  const found: { [key: string]: string[] } = {};
+  if (Object.keys(wanted).length === 0) return found;
+  for (const record of index.records) {
+    const cut = record.indexOf(SEP, 2);
+    if (cut < 0) continue;
+    const key = wanted[record.slice(0, cut + 1)];
+    if (key !== undefined && !found[key]) found[key] = record.split(SEP);
+  }
+  return found;
+}
+
+// Each found title's category, as a likings key: { "m:123": "vod:12" }.
+export function categoriesFrom(found: { [key: string]: string[] }): { [key: string]: string } {
+  const out: { [key: string]: string } = {};
+  for (const key of Object.keys(found)) {
+    const parts = found[key];
+    if (parts.length >= 6 && parts[5] !== "-") out[key] = (parts[0] === "s" ? "series:" : "vod:") + parts[5];
+  }
+  return out;
+}
+
+// My List's row in its order: from the library when it holds the title, else its name
+// card (`fallback`).
+export function listItems(list: { k: string }[], found: { [key: string]: string[] }, fallback: (entry: { k: string }) => Item): Item[] {
+  return list.map((entry) => {
+    const parts = found[entry.k];
+    return parts && parts.length >= 5 ? toItem(parts, parts[0] === "s" ? "series" : "movie") : fallback(entry);
+  });
+}
+
+// The start of a title that its sequels share: its first two words (a leading "the", "a"
+// or "an" aside), or its one word when it has only one of four letters or more, as the
+// index writes names (" carry on"); "" when there's nothing distinctive.
+export function titleStem(name: string): string {
+  const words = normalizeSearch(name)
+    .split(" ")
+    .filter((w) => w !== "");
+  if (words.length > 1 && (words[0] === "the" || words[0] === "a" || words[0] === "an")) words.shift();
+  if (words.length >= 2) return " " + words[0] + " " + words[1];
+  if (words.length === 1 && words[0].length >= 4) return " " + words[0];
+  return "";
+}
+
+// How new a title is, from 1 (just added) down towards 0: halving every 90 days since it
+// was added, or by its year when the date is missing.
+function freshness(parts: string[], now: number, thisYear: number): number {
+  const added = parseInt(parts[6], 10) || 0;
+  if (added > 0) return Math.pow(0.5, Math.max(0, (now - added) / 86400) / 90);
+  const year = parts.length >= 8 ? parseInt(fromDash(parts[7]), 10) || 0 : 0;
+  return year >= thisYear - 1 ? 0.5 : 0.1;
+}
+
+export interface BecauseTitle {
+  k: string;
+  n: string;
+  category: string; // its likings key, "vod:12"
+}
+
+// "Top picks for you" and the "Because you watched" rows, in one pass over the library:
+// { picks, because } (one list for each of `because`).
+//
+// Top picks: titles from the 6 categories you like most (`scores`, likingFrom), the more
+// liked and the newer the higher, at most 8 from one category, 30 in all.
+// Because you watched: first the same series of films (titles starting with the same
+// words, like "Carry On Jatta 2" after "Carry On Jatta"), then the newest from its
+// category, 20 in all.
+// Each title once in a row, and none you've watched: `exclude` holds their keys ("m:123")
+// and their names as the index writes them (" carry on jatta"), for their other copies.
+export function indexPersonal(index: SearchIndex, scores: { [key: string]: number }, exclude: { [key: string]: boolean }, because: BecauseTitle[], now: number, thisYear: number): { picks: Item[]; because: Item[][] } {
+  // The liked categories, each as a share of the most liked one.
+  const ranked = Object.keys(scores)
+    .filter((key) => scores[key] > 0)
+    .sort((a, b) => scores[b] - scores[a])
+    .slice(0, 6);
+  const top: { [key: string]: number } = {};
+  const markers: { [letter: string]: string[] } = { m: [], s: [] };
+  if (ranked.length > 0) {
+    const best = scores[ranked[0]];
+    for (const key of ranked) {
+      top[key] = scores[key] / best;
+      const cut = key.indexOf(":");
+      markers[key.slice(0, cut) === "series" ? "s" : "m"].push(SEP + key.slice(cut + 1) + SEP);
+    }
+  }
+  const titles = because.map((title) => {
+    const id = title.category.slice(title.category.indexOf(":") + 1);
+    return { k: title.k, letter: title.k.charAt(0), id, marker: SEP + id + SEP, stem: titleStem(title.n), own: " " + normalizeSearch(title.n), found: [] as { order: number; at: number }[] };
+  });
+
+  const picked: { order: number; at: number; category: string }[] = [];
+  const records = index.records;
+  const names = index.names;
+  for (let i = 0; i < records.length; i++) {
+    const record = records[i];
+    const letter = record.charAt(0);
+    let parts: string[] | null = null;
+    // A quick look for an id before splitting keeps big libraries fast.
+    const wanted = markers[letter];
+    if (wanted) {
+      for (const marker of wanted) {
+        if (record.indexOf(marker) > 0) {
+          parts = record.split(SEP);
+          break;
+        }
+      }
+      if (parts && parts.length >= 7) {
+        const category = (letter === "s" ? "series:" : "vod:") + parts[5];
+        const liking = top[category];
+        if (liking !== undefined && !exclude[letter + ":" + parts[1]]) picked.push({ order: -liking * freshness(parts, now, thisYear), at: i, category });
+      }
+    }
+    for (const title of titles) {
+      if (title.letter !== letter) continue;
+      const family = title.stem !== "" && names[i].slice(0, title.stem.length) === title.stem;
+      if (!family && record.indexOf(title.marker) < 0) continue;
+      if (!parts) parts = record.split(SEP);
+      if (parts.length < 7) continue;
+      const key = letter + ":" + parts[1];
+      if (key !== title.k && !exclude[key] && (family || parts[5] === title.id)) {
+        // The family first (in tens of billions), then the newest.
+        let order = -(parseInt(parts[6], 10) || 0);
+        if (!family) order += 10000000000;
+        title.found.push({ order, at: i });
+      }
+    }
+  }
+
+  const itemAt = (at: number): Item => {
+    const parts = records[at].split(SEP);
+    return toItem(parts, parts[0] === "s" ? "series" : "movie");
+  };
+  const out: { picks: Item[]; because: Item[][] } = { picks: [], because: [] };
+  picked.sort((a, b) => a.order - b.order || a.at - b.at);
+  const perCategory: { [key: string]: number } = {};
+  let seen: { [name: string]: boolean } = {};
+  for (const match of picked) {
+    if (out.picks.length >= 30) break;
+    const name = names[match.at];
+    const taken = perCategory[match.category] || 0;
+    if (taken < 8 && !seen[name] && !exclude[name]) {
+      seen[name] = true;
+      perCategory[match.category] = taken + 1;
+      out.picks.push(itemAt(match.at));
+    }
+  }
+  for (const title of titles) {
+    const items: Item[] = [];
+    title.found.sort((a, b) => a.order - b.order || a.at - b.at);
+    seen = {};
+    seen[title.own] = true;
+    for (const match of title.found) {
+      if (items.length >= 20) break;
+      const name = names[match.at];
+      if (!seen[name] && !exclude[name]) {
+        seen[name] = true;
+        items.push(itemAt(match.at));
+      }
+    }
+    out.because.push(items);
+  }
+  return out;
+}
+
 // --- Keeping the index between launches ---------------------------------------------
 //
 // Loading a whole library from the provider takes minutes, so a finished index is saved

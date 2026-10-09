@@ -17,8 +17,12 @@ import { categoryWanted, classifyCategory, takeTurns } from "../core/categories"
 import type { Item, Row } from "../core/items";
 import { log } from "../core/log";
 import { languagePrefs } from "../core/personal";
-import { indexAdd, indexBrowse, indexCounts, indexSearch, indexSetCategories, LibraryStatus, newSearchIndex, parseIndex, SearchIndex, serializeIndex } from "../core/search";
-import type { Creds } from "../core/utils";
+import { listItem, ListEntry } from "../core/mylist";
+import { BecauseTitle, categoriesFrom, indexAdd, indexBrowse, indexCounts, indexFind, indexPersonal, indexSearch, indexSetCategories, LibraryStatus, listItems, newSearchIndex, parseIndex, SearchIndex, serializeIndex } from "../core/search";
+import { regDelete, regRead, regWrite } from "../core/storage";
+import { likingFrom, TasteEntry } from "../core/taste";
+import { fieldStr, normalizeSearch } from "../core/utils";
+import type { Creds, Json } from "../core/utils";
 import type { Category } from "../core/xtream";
 import { files, TextStore } from "../platform/files";
 
@@ -54,7 +58,28 @@ function nowSeconds(): number {
 
 // Forgets the saved library (signing out).
 export function deleteStoredLibrary(store: TextStore = files): Promise<void> {
+  regDelete("search", "saved");
   return store.remove(FILE);
+}
+
+// Whether a library is stored on this TV (marked when one is loaded or saved), so Home
+// can lay out the rows picked for you before it's read.
+export function librarySaved(): boolean {
+  return regRead("search", "saved") !== null;
+}
+
+// What Home asks for its rows picked for you (core/taste.ts).
+export interface PicksRequest {
+  history: TasteEntry[];
+  watching: Json[]; // Continue Watching
+  because: { k: string; n: string }[];
+  list: ListEntry[]; // My List
+}
+
+export interface PickedRow {
+  slot: string; // "list", "picks", or the key a "Because you watched" row is about
+  title: string;
+  items: Item[];
 }
 
 export class SearchLibrary {
@@ -119,6 +144,7 @@ export class SearchLibrary {
         if (saved) {
           this.live = saved;
           this.refreshing = true;
+          regWrite("search", "saved", String(saved.savedAt));
           this.report();
           log("search: using the saved library,", saved.names.length, "titles");
           if (nowSeconds() - saved.savedAt < DAY_SECONDS) {
@@ -157,6 +183,45 @@ export class SearchLibrary {
   browse(kind: Kind, categoryId: string, limit: number, query = ""): { items: Item[]; total: number; loading: boolean } {
     const found = indexBrowse(this.live, kind, categoryId, limit, query);
     return { items: found.items, total: found.total, loading: this.loading };
+  }
+
+  // Whether any titles are in yet (the saved copy, or a first load under way).
+  get hasTitles(): boolean {
+    return this.live.names.length > 0;
+  }
+
+  // Home's rows picked for you, from the library and what you watch: My List (when it has
+  // titles), Top picks for you, then a "Because you watched" row for each of `because`.
+  // `scores` are the likings worked out (Home keeps them to order its rows).
+  picks(req: PicksRequest, now: number): { scores: { [key: string]: number }; rows: PickedRow[] } {
+    const keys: string[] = [];
+    const exclude: { [key: string]: boolean } = {};
+    const sources: Json[][] = [req.history as unknown as Json[], req.watching, req.list as unknown as Json[]];
+    for (const source of sources) {
+      for (const entry of source) {
+        const key = fieldStr(entry, "k");
+        if (key !== "") {
+          keys.push(key);
+          exclude[key] = true;
+        }
+        const name = fieldStr(entry, "n") || fieldStr(entry, "name");
+        if (name !== "") exclude[" " + normalizeSearch(name)] = true;
+      }
+    }
+    const found = indexFind(this.live, keys);
+    const categories = categoriesFrom(found);
+    const scores = likingFrom(req.history, req.watching, categories, now);
+    const titles: BecauseTitle[] = [];
+    for (const title of req.because) if (categories[title.k]) titles.push({ k: title.k, n: title.n, category: categories[title.k] });
+    const personal = indexPersonal(this.live, scores, exclude, titles, now, new Date().getFullYear());
+    const rows: PickedRow[] = [];
+    if (req.list.length > 0) rows.push({ slot: "list", title: "My List", items: listItems(req.list, found, (entry) => listItem(entry as ListEntry, "")) });
+    rows.push({ slot: "picks", title: "Top picks for you", items: personal.picks });
+    for (const title of req.because) {
+      const at = titles.map((t) => t.k).indexOf(title.k);
+      rows.push({ slot: title.k, title: "Because you watched " + title.n, items: at >= 0 ? personal.because[at] : [] });
+    }
+    return { scores, rows };
   }
 
   // How many titles each category holds ("movie:123" -> 104).
@@ -332,6 +397,7 @@ export class SearchLibrary {
     log("search: library loaded,", this.live.names.length, "titles; saving it");
     this.store.save(FILE, serializeIndex(this.live, this.owner, savedAt)).then((ok) => {
       if (!ok) log("search: the library couldn't be saved");
+      else regWrite("search", "saved", String(savedAt));
     });
   }
 }

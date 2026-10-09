@@ -3,13 +3,17 @@
 // can't play it. Movies get Resume / Play from start (or just Play). Series get Resume
 // S1:E4 (or Play S1:E1), a row of season pills and the episode list; moving down
 // scrolls the page up, and Left/Right in the list switch seasons. A title on Continue
-// Watching also gets Remove from Continue Watching (the whole show, for a series).
+// Watching also gets Remove from Continue Watching (the whole show, for a series). Every
+// title gets + My List (In My List) and Rate (or the rating given), which shape Home's
+// rows picked for you (core/mylist.ts, core/taste.ts).
 
 import type { App, Screen } from "../app";
 import { FileFacts, playCheck } from "../core/compat";
 import { helperOn } from "../core/personal";
 import { applyInfo, Item, metaLine } from "../core/items";
 import { log } from "../core/log";
+import { myListHas, myListToggle } from "../core/mylist";
+import { Rating, ratingLabel, tasteNotForMe, tasteRate, tasteRating } from "../core/taste";
 import { progressFind, progressFraction, ProgressEntry, progressRemove } from "../core/progress";
 import { episodeCode, formatClock, formatRuntime, sizedImage, toInt } from "../core/utils";
 import { episodeItem, POSTER_SIZE, Season } from "../core/xtream";
@@ -20,7 +24,7 @@ import { append, clear, h, setText, toggle } from "../ui/dom";
 import { PlayerScreen } from "./player";
 
 type Zone = "buttons" | "seasons" | "episodes";
-type ButtonAction = "play" | "restart" | "resume" | "playFirst" | "resumeEpisode" | "episodes" | "forget";
+type ButtonAction = "play" | "restart" | "resume" | "playFirst" | "resumeEpisode" | "episodes" | "forget" | "list" | "rate";
 
 type Button = { label: string; action: ButtonAction };
 
@@ -153,8 +157,8 @@ export class DetailsScreen implements Screen {
   private movieButtons(): void {
     this.entry = progressFind("m:" + this.item.itemId);
     if (this.entry && toInt(this.entry.pos) > 0) {
-      this.setButtons([{ label: "Resume from " + formatClock(toInt(this.entry.pos)), action: "resume" }, { label: "Play from start", action: "restart" }, FORGET]);
-    } else this.setButtons(this.entry ? [{ label: "Play", action: "play" }, FORGET] : [{ label: "Play", action: "play" }]);
+      this.setButtons(this.withTitleButtons([{ label: "Resume from " + formatClock(toInt(this.entry.pos)), action: "resume" }, { label: "Play from start", action: "restart" }, FORGET]));
+    } else this.setButtons(this.withTitleButtons(this.entry ? [{ label: "Play", action: "play" }, FORGET] : [{ label: "Play", action: "play" }]));
   }
 
   // --- Series ---------------------------------------------------------------------
@@ -236,7 +240,7 @@ export class DetailsScreen implements Screen {
       buttons = [{ label: "Play " + episodeCode(order[0].seasonNo, order[0].episodeNo), action: "playFirst" }, { label: "Episodes", action: "episodes" }];
     }
     if (this.entry && buttons.length > 0) buttons.push(FORGET);
-    if (buttons.length > 0) this.setButtons(buttons);
+    if (buttons.length > 0) this.setButtons(this.withTitleButtons(buttons));
   }
 
   private showSeason(index: number): void {
@@ -305,6 +309,42 @@ export class DetailsScreen implements Screen {
 
   // --- Buttons and seasons ----------------------------------------------------------
 
+  // "m:<id>" or "s:<id>", for My List and ratings.
+  private titleKey(): string {
+    return (this.item.kind === "series" ? "s:" : "m:") + this.item.itemId;
+  }
+
+  // The play buttons, then My List and your rating.
+  private withTitleButtons(buttons: Button[]): Button[] {
+    const key = this.titleKey();
+    return buttons.concat([
+      { label: myListHas(key) ? "In My List" : "+ My List", action: "list" },
+      { label: ratingLabel(tasteRating(key)), action: "rate" },
+    ]);
+  }
+
+  // "Not for me", "I like this" or "Love this!" (or taking the rating away).
+  private rateMenu(): void {
+    const key = this.titleKey();
+    const choices: { label: string; rating: Rating }[] = [
+      { label: "Not for me", rating: -1 },
+      { label: "I like this", rating: 1 },
+      { label: "Love this!", rating: 2 },
+    ];
+    if (tasteRating(key) !== 0) choices.push({ label: "Take my rating away", rating: 0 });
+    this.app.dialog({
+      title: this.item.title,
+      message: "How was it? Your ratings shape Top picks for you and the rows you see first on Home.",
+      buttons: choices.map((c) => ({
+        label: c.label,
+        action: () => {
+          tasteRate(key, this.item.title, c.rating);
+          this.refreshAfterPlay();
+        },
+      })),
+    });
+  }
+
   private setButtons(buttons: Button[]): void {
     this.buttons = buttons;
     this.buttonEls = buttons.map((b) => h("div", { class: "pill", text: b.label }));
@@ -367,6 +407,13 @@ export class DetailsScreen implements Screen {
       case "forget":
         this.forget();
         break;
+      case "list":
+        myListToggle(this.titleKey(), this.item.title, this.item.kind === "series" ? "" : this.item.ext);
+        this.refreshAfterPlay();
+        break;
+      case "rate":
+        this.rateMenu();
+        break;
       case "episodes":
         this.enterZone("episodes");
         if (entry) {
@@ -381,6 +428,8 @@ export class DetailsScreen implements Screen {
   // Takes the title off Continue Watching (the whole show for a series); the buttons
   // go back to plain Play.
   private forget(): void {
+    // Taken off early, it counts against what it's like (core/taste.ts).
+    if (this.entry) tasteNotForMe(this.titleKey(), progressFraction(this.entry));
     progressRemove((this.item.kind === "series" ? "s:" : "m:") + this.item.itemId);
     if (this.app.sync) this.app.sync.now();
     this.buttonIndex = 0;

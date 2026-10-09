@@ -23,6 +23,7 @@ import { cleanCueText, CueTrack, parseSubtitles } from "../core/srt";
 import { loadOsAccount, loadPrefs, savePref } from "../core/storage";
 import { activeSubtitle, audioPlan, freshOnline, NUDGE_MS, OLD_SYNC_TEXT, OnlineStatus, SavedSubtitle, savedCandidate, showsSaved, SubtitleSource, subtitleMenu, subtitlePlan, subtitleSaveText, tracksNote } from "../core/subtitles";
 import { audioNowText, audioOptions, audioRescue, fromAvplay, optionIndex, subtitleOptions, TrackOption } from "../core/tracks";
+import { tasteEpisodeDone, tasteFinished, tasteWatched, tasteWeightFor } from "../core/taste";
 import { codecLabel, describeCodecs, episodeCode, formatClock, streamUrl } from "../core/utils";
 import { currentOf, dueForSave, entryFor, finishedChange, hasNext, resumeFrom, saveAction, Watching } from "../core/watch";
 import { knownHash, rememberHash } from "../data/moviehash";
@@ -147,6 +148,7 @@ export class PlayerScreen implements Screen {
   private retryFrom = 0;
   private serverTrouble = false;
   private directPlayed = false; // played straight from the provider at least once
+  private tasteEpisode = -1; // the episode already counted as finished
   private checkLine = ""; // what the stream check before the error screen found
   // Paused for long, a direct stream lets go of the provider's connection
   // (releaseConnection); play opens it again at `releasedAt`.
@@ -578,12 +580,28 @@ export class PlayerScreen implements Screen {
     const action = saveAction(pos, dur);
     if (action === "skip") return;
     this.lastSavedSecs = pos;
+    this.noteTaste(pos, dur);
     if (action === "finished") this.applyFinished();
     else progressPut(entryFor(this.watching, this.index, pos, dur));
   }
 
+  // What you're watching, for the rows picked for you (core/taste.ts): a movie by how far
+  // you are, a series once you're 3 minutes into an episode.
+  private noteTaste(pos: number, dur: number): void {
+    const w = this.watching;
+    if (w.kind === "movie") tasteWatched("m:" + this.item.itemId, this.item.title, tasteWeightFor(pos, dur));
+    else if (pos >= 180) tasteWatched("s:" + w.seriesId, w.seriesName || "", 1);
+  }
+
   // Movies drop out of Continue Watching; series move on to the next episode.
   private applyFinished(): void {
+    // Watched to the end: a movie counts most, a series a little more each episode.
+    const w = this.watching;
+    if (w.kind === "movie") tasteFinished("m:" + this.item.itemId, this.item.title);
+    else if (this.tasteEpisode !== this.index) {
+      this.tasteEpisode = this.index;
+      tasteEpisodeDone("s:" + w.seriesId, w.seriesName || "");
+    }
     const change = finishedChange(this.watching, this.index);
     if (change.put) progressPut(change.put);
     if (change.remove) progressRemove(change.remove);

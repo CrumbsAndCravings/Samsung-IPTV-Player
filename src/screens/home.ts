@@ -4,10 +4,13 @@
 // are in the page, and rows load a few at a time as you scroll, so a big library
 // doesn't choke the TV.
 //
-// Home holds Continue Watching, then up to 18 rows: new releases first, then the rest,
-// movies and series taking turns and each language you watch taking turns. Movies and
-// Series list every wanted category. Each row ends with a See all tile for its whole
-// category. Holding OK on a Continue Watching poster offers to remove it.
+// Home holds Continue Watching, then My List, Top picks for you and up to two "Because
+// you watched" rows (picked from the stored library and what you watch, core/taste.ts),
+// then up to 18 rows: new releases first, then the rest, movies and series taking turns
+// and each language you watch taking turns, the categories you like moving up after the
+// first two. Movies and Series list every wanted category, the ones you like after the
+// first. Each row ends with a See all tile for its whole category. Holding OK on a
+// poster offers My List, a rating, Account and, on Continue Watching, taking it off.
 
 import type { App, Screen } from "../app";
 import { languageTurns, organizeCategories, OrganizedCategory, takeTurns } from "../core/categories";
@@ -15,11 +18,14 @@ import { playCheck } from "../core/compat";
 import { applyInfo, Item, makeItem, metaLine } from "../core/items";
 import { log } from "../core/log";
 import { helperOn, languagePrefs } from "../core/personal";
-import { continueWatchingRow, progressRemove } from "../core/progress";
+import { listItem, myList, myListHas, myListToggle, titleKey } from "../core/mylist";
+import { continueWatchingRow, progressList, progressRemove } from "../core/progress";
 import { isRefusalCode } from "../core/refusals";
-import { sizedImage } from "../core/utils";
+import { nowSeconds, Rating, ratingLabel, tasteBecause, tasteHistory, tasteNotForMe, tasteOrder, tasteRate, tasteRating, tasteSaveScores, tasteScores } from "../core/taste";
+import { Json, sizedImage } from "../core/utils";
 import { Category, POSTER_SIZE } from "../core/xtream";
 import { ApiError } from "../data/api";
+import { librarySaved } from "../data/library";
 import type { Key } from "../platform/keys";
 import { h, setText, toggle } from "../ui/dom";
 import { COL_W, itemKey, posterEl } from "../ui/poster";
@@ -40,7 +46,8 @@ const FULL_COLS = 9; // posters fully in view
 const HERO_REST_MS = 600;
 const ROW_BATCH = 5;
 const HOME_ROWS = 18;
-const HOLD_MS = 700; // holding OK this long on a Continue Watching poster
+const HOLD_MS = 700; // holding OK this long on a poster opens its menu
+const PICKS_AFTER_MS = 6000; // the rows picked for you come after Home's own
 
 interface PlanEntry {
   kind: "movie" | "series";
@@ -70,6 +77,9 @@ interface RowState {
   title: string;
   items: Item[];
   isContinue: boolean;
+  // Rows picked for you: "list" (My List), "picks" (Top picks for you), or the key of the
+  // title a "Because you watched" row is about.
+  slot: string;
   col: number; // focused poster
   scroll: number; // first poster in view
   el: HTMLElement | null;
@@ -115,8 +125,11 @@ export class HomeScreen implements Screen {
   private heroItem: Item | null = null;
   private heroTimer = 0;
   private heroDebounce = 0;
-  private holdTimer = 0; // OK is down on a Continue Watching poster
+  private holdTimer = 0; // OK is down on a poster
   private unsubscribeSync: (() => void) | null = null;
+  private picksTimer = 0;
+  private picksStamp = ""; // what the rows picked for you were last picked from
+  private unsubscribeLibrary: (() => void) | null = null;
 
   constructor(private app: App) {
     this.tabEls = TABS.map((name) => h("div", { class: "nav-tab", text: name }));
@@ -181,14 +194,16 @@ export class HomeScreen implements Screen {
   private buildPlan(tab: number): PlanEntry[] {
     const movies = organized(this.movieCats || []);
     const series = organized(this.seriesCats || []);
-    if (tab === 1) return planEntries(movies, "movie", null);
-    if (tab === 2) return planEntries(series, "series", null);
+    // The categories you like move up (core/taste.ts): after the first row on Movies and
+    // Series, after the first two (new releases) on Home.
+    const scores = tasteScores();
+    if (tab === 1) return tasteOrder(planEntries(movies, "movie", null), scores, 1);
+    if (tab === 2) return tasteOrder(planEntries(series, "series", null), scores, 1);
     if (tab !== 0) return [];
     const langs = languagePrefs();
     const newest = takeTurns(planEntries(movies, "movie", true), planEntries(series, "series", true));
     const rest = languageTurns(takeTurns(planEntries(movies, "movie", false), planEntries(series, "series", false)), langs);
-    return newest
-      .concat(rest)
+    return tasteOrder(newest.concat(rest), scores, 2)
       .slice(0, HOME_ROWS)
       .map((entry) => {
         entry.title = entry.label + (entry.kind === "series" ? "  ·  Series" : "  ·  Movies");
@@ -208,6 +223,7 @@ export class HomeScreen implements Screen {
     if (tab === 0) {
       const cw = continueWatchingRow();
       if (cw) this.rows.push(this.rowState(cw.title, cw.items, true));
+      this.addPersonalRows();
     }
     this.appendRows(ROW_BATCH);
     this.styleNav();
@@ -230,8 +246,8 @@ export class HomeScreen implements Screen {
     this.onFocusMoved();
   }
 
-  private rowState(title: string, items: Item[], isContinue = false): RowState {
-    return { title, items, isContinue, col: 0, scroll: 0, el: null, strip: null, posters: {} };
+  private rowState(title: string, items: Item[], isContinue = false, slot = ""): RowState {
+    return { title, items, isContinue, slot, col: 0, scroll: 0, el: null, strip: null, posters: {} };
   }
 
   private appendRows(count: number): void {
@@ -416,7 +432,7 @@ export class HomeScreen implements Screen {
         meta = "Won't play on this TV (" + check.label + ")" + (meta ? "   ·   " + meta : "");
       }
     }
-    if (this.continueItem() === item) meta += "   ·   Hold OK to remove";
+    if (titleKey(item) !== "") meta += "   ·   Hold OK for more";
     setText(this.heroMeta, meta);
     toggle(this.heroMeta, "is-warning", blocked);
     setText(this.heroPlot, item.description);
@@ -549,15 +565,15 @@ export class HomeScreen implements Screen {
         this.moveCol(1);
         break;
       case "ok": {
-        const item = this.continueItem();
-        if (item) {
-          // Held, it offers to remove the title; let go sooner and it opens.
+        const item = this.focusedItem();
+        if (item && titleKey(item) !== "") {
+          // Held, it opens the title's menu; let go sooner and it opens the title.
           window.clearTimeout(this.holdTimer);
           this.holdTimer = window.setTimeout(() => {
             this.holdTimer = 0;
-            this.showContinueMenu(item);
+            this.showTitleMenu(item);
           }, HOLD_MS);
-        } else this.open(this.focusedItem());
+        } else this.open(item);
         break;
       }
       case "play":
@@ -582,7 +598,7 @@ export class HomeScreen implements Screen {
     if (key !== "ok" || !this.holdTimer) return;
     window.clearTimeout(this.holdTimer);
     this.holdTimer = 0;
-    this.open(this.continueItem());
+    this.open(this.focusedItem());
   }
 
   private open(item: Item | null): void {
@@ -594,31 +610,169 @@ export class HomeScreen implements Screen {
     this.app.push(new DetailsScreen(this.app, item));
   }
 
+  // --- Picked for you (the Roku app's 0.5.7 and 0.5.8; docs/features.md §5.1.1) -------
+  //
+  // My List, "Top picks for you" and "Because you watched" rows under Continue Watching,
+  // from what you watch (core/taste.ts) and the library stored on the TV, so they cost
+  // the provider nothing. They're laid out as placeholders straight away, so nothing
+  // jumps when they arrive, and picked 6 s after Home's own rows. With no stored library
+  // yet (it's built the first time Search, Categories or a See all page is used), they
+  // wait for a launch that has one.
+
+  private addPersonalRows(): void {
+    // My List first, as name cards until the library brings their pictures.
+    const list = myList();
+    if (list.length > 0) this.rows.push(this.rowState("My List", list.map((e) => listItem(e, "")), false, "list"));
+    if (librarySaved() && (tasteHistory().length > 0 || progressList().length > 0)) {
+      this.rows.push(this.rowState("Top picks for you", placeholders(), false, "picks"));
+      for (const title of tasteBecause(tasteHistory(), 2)) this.rows.push(this.rowState("Because you watched " + title.n, placeholders(), false, title.k));
+    }
+    this.picksStamp = "";
+    window.clearTimeout(this.picksTimer);
+    if (this.rows.some((r) => r.slot !== "")) this.picksTimer = window.setTimeout(() => this.askPicks(), PICKS_AFTER_MS);
+  }
+
+  // What the picks depend on; when it hasn't changed, they aren't picked again.
+  private personalStamp(): string {
+    return JSON.stringify([tasteHistory(), progressList().map((e) => e.k), myList().map((e) => e.k)]);
+  }
+
+  private askPicks(): void {
+    const library = this.app.library;
+    if (this.tab !== 0 || !library || !this.rows.some((r) => r.slot !== "")) return;
+    // Only with a stored library: building one asks the provider for every category.
+    if (!librarySaved() && !library.hasTitles) return;
+    library.start();
+    if (!library.hasTitles) {
+      // The saved library is still being read: pick once it's in.
+      if (!this.unsubscribeLibrary) {
+        this.unsubscribeLibrary = library.onChange(() => {
+          if (!library.hasTitles) return;
+          if (this.unsubscribeLibrary) this.unsubscribeLibrary();
+          this.unsubscribeLibrary = null;
+          this.askPicks();
+        });
+      }
+      return;
+    }
+    const stamp = this.personalStamp();
+    if (stamp === this.picksStamp) return;
+    this.picksStamp = stamp;
+    const because = this.rows.filter((r) => r.slot !== "" && r.slot !== "list" && r.slot !== "picks").map((r) => ({ k: r.slot, n: r.title.replace(/^Because you watched /, "") }));
+    const generation = this.generation;
+    const started = Date.now();
+    const picked = library.picks({ history: tasteHistory(), watching: progressList() as unknown as Json[], because, list: myList() }, nowSeconds());
+    log("picks:", picked.rows.map((r) => r.slot + " " + r.items.length).join(", "), "in", Date.now() - started, "ms");
+    if (generation !== this.generation) return;
+    // Kept to order the rows next time.
+    tasteSaveScores(picked.scores);
+    for (const answer of picked.rows) {
+      const row = this.rows.filter((r) => r.slot === answer.slot)[0];
+      if (!row) continue;
+      if (answer.items.length > 0) {
+        row.items = answer.items;
+        this.rebuildRow(row);
+      } else if (answer.slot !== "list") this.dropRow(row, false); // nothing to pick: the row goes
+    }
+    if (!this.navFocused) this.onFocusMoved();
+  }
+
+  // My List changed (on Details, or from a poster's menu): its row follows, under
+  // Continue Watching, keeping the pictures it had and the focus on the same poster.
+  private syncListRow(): void {
+    if (this.tab !== 0 || !this.movieCats) return;
+    const list = myList();
+    const at = this.rows.findIndex((r) => r.slot === "list");
+    const old = at >= 0 ? this.rows[at] : null;
+    if (list.length === 0) {
+      if (old) {
+        this.detachRow(old);
+        this.rows.splice(at, 1);
+        if (this.rowIndex > at || this.rowIndex >= this.rows.length) this.rowIndex = Math.max(0, this.rowIndex - 1);
+        for (const row of this.rows) this.detachRow(row);
+        this.renderRows();
+      }
+      return;
+    }
+    const posters: { [key: string]: string } = {};
+    if (old) for (const item of old.items) posters[titleKey(item)] = item.poster;
+    const items = list.map((e) => listItem(e, posters[e.k] || ""));
+    if (old) {
+      const focused = old.items[old.col];
+      old.items = items;
+      const keep = focused ? items.findIndex((i) => titleKey(i) === titleKey(focused)) : -1;
+      old.col = keep >= 0 ? keep : Math.min(old.col, items.length - 1);
+      this.rebuildRow(old);
+      return;
+    }
+    const index = this.rows.length > 0 && this.rows[0].isContinue ? 1 : 0;
+    this.rows.splice(index, 0, this.rowState("My List", items, false, "list"));
+    if (this.rowIndex >= index && this.rows.length > 1 && !this.navFocused) this.rowIndex++;
+    for (const row of this.rows) this.detachRow(row);
+    this.renderRows();
+  }
+
+  // Holding OK on a poster: My List, a rating, and on Continue Watching taking it off;
+  // Account last.
+  private showTitleMenu(item: Item): void {
+    const key = titleKey(item);
+    const rating = tasteRating(key);
+    const buttons: { label: string; action?: () => void }[] = [
+      {
+        label: myListHas(key) ? "Remove from My List" : "Add to My List",
+        action: () => {
+          myListToggle(key, item.title, item.kind === "series" ? "" : item.ext);
+          this.syncListRow();
+          this.askPicks();
+        },
+      },
+      { label: rating === 0 ? "Rate it" : "Rated: " + ratingLabel(rating), action: () => this.showRateMenu(item) },
+    ];
+    if (this.continueItem() === item) {
+      buttons.push({
+        label: "Remove from Continue Watching",
+        action: () => {
+          // Taken off early, it counts against what it's like.
+          tasteNotForMe(key, item.progress);
+          progressRemove(key);
+          this.refreshContinueWatching();
+          if (this.app.sync) this.app.sync.now();
+        },
+      });
+    }
+    buttons.push({ label: "Account", action: () => this.accountMenu() });
+    this.app.dialog({ title: item.title, buttons });
+  }
+
+  // "Not for me", "I like this" or "Love this!": shapes Top picks, Because you watched and
+  // the order of the rows.
+  private showRateMenu(item: Item): void {
+    const key = titleKey(item);
+    const choices: { label: string; rating: Rating }[] = [
+      { label: "Not for me", rating: -1 },
+      { label: "I like this", rating: 1 },
+      { label: "Love this!", rating: 2 },
+    ];
+    if (tasteRating(key) !== 0) choices.push({ label: "Take my rating away", rating: 0 });
+    this.app.dialog({
+      title: item.title,
+      message: "How was it? Your ratings shape Top picks for you and the rows you see first.",
+      buttons: choices.map((c) => ({
+        label: c.label,
+        action: () => {
+          tasteRate(key, item.title, c.rating);
+          this.askPicks();
+        },
+      })),
+    });
+  }
+
   // --- Continue Watching --------------------------------------------------------------
 
   // The focused poster when it's in the Continue Watching row.
   private continueItem(): Item | null {
     if (this.navFocused || this.rowIndex !== 0 || !this.rows[0] || !this.rows[0].isContinue) return null;
     return this.focusedItem();
-  }
-
-  private showContinueMenu(item: Item): void {
-    this.app.dialog({
-      title: item.title,
-      message: "Remove it from Continue Watching? Where you stopped is forgotten.",
-      buttons: [
-        {
-          label: "Remove from Continue Watching",
-          action: () => {
-            progressRemove((item.kind === "series" ? "s:" : "m:") + item.itemId);
-            this.refreshContinueWatching();
-            if (this.app.sync) this.app.sync.now();
-          },
-        },
-        { label: "Keep it" },
-      ],
-      focus: 1,
-    });
   }
 
   private refreshContinueWatching(): void {
@@ -670,8 +824,11 @@ export class HomeScreen implements Screen {
   // --- Screen -------------------------------------------------------------------------
 
   onShow(): void {
-    // Back from Details or the player: Continue Watching may have changed.
+    // Back from Details or the player: Continue Watching, My List and what you've
+    // watched may have changed.
     this.refreshContinueWatching();
+    this.syncListRow();
+    if (this.picksStamp !== "") this.askPicks();
     // Pick up what other devices watched (at most once a minute).
     if (this.app.sync) this.app.sync.soon();
     this.styleNav();
@@ -688,7 +845,9 @@ export class HomeScreen implements Screen {
   destroy(): void {
     this.onHide();
     this.generation++;
+    window.clearTimeout(this.picksTimer);
     if (this.unsubscribeSync) this.unsubscribeSync();
+    if (this.unsubscribeLibrary) this.unsubscribeLibrary();
   }
 
   // For the screenshot script and tests.
