@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { comboOf, isFormatError, learnResult, playCheck } from "../src/core/compat";
+import { comboOf, isFormatError, learnResult, needsUhdDecoder, playCheck } from "../src/core/compat";
 import { MemoryStore, readJson, useStore } from "../src/core/storage";
 
 const file = (key: string, ext: string, video = "", audio = "") => ({ key, ext, videoCodec: video, videoProfile: "", audioCodec: audio });
@@ -74,5 +74,33 @@ describe("playability on this TV", () => {
     expect("m:x1" in saved).toBe(false); // the oldest went first
     expect("m:x6" in saved).toBe(true);
     expect(playCheck(file("m:x0", "mkv", "hevc")).verdict).toBe("blocked");
+  });
+});
+
+describe("the 4K decoder", () => {
+  beforeEach(() => useStore(new MemoryStore()));
+
+  it("is for files wider than 1920, and ones encoded beyond the HD decoder", () => {
+    expect(needsUhdDecoder("hevc", 3840, 153)).toBe(true);
+    expect(needsUhdDecoder("h264", 1920, 41)).toBe(false);
+    expect(needsUhdDecoder("h264", 1920, 42)).toBe(false);
+    // The Super Mario Galaxy Movie: 1920x804, High@5.0, 16 reference frames.
+    expect(needsUhdDecoder("h264", 1920, 50)).toBe(true);
+    expect(needsUhdDecoder("hevc", 1920, 123)).toBe(false);
+    expect(needsUhdDecoder("hevc", 1920, 150)).toBe(true);
+    // Unknown level or another codec: as before.
+    expect(needsUhdDecoder("h264", 1920, 0)).toBe(false);
+    expect(needsUhdDecoder("mpeg4", 720, 0)).toBe(false);
+  });
+
+  it("isn't held back by a failure from before it was used", () => {
+    const mario = { ...file("m:1342139", "mkv", "h264", "ac3"), videoProfile: "High" };
+    learnResult(mario, false, NOT_SUPPORTED);
+    // Tried with the HD decoder, which can't hold it: with the 4K decoder it's tried again.
+    expect(playCheck(mario).verdict).toBe("blocked");
+    expect(playCheck({ ...mario, uhd: true }).verdict).toBe("ok");
+    // A failure with the 4K decoder too counts as usual.
+    learnResult({ ...mario, uhd: true }, false, NOT_SUPPORTED);
+    expect(playCheck({ ...mario, uhd: true }).verdict).toBe("blocked");
   });
 });

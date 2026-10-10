@@ -62,6 +62,7 @@ export function isAdultItem(raw: Json): boolean {
 export interface CodecInfo {
   videoCodec: string;
   videoProfile: string;
+  videoLevel: number; // ffprobe's level: H.264 x10, HEVC x30; 0 when unknown
   audioCodec: string;
 }
 
@@ -79,6 +80,7 @@ export function codecFields(info: Json): CodecInfo {
   return {
     videoCodec: picture ? "" : fieldStr(video, "codec_name"),
     videoProfile: picture ? "" : fieldStr(video, "profile"),
+    videoLevel: picture ? 0 : Math.max(0, toInt(field(video, "level"))),
     audioCodec: fieldStr(audio, "codec_name"),
   };
 }
@@ -128,6 +130,7 @@ export function parseVodInfo(data: Json): VodInfo {
     width: videoWidth(info),
     videoCodec: codecs.videoCodec,
     videoProfile: codecs.videoProfile,
+    videoLevel: codecs.videoLevel,
     audioCodec: codecs.audioCodec,
   };
 }
@@ -271,6 +274,7 @@ function parseEpisode(ep: JsonObject, seasonNo: number, seriesName: string): Epi
     width: videoWidth(info),
     videoCodec: codecs.videoCodec,
     videoProfile: codecs.videoProfile,
+    videoLevel: codecs.videoLevel,
     audioCodec: codecs.audioCodec,
   };
 }
@@ -371,6 +375,7 @@ export function episodeItem(ep: Episode, seriesId: string): Item {
     width: ep.width,
     videoCodec: ep.videoCodec,
     videoProfile: ep.videoProfile,
+    videoLevel: ep.videoLevel,
     audioCodec: ep.audioCodec,
     hasInfo: true,
   });

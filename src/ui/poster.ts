@@ -4,7 +4,7 @@
 // need no caption space. Titles this TV can't play are dimmed, and placeholders pulse
 // while a row loads. Category and See all cards are the name on a tinted card.
 
-import { playCheck } from "../core/compat";
+import { needsUhdDecoder, playCheck } from "../core/compat";
 import { helperOn } from "../core/personal";
 import type { Item } from "../core/items";
 import { h } from "./dom";
@@ -23,7 +23,8 @@ export function itemKey(item: Item): string {
 export function isBlocked(item: Item): boolean {
   if (item.kind !== "movie" && item.kind !== "episode") return false;
   if (item.placeholder || helperOn()) return false;
-  return playCheck({ key: itemKey(item), ext: item.ext, videoCodec: item.videoCodec, videoProfile: item.videoProfile, audioCodec: item.audioCodec }).verdict === "blocked";
+  const uhd = needsUhdDecoder(item.videoCodec, item.width, item.videoLevel);
+  return playCheck({ key: itemKey(item), ext: item.ext, videoCodec: item.videoCodec, videoProfile: item.videoProfile, audioCodec: item.audioCodec, uhd }).verdict === "blocked";
 }
 
 function frame(card: HTMLElement): HTMLElement {

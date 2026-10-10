@@ -37,11 +37,12 @@ describe("VOD info", () => {
         backdrop_path: ["https://image.tmdb.org/t/p/w1280/h.jpg"],
         cast: "A, B",
         tmdb_id: "603",
-        video: { codec_name: "h264", profile: "High", width: 1920 },
+        video: { codec_name: "h264", profile: "High", width: 1920, level: 50 },
         audio: { codec_name: "aac" },
       },
       movie_data: { stream_id: 9, container_extension: "mkv" },
     });
+    expect(vod.videoLevel).toBe(50);
     expect(vod.description).toBe("Heist.");
     expect(vod.year).toBe("2019");
     expect(vod.durationSecs).toBe(5400);
@@ -54,6 +55,7 @@ describe("VOD info", () => {
   });
   it("survives the info: [] quirk", () => {
     expect(parseVodInfo({ info: [], movie_data: [] }).description).toBe("");
+    expect(parseVodInfo({ info: [], movie_data: [] }).videoLevel).toBe(0);
   });
 });
 

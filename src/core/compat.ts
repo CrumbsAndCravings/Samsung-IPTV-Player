@@ -23,6 +23,7 @@ export interface FileFacts {
   videoCodec: string;
   videoProfile: string;
   audioCodec: string;
+  uhd?: boolean; // AVPlay opens it with its 4K decoder (needsUhdDecoder)
 }
 
 interface Learned {
@@ -30,6 +31,26 @@ interface Learned {
   error: string;
   combo: string;
   at: number;
+  uhd?: boolean; // tried with the 4K decoder
+}
+
+// Whether AVPlay needs its 4K decoder (SET_MODE_4K) for a file: one wider than 1920,
+// or one encoded beyond what the HD decoder holds even at 1080p. H.264 above level 4.2
+// (The Super Mario Galaxy Movie: level 5.0 with 16 reference frames, where the HD
+// decoder holds 5 at that size) and HEVC above 4.1 (level x30, so 123) need it; the
+// HD decoder refuses them as PLAYER_ERROR_NOT_SUPPORTED_FORMAT. `level` is ffprobe's,
+// 0 when unknown.
+export function needsUhdDecoder(videoCodec: string, width: number, level: number): boolean {
+  if (width > 1920) return true;
+  const codec = videoCodec.toLowerCase();
+  if (codec === "h264") return level > 42;
+  if (codec === "hevc" || codec === "h265") return level > 123;
+  return false;
+}
+
+// A failure without the 4K decoder says nothing about a file that now gets it.
+function counts(entry: Learned, f: FileFacts): boolean {
+  return entry.ok || !!entry.uhd || !f.uhd;
 }
 
 // Containers the M0 checks found don't play here. Blocked, not warned: none of the four
@@ -76,7 +97,7 @@ export function isFormatError(error: string): boolean {
 export function playCheck(f: FileFacts): PlayCheck {
   const all = learned();
   const mine = all[f.key];
-  if (mine) {
+  if (mine && counts(mine, f)) {
     if (mine.ok) return { verdict: "ok", reason: "", label: "" };
     return {
       verdict: "blocked",
@@ -89,7 +110,7 @@ export function playCheck(f: FileFacts): PlayCheck {
     let failed = 0;
     let played = 0;
     for (const key of Object.keys(all)) {
-      if (all[key].combo !== combo) continue;
+      if (all[key].combo !== combo || !counts(all[key], f)) continue;
       if (all[key].ok) played++;
       else failed++;
     }
@@ -111,7 +132,7 @@ export function playCheck(f: FileFacts): PlayCheck {
 export function learnResult(f: FileFacts, played: boolean, error: string, nowSeconds = Math.floor(Date.now() / 1000)): void {
   if (!played && !isFormatError(error)) return;
   const all = Object.assign({}, learned());
-  all[f.key] = { ok: played, error: played ? "" : error, combo: comboOf(f), at: nowSeconds };
+  all[f.key] = { ok: played, error: played ? "" : error, combo: comboOf(f), at: nowSeconds, uhd: !!f.uhd };
   const keys = Object.keys(all);
   if (keys.length > MAX_LEARNED) {
     keys.sort((a, b) => all[a].at - all[b].at);

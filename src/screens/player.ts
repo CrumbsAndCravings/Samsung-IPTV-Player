@@ -12,7 +12,7 @@
 // and choose their font, size, colour, background, edge and place.
 
 import type { App, Screen } from "../app";
-import { FileFacts, learnResult, playCheck, PlayCheck } from "../core/compat";
+import { FileFacts, isFormatError, learnResult, needsUhdDecoder, playCheck, PlayCheck } from "../core/compat";
 import type { Item } from "../core/items";
 import { log, logError } from "../core/log";
 import type { FindRequest } from "../core/opensubtitles";
@@ -107,6 +107,7 @@ function factsOf(item: Item): FileFacts {
     videoCodec: item.videoCodec,
     videoProfile: item.videoProfile,
     audioCodec: item.audioCodec,
+    uhd: needsUhdDecoder(item.videoCodec, item.width, item.videoLevel),
   };
 }
 
@@ -451,7 +452,7 @@ export class PlayerScreen implements Screen {
     this.show(this.spinnerEl, true);
     log("play", factsOf(item).key, ext, item.videoCodec, item.audioCodec, "attempt", this.attempt + 1);
     this.player
-      .open(url, this.events(token), { uhd: item.width > 1920 })
+      .open(url, this.events(token), { uhd: needsUhdDecoder(item.videoCodec, item.width, item.videoLevel) })
       .then(() => {
         if (token !== this.streamToken) return undefined;
         const total = this.player.durationMs();
@@ -527,7 +528,8 @@ export class PlayerScreen implements Screen {
     this.offsetMs = from * 1000;
     this.positionMs = from * 1000;
     const helper = this.helper;
-    const uhd = !!helper && helper.width > 1920 && this.helperVideo === "copy";
+    // A kept picture needs the same decoder as the file itself; a converted one doesn't.
+    const uhd = this.helperVideo === "copy" && needsUhdDecoder(item.videoCodec || (helper ? helper.videoCodec : ""), Math.max(item.width, helper ? helper.width : 0), item.videoLevel);
     log("play via helper", factsOf(item).key, "from", from, this.helperVideo, "attempt", this.attempt + 1);
     this.player
       .open(helperStreamUrl(item, from, this.helperVideo, !!(helper && helper.previews)), this.events(token), { uhd })
@@ -725,12 +727,15 @@ export class PlayerScreen implements Screen {
     window.clearTimeout(this.stallTimer);
     this.stopStream();
     this.clearSubtitle();
-    // The TV refused the repackaged picture: convert it instead, and remember that.
+    // The TV refused the picture as it is: convert it instead. For DivX and Xvid that's
+    // remembered for files like it; anything else refused for its format (a picture
+    // encoded for a bigger decoder than this TV's, say) is converted for this file only.
     const helper = this.helper;
-    if (this.route === "helper" && !this.started && helper && this.helperVideo === "copy" && helper.videoPlan === "try" && !this.convertTried) {
+    const refused = this.route === "helper" && !this.started && !!helper && this.helperVideo === "copy" && !this.convertTried;
+    if (refused && helper && (helper.videoPlan === "try" || isFormatError(label))) {
       this.convertTried = true;
       this.helperVideo = "convert";
-      learnMode(helper.videoCodec, "convert");
+      if (helper.videoPlan === "try") learnMode(helper.videoCodec, "convert");
       log("helper: the TV refused the picture as it is; converting it");
       this.show(this.spinnerEl, true);
       this.retryTimer = window.setTimeout(() => this.loadStream(), RETRY_AFTER_MS);

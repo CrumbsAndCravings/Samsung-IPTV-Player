@@ -20,7 +20,7 @@ export interface Track {
 }
 
 export interface OpenOptions {
-  uhd?: boolean; // the file is wider than 1920 px (AVPlay needs 4K mode set up front)
+  uhd?: boolean; // AVPlay needs its 4K decoder, set up front (core/compat.ts needsUhdDecoder)
 }
 
 export class PlayerError extends Error {

@@ -14,7 +14,7 @@
 
 import type { App, Screen } from "../app";
 import { languageTurns, organizeCategories, OrganizedCategory, takeTurns } from "../core/categories";
-import { playCheck } from "../core/compat";
+import { needsUhdDecoder, playCheck } from "../core/compat";
 import { applyInfo, backdropPictures, Item, makeItem, metaLine } from "../core/items";
 import { log } from "../core/log";
 import { helperOn, languagePrefs } from "../core/personal";
@@ -464,7 +464,8 @@ export class HomeScreen implements Screen {
     let meta = item.caption ? "Resume  " + item.caption : metaLine(item);
     let blocked = false;
     if (item.kind !== "series" && !helperOn()) {
-      const check = playCheck({ key: itemKey(item), ext: item.ext, videoCodec: item.videoCodec, videoProfile: item.videoProfile, audioCodec: item.audioCodec });
+      const uhd = needsUhdDecoder(item.videoCodec, item.width, item.videoLevel);
+      const check = playCheck({ key: itemKey(item), ext: item.ext, videoCodec: item.videoCodec, videoProfile: item.videoProfile, audioCodec: item.audioCodec, uhd });
       if (check.verdict === "blocked") {
         blocked = true;
         meta = "Won't play on this TV (" + check.label + ")" + (meta ? "   ·   " + meta : "");

@@ -8,7 +8,7 @@
 // rows picked for you (core/mylist.ts, core/taste.ts).
 
 import type { App, Screen } from "../app";
-import { FileFacts, playCheck } from "../core/compat";
+import { FileFacts, needsUhdDecoder, playCheck } from "../core/compat";
 import { helperOn } from "../core/personal";
 import { applyInfo, backdropPictures, Item, metaLine } from "../core/items";
 import { log } from "../core/log";
@@ -41,6 +41,7 @@ function factsOf(item: Item): FileFacts {
     videoCodec: item.videoCodec,
     videoProfile: item.videoProfile,
     audioCodec: item.audioCodec,
+    uhd: needsUhdDecoder(item.videoCodec, item.width, item.videoLevel),
   };
 }
 
