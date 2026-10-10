@@ -87,9 +87,11 @@ describe("audio rescue", () => {
     expect(canDecodeAudio("")).toBe(true);
   });
   it("switches to a playable track, the same language first", () => {
-    expect(audioRescue(options, "1")).toEqual({ id: "3", note: "Switched to English · Dolby AC-3, because this TV can't play DTS audio." });
+    expect(audioRescue(options, "1")).toEqual({ id: "3", note: "Switched to English · Dolby AC-3, because this TV can't play DTS audio.", sameLanguage: true });
     expect(audioRescue(options, "2")).toBeNull();
+    // Only another language plays: said, so the helper can convert this one instead.
     expect(audioRescue(options.slice(0, 2), "1")!.id).toBe("2");
+    expect(audioRescue(options.slice(0, 2), "1")!.sameLanguage).toBe(false);
   });
   it("says why there may be no sound", () => {
     const only = audioRescue(options.slice(0, 1), "1");

@@ -99,7 +99,7 @@ import { httpGet } from "./http-get.mjs";
 import { parseRange, SourceFiles } from "./source.mjs";
 import { lanAddress, smallComputer, tailscaleAddress } from "./where.mjs";
 
-const VERSION = "1.5";
+const VERSION = "1.6";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const personalPath = process.env.ARANPLUS_PERSONAL || path.join(root, "personal.json");
 const DEFAULT_PORT = 8090;

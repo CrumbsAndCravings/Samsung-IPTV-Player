@@ -9,6 +9,7 @@ export function parseProbe(text: string): ProbeResult;
 export function videoPlan(codec: string): "copy" | "try" | "convert";
 export function hlsVideoPlan(codec: string): "copy" | "convert";
 export function audioPlan(stream: { codec: string; channels: number }): "copy" | "ac3" | "aac";
+export function ac3Args(channels: number, n?: number): string[];
 export const ENCODERS: { [name: string]: string[] };
 export function x264Args(preset: string): string[];
 export const X264_PRESETS: string[];

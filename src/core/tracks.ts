@@ -98,16 +98,18 @@ export function canDecodeAudio(format: string): boolean {
 }
 
 // At playback start, when the track playing can't be decoded: another to switch to
-// (the same language first), with the note to show, or no id and a note saying why
-// there may be no sound. Null when the track is fine (the Roku app's audio rescue).
-export function audioRescue(options: TrackOption[], currentId: string): { id: string; note: string } | null {
+// (the same language first; `sameLanguage` says whether it is), with the note to show,
+// or no id and a note saying why there may be no sound. Null when the track is fine
+// (the Roku app's audio rescue).
+export function audioRescue(options: TrackOption[], currentId: string): { id: string; note: string; sameLanguage: boolean } | null {
   const current = options.filter((o) => o.id === currentId)[0];
   if (!current || canDecodeAudio(current.format || "")) return null;
   const bad = codecLabel(current.format || "");
   const playable = options.filter((o) => o.id !== currentId && canDecodeAudio(o.format || ""));
-  const pick = playable.filter((o) => o.language === current.language)[0] || playable[0];
-  if (pick) return { id: pick.id, note: "Switched to " + pick.label + ", because this TV can't play " + bad + " audio." };
-  return { id: "", note: "No sound? This file's audio is " + bad + ", which this TV can't play. Your provider may have another version of this title." };
+  const same = playable.filter((o) => o.language === current.language)[0];
+  const pick = same || playable[0];
+  if (pick) return { id: pick.id, note: "Switched to " + pick.label + ", because this TV can't play " + bad + " audio.", sameLanguage: !!same };
+  return { id: "", note: "No sound? This file's audio is " + bad + ", which this TV can't play. Your provider may have another version of this title.", sameLanguage: false };
 }
 
 // "Audio now: Dolby AC-3." for the Audio & subtitles panel, or "".

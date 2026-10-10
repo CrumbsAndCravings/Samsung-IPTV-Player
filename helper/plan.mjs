@@ -78,6 +78,18 @@ export function audioPlan(stream) {
   return stream.channels > 2 ? "ac3" : "aac";
 }
 
+// Sound converted to AC-3 (Dolby Digital): at its highest rate, as on Blu-ray. AC-3
+// carries at most 5.1, so 6.1 and 7.1 (TrueHD and DTS-HD on 4K films) are mixed down to
+// 5.1 with the subwoofer kept and the back channels folded into the surrounds; left to
+// itself, FFmpeg picked 5.0 and dropped the subwoofer. `n` is the output stream's index
+// among the sound tracks, or -1 when there's one.
+export function ac3Args(channels, n = -1) {
+  const at = n >= 0 ? ":a:" + n : ":a";
+  const args = ["-c" + at, "ac3", "-b" + at, "640k"];
+  if (channels > 6) args.push("-ac" + at, "6");
+  return args;
+}
+
 // H.264 encoders, best first: NVIDIA, Intel Quick Sync, AMD, then the processor.
 // The processor's settings for `preset`: "veryfast" on a PC; "superfast" on a small
 // computer such as a Raspberry Pi, about half as fast again for a little more data at
@@ -134,7 +146,7 @@ export function ffmpegArgs({ url, start, video, encoder, probe, previews = null,
   audio.forEach((stream, i) => {
     const plan = audioPlan(stream);
     if (plan === "copy") args.push("-c:a:" + i, "copy");
-    else if (plan === "ac3") args.push("-c:a:" + i, "ac3", "-b:a:" + i, "448k");
+    else if (plan === "ac3") args.push(...ac3Args(stream.channels, i));
     else args.push("-c:a:" + i, "aac", "-b:a:" + i, "192k");
   });
   if (audio.length === 0) args.push("-c:a", "aac", "-b:a", "192k");
@@ -218,7 +230,7 @@ export function hlsArgs({ url, start, video, encoder, probe, dir, audioTrack = 0
   } else {
     const plan = audioPlan(sound);
     if (plan === "copy") args.push("-c:a", "copy");
-    else if (plan === "ac3") args.push("-c:a", "ac3", "-b:a", "448k");
+    else if (plan === "ac3") args.push(...ac3Args(sound.channels));
     else args.push("-c:a", "aac", "-b:a", "192k");
   }
   args.push("-sn", "-dn", "-f", "hls", "-hls_time", String(HLS_SECONDS), "-hls_list_size", "0", "-hls_playlist_type", "event");

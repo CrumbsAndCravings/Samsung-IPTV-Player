@@ -1566,10 +1566,11 @@ export class PlayerScreen implements Screen {
       const prefs = loadPrefs();
       const audio = audioPlan(prefs.audio || "", this.audioOpts);
       if (audio && audio !== this.currentAudio) this.selectAudio(audio);
-      // A track this TV can't decode (DTS, usually) would play silently.
+      // A track this TV can't decode (DTS or TrueHD, usually) would play silently.
       const rescue = audioRescue(this.audioOpts, this.currentAudio);
-      if (rescue && !rescue.id && this.route === "direct" && helperOn()) {
-        // No sound this TV can play: the helper converts it, now and next time.
+      if (rescue && !rescue.sameLanguage && this.route === "direct" && helperOn()) {
+        // No sound this TV can play in this language: the helper converts it (surround
+        // stays surround), now and next time, rather than another language playing.
         const current = this.audioOpts.filter((o) => o.id === this.currentAudio)[0];
         const format = current && current.format ? codecLabel(current.format) : "this";
         rememberNeedsHelper(factsOf(this.item).key);

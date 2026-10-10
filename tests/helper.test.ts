@@ -2,6 +2,7 @@
 // file. The text below is what `ffmpeg -i` prints for real files.
 import { describe, expect, it } from "vitest";
 import {
+  ac3Args,
   audioPlan,
   compressible,
   fetchAllowed,
@@ -84,7 +85,7 @@ describe("the helper", () => {
     const text = copy.join(" ");
     expect(text).toContain("-ss 754 -i http://p/1.mkv -map 0:V:0? -map 0:a?");
     expect(text).toContain("-c:v copy");
-    expect(text).toContain("-c:a:0 ac3 -b:a:0 448k -c:a:1 copy");
+    expect(text).toContain("-c:a:0 ac3 -b:a:0 640k -c:a:1 copy");
     expect(text).toContain("-f mpegts");
     expect(copy[copy.length - 1]).toBe("pipe:1");
     const avi = ffmpegArgs({ url: "http://p/1.avi", start: 0, video: "copy", encoder: "libx264", probe: parseProbe(AVI) }).join(" ");
@@ -137,6 +138,26 @@ describe("the helper", () => {
     expect(firstFrameSecs("")).toBeNull();
   });
 
+  it("keeps surround sound surround, 7.1 as 5.1 with its subwoofer", () => {
+    // Dolby Digital, Dolby Digital Plus (Atmos included) and AAC pass as they are.
+    expect(audioPlan({ codec: "eac3", channels: 6 })).toBe("copy");
+    expect(audioPlan({ codec: "ac3", channels: 6 })).toBe("copy");
+    expect(audioPlan({ codec: "truehd", channels: 8 })).toBe("ac3");
+    expect(audioPlan({ codec: "dts", channels: 2 })).toBe("aac");
+    // TrueHD 7.1 and DTS-HD 7.1: Dolby Digital 5.1 at its highest rate.
+    const atmos = parseProbe(`Input #0, matroska,webm, from 'x.mkv':
+  Duration: 02:10:00.00, start: 0.000000, bitrate: 40000 kb/s
+  Stream #0:0: Video: hevc (Main 10), yuv420p10le(tv), 3840x2160, 23.98 fps (default)
+  Stream #0:1(eng): Audio: truehd, 48000 Hz, 7.1, s32 (24 bit) (default)
+  Stream #0:2(eng): Audio: dts (DTS-HD MA), 48000 Hz, 5.1(side), s32p (24 bit)
+  Stream #0:3(eng): Audio: eac3, 48000 Hz, 5.1(side), fltp, 768 kb/s`);
+    expect(atmos.audio.map((a) => a.channels)).toEqual([8, 6, 6]);
+    const text = ffmpegArgs({ url: "u", start: 0, video: "copy", encoder: "libx264", probe: atmos }).join(" ");
+    expect(text).toContain("-c:a:0 ac3 -b:a:0 640k -ac:a:0 6 -c:a:1 ac3 -b:a:1 640k -c:a:2 copy");
+    expect(ac3Args(6).join(" ")).toBe("-c:a ac3 -b:a 640k");
+    expect(ac3Args(8).join(" ")).toBe("-c:a ac3 -b:a 640k -ac:a 6");
+  });
+
   it("converts on the processor with quicker settings on a small computer", () => {
     expect(x264Args("veryfast").join(" ")).toBe("-c:v libx264 -preset veryfast -crf 21 -pix_fmt yuv420p -profile:v high -level:v 4.1");
     expect(x264Args("superfast").join(" ")).toContain("-preset superfast -crf 23");
@@ -172,7 +193,7 @@ describe("the helper", () => {
     // MPEG-TS pieces, sound as the TV would have it (for the Roku later).
     const ts = hlsArgs({ url: "http://p/1.mkv", start: 0, video: "copy", encoder: "libx264", probe: mkv, dir: "/tmp/s3", audio: "keep", format: "ts" }).join(" ");
     expect(ts).not.toContain("hvc1");
-    expect(ts).toContain("-c:a ac3 -b:a 448k");
+    expect(ts).toContain("-c:a ac3 -b:a 640k");
     expect(ts).toContain("/tmp/s3/seg%05d.ts /tmp/s3/index.m3u8");
     expect(ts).not.toContain("webvtt");
   });
