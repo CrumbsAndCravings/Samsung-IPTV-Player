@@ -16,7 +16,7 @@ import { FileFacts, isFormatError, learnResult, needsUhdDecoder, playCheck, Play
 import type { Item } from "../core/items";
 import { log, logError } from "../core/log";
 import type { FindRequest } from "../core/opensubtitles";
-import { barFraction, helperStartMs, providerServerTrouble, SERVER_TROUBLE_TEXT } from "../core/playback";
+import { barFraction, bufferPlan, helperStartMs, providerServerTrouble, SERVER_TROUBLE_TEXT } from "../core/playback";
 import { progressPut, progressRemove } from "../core/progress";
 import { redact } from "../core/redact";
 import { httpDetail, isRefusalCode } from "../core/refusals";
@@ -452,7 +452,7 @@ export class PlayerScreen implements Screen {
     this.show(this.spinnerEl, true);
     log("play", factsOf(item).key, ext, item.videoCodec, item.audioCodec, "attempt", this.attempt + 1);
     this.player
-      .open(url, this.events(token), { uhd: needsUhdDecoder(item.videoCodec, item.width, item.videoLevel) })
+      .open(url, this.events(token), { uhd: needsUhdDecoder(item.videoCodec, item.width, item.videoLevel), buffer: bufferPlan(item.bitrateKbps, item.width) })
       .then(() => {
         if (token !== this.streamToken) return undefined;
         const total = this.player.durationMs();
@@ -532,7 +532,11 @@ export class PlayerScreen implements Screen {
     const uhd = this.helperVideo === "copy" && needsUhdDecoder(item.videoCodec || (helper ? helper.videoCodec : ""), Math.max(item.width, helper ? helper.width : 0), item.videoLevel);
     log("play via helper", factsOf(item).key, "from", from, this.helperVideo, "attempt", this.attempt + 1);
     this.player
-      .open(helperStreamUrl(item, from, this.helperVideo, !!(helper && helper.previews)), this.events(token), { uhd })
+      .open(helperStreamUrl(item, from, this.helperVideo, !!(helper && helper.previews)), this.events(token), {
+        uhd,
+        // A kept picture is as heavy as the file; a converted one is lighter.
+        buffer: this.helperVideo === "copy" ? bufferPlan(item.bitrateKbps, Math.max(item.width, helper ? helper.width : 0)) : null,
+      })
       .then(() => {
         if (token !== this.streamToken) return;
         this.stallTimer = window.setTimeout(() => {

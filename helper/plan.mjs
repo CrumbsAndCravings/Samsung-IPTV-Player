@@ -465,6 +465,21 @@ export function fetchAllowed(raw) {
 }
 
 // Hides the login and the helper's key in anything printed or sent back.
+// What the speed test found (helper/speed.mjs): `samples` are the bytes received in
+// each second, `needKbps` the film's average rate (0 when unknown). Megabits per second
+// on average and at the slowest five seconds in a row (a dip the TV's buffer has to ride
+// over), and the verdict: "fast" (never below the film's rate), "dips" (enough on
+// average, not always), "slow" (less than the film needs) or "" (no rate to compare).
+export function speedVerdict(needKbps, samples) {
+  const per = samples.map((bytes) => (bytes * 8) / 1e6);
+  const avg = per.reduce((a, b) => a + b, 0) / Math.max(1, per.length);
+  let low = per.length >= 5 ? Infinity : avg;
+  for (let i = 0; i + 5 <= per.length; i++) low = Math.min(low, per.slice(i, i + 5).reduce((a, b) => a + b, 0) / 5);
+  const need = needKbps / 1000;
+  const verdict = need <= 0 ? "" : avg < need ? "slow" : low < need ? "dips" : "fast";
+  return { avg, low, need, verdict };
+}
+
 export function redactor(login, key) {
   const secrets = [];
   const add = (value, label) => {

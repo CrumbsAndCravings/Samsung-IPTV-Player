@@ -66,6 +66,16 @@ export class AvPlayer implements Player {
             log("SET_MODE_4K failed:", err);
           }
         }
+        // A heavy file gathers more before playing, and before playing on after running
+        // dry (only possible before prepare).
+        if (options.buffer && this.av.setBufferingParam) {
+          try {
+            this.av.setBufferingParam("PLAYER_BUFFER_FOR_PLAY", "PLAYER_BUFFER_SIZE_IN_SECOND", options.buffer.play);
+            this.av.setBufferingParam("PLAYER_BUFFER_FOR_RESUME", "PLAYER_BUFFER_SIZE_IN_SECOND", options.buffer.resume);
+          } catch (err) {
+            log("setBufferingParam failed:", err);
+          }
+        }
         this.av.prepareAsync(
           () => resolve(),
           (err) => reject(new PlayerError((err && err.name) || "PREPARE_FAILED", (err && err.message) || "")),

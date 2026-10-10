@@ -33,6 +33,7 @@ export interface Item {
   // H.264 level x10 (50 = 5.0) or HEVC level x30 (153 = 5.1) from the provider's
   // summary, 0 when unknown: above what the HD decoder holds, AVPlay needs 4K mode.
   videoLevel: number;
+  bitrateKbps: number; // the file's average rate from the provider, 0 when unknown
   tmdbId: string;
   hasInfo: boolean; // details from get_vod_info / get_series_info are in
   placeholder: boolean; // a pulsing poster while a row loads
@@ -72,6 +73,7 @@ export function makeItem(values: Partial<Item>): Item {
     audioCodec: "",
     width: 0,
     videoLevel: 0,
+    bitrateKbps: 0,
     tmdbId: "",
     hasInfo: false,
     placeholder: false,
@@ -114,6 +116,8 @@ export function applyInfo(item: Item, info: Partial<Record<keyof Item, unknown>>
   if (width > 0) item.width = width;
   const level = toInt(info.videoLevel as number);
   if (level > 0) item.videoLevel = level;
+  const bitrate = toInt(info.bitrateKbps as number);
+  if (bitrate > 0) item.bitrateKbps = bitrate;
   item.hasInfo = true;
 }
 

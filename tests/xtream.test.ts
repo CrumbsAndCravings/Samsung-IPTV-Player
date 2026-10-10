@@ -39,10 +39,12 @@ describe("VOD info", () => {
         tmdb_id: "603",
         video: { codec_name: "h264", profile: "High", width: 1920, level: 50 },
         audio: { codec_name: "aac" },
+        bitrate: 15782,
       },
       movie_data: { stream_id: 9, container_extension: "mkv" },
     });
     expect(vod.videoLevel).toBe(50);
+    expect(vod.bitrateKbps).toBe(15782);
     expect(vod.description).toBe("Heist.");
     expect(vod.year).toBe("2019");
     expect(vod.durationSecs).toBe(5400);

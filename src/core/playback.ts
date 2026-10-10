@@ -45,3 +45,14 @@ export function helperStartMs(askedSecs: number, startsAt: number): number {
   if (!(startsAt >= 0) || startsAt > askedSecs || askedSecs - startsAt > 60) return askedSecs * 1000;
   return Math.round(startsAt * 1000);
 }
+
+// How much the TV gathers before playing, and before playing on after running dry, for
+// a heavy file (4K, or 12 Mbit/s and more): 5 and 15 seconds, as in Samsung's AVPlay
+// example, over the TV's small default, so a dip in the provider's speed doesn't pause
+// it. Null for lighter files, which start as quickly as before.
+export const HEAVY_KBPS = 12000;
+
+export function bufferPlan(bitrateKbps: number, width: number): { play: number; resume: number } | null {
+  if (bitrateKbps < HEAVY_KBPS && width <= 1920) return null;
+  return { play: 5, resume: 15 };
+}

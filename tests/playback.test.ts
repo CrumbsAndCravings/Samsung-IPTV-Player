@@ -1,6 +1,6 @@
 // Ported from the Roku app's tests/utils_test.brs (seeking).
 import { describe, expect, it } from "vitest";
-import { barFraction, clampSeek, helperStartMs, holdStep, providerServerTrouble } from "../src/core/playback";
+import { barFraction, bufferPlan, clampSeek, helperStartMs, holdStep, providerServerTrouble } from "../src/core/playback";
 
 describe("hold to seek", () => {
   it("steps 10 s, then 30 s, then doubles every 1.5 s up to 10 min", () => {
@@ -47,5 +47,15 @@ describe("a helper stream's real start", () => {
     expect(helperStartMs(754, 760)).toBe(754000);
     expect(helperStartMs(754, 600)).toBe(754000);
     expect(helperStartMs(0, 0)).toBe(0);
+  });
+});
+
+describe("buffering for heavy files", () => {
+  it("gathers more for 4K and rich files, and leaves the rest as they were", () => {
+    expect(bufferPlan(25268, 3840)).toEqual({ play: 5, resume: 15 }); // Dune Part Two [4k]
+    expect(bufferPlan(6400, 3840)).toEqual({ play: 5, resume: 15 }); // a light 4K copy
+    expect(bufferPlan(15782, 1920)).toEqual({ play: 5, resume: 15 }); // a rich 1080p copy
+    expect(bufferPlan(2797, 1920)).toBeNull();
+    expect(bufferPlan(0, 0)).toBeNull();
   });
 });

@@ -21,6 +21,7 @@ export interface Track {
 
 export interface OpenOptions {
   uhd?: boolean; // AVPlay needs its 4K decoder, set up front (core/compat.ts needsUhdDecoder)
+  buffer?: { play: number; resume: number } | null; // seconds to gather (core/playback.ts bufferPlan)
 }
 
 export class PlayerError extends Error {

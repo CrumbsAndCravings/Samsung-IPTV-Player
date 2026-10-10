@@ -104,6 +104,7 @@ export interface VodInfo extends CodecInfo {
   ext: string;
   tmdbId: string;
   width: number;
+  bitrateKbps: number; // the whole file's average, 0 when unknown
 }
 
 // get_vod_info -> details for a movie.
@@ -128,6 +129,7 @@ export function parseVodInfo(data: Json): VodInfo {
     ext: fieldStr(movie, "container_extension"),
     tmdbId: firstText([info.tmdb_id, info.tmdb]),
     width: videoWidth(info),
+    bitrateKbps: Math.max(0, toInt(info.bitrate)),
     videoCodec: codecs.videoCodec,
     videoProfile: codecs.videoProfile,
     videoLevel: codecs.videoLevel,
@@ -145,6 +147,7 @@ export interface Episode extends CodecInfo {
   episodeNo: number;
   durationSecs: number;
   width: number;
+  bitrateKbps: number;
 }
 
 export interface Season {
@@ -272,6 +275,7 @@ function parseEpisode(ep: JsonObject, seasonNo: number, seriesName: string): Epi
     episodeNo: number,
     durationSecs: duration,
     width: videoWidth(info),
+    bitrateKbps: Math.max(0, toInt(info.bitrate)),
     videoCodec: codecs.videoCodec,
     videoProfile: codecs.videoProfile,
     videoLevel: codecs.videoLevel,
@@ -373,6 +377,7 @@ export function episodeItem(ep: Episode, seriesId: string): Item {
     episodeNo: ep.episodeNo,
     durationSecs: ep.durationSecs,
     width: ep.width,
+    bitrateKbps: ep.bitrateKbps,
     videoCodec: ep.videoCodec,
     videoProfile: ep.videoProfile,
     videoLevel: ep.videoLevel,

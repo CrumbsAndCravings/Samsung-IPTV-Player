@@ -60,6 +60,7 @@ interface AVPlay {
   setDisplayMethod(method: string): void;
   setListener(listener: AVPlayListener): void;
   setStreamingProperty(name: string, value: string): void;
+  setBufferingParam?(option: string, unit: string, amount: number): void;
   getTotalTrackInfo(): AVPlayTrackInfo[];
   getCurrentStreamInfo(): AVPlayTrackInfo[];
   setSelectTrack(type: string, index: number): void;

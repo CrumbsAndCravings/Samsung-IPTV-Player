@@ -20,6 +20,7 @@ import {
   providerUrl,
   redactor,
   sessionFile,
+  speedVerdict,
   sessionFileType,
   videoPlan,
   vodArgs,
@@ -156,6 +157,18 @@ describe("the helper", () => {
     expect(text).toContain("-c:a:0 ac3 -b:a:0 640k -ac:a:0 6 -c:a:1 ac3 -b:a:1 640k -c:a:2 copy");
     expect(ac3Args(6).join(" ")).toBe("-c:a ac3 -b:a 640k");
     expect(ac3Args(8).join(" ")).toBe("-c:a ac3 -b:a 640k -ac:a 6");
+  });
+
+  it("judges the provider's speed against what the film needs", () => {
+    const mb = (mbit: number) => (mbit * 1e6) / 8; // bytes in a second at `mbit`
+    const steady = Array(20).fill(mb(60));
+    expect(speedVerdict(26000, steady)).toEqual({ avg: 60, low: 60, need: 26, verdict: "fast" });
+    // Plenty on average, but five slow seconds in a row.
+    const dipping = Array(15).fill(mb(60)).concat(Array(5).fill(mb(10)));
+    expect(speedVerdict(26000, dipping).verdict).toBe("dips");
+    expect(Math.round(speedVerdict(26000, dipping).low)).toBe(10);
+    expect(speedVerdict(26000, Array(20).fill(mb(18))).verdict).toBe("slow");
+    expect(speedVerdict(0, steady).verdict).toBe("");
   });
 
   it("converts on the processor with quicker settings on a small computer", () => {

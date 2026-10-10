@@ -137,6 +137,14 @@ From then on, start the helper before you watch (or put a shortcut to `helper\st
 
 `journalctl -u aranplus-helper -f` on the Pi shows what the helper is doing. To update it: `git pull`, then `bash helper/setup-pi.sh` again. On another computer, `"x264Preset"` under `"transcoder"` in `personal.json` chooses the processor's settings (`ultrafast` to `medium`; `veryfast` on a PC, `superfast` on a Pi).
 
+### When 4K films pause
+
+Rich 4K copies (HDR and Dolby Atmos) carry about 20 to 26 Mbit/s, ten times a 1080p copy; their sound is a small part of it (768 kb/s). The TV streams a film over one connection all the way to your provider, which is a different thing from an internet speed test (several connections to a server nearby), so a line that tests fast can still bring a 4K film in too slowly.
+
+- **Find out where it slows:** on the computer the helper runs on (it shares the TV's internet), with nothing playing, run `npm run speed` (or `npm run speed -- "Dune Part Two"` for a film by name). It downloads 20 seconds of a rich 4K copy the way the TV does and says whether your path to the provider keeps up: fast enough (then the TV's Wi-Fi is the likely hold-up: a cable or 5 GHz Wi-Fi closer to the router), enough with dips, or slower than the film needs (then the provider's 1080p copies play smoothly, and another time of day may be faster).
+- **What the TV does:** for 4K files and ones of 12 Mbit/s and more, the player gathers 5 seconds before it starts and 15 seconds before it plays on after running dry (AVPlay's buffering settings, over its small default), so a dip in speed is ridden over rather than paused for.
+- **Upload speed** doesn't matter at home: the TV downloads from the provider, and the helper's stream to the TV stays inside your network. It matters only for the iPhone away from home through Tailscale, which the helper sends to over your upload.
+
 ### The iPhone app
 
 The helper also serves ARAN+ for the iPhone, a web app in [CrumbsAndCravings/web-iptv-player](https://github.com/CrumbsAndCravings/web-iptv-player) (its README has the setup steps). Put that repo next to this one, run `npm install` and `npm run build` in it, and start the helper: it prints a link and a QR code for the phone, with the key in the link. For the phone the helper also:
