@@ -118,6 +118,15 @@ async function main() {
   if (result.verdict === "fast") {
     console.log("Fast enough, with room to spare. If 4K films still pause on the TV, the hold-up is between");
     console.log("your router and the TV: a network cable, or 5 GHz Wi-Fi with the router closer, usually fixes it.");
+  } else if (result.verdict === "slowstart") {
+    const title = film.name.replace(/^[A-Z]{2} ★ /, "");
+    console.log(`Fast once it gets going, but the connection starts slowly: its first ${result.slowSecs} seconds came at`);
+    console.log(`${result.startLow.toFixed(0)} to ${result.startHigh.toFixed(0)} Mbit/s, under the ${result.need.toFixed(0)} this film needs, then ${result.afterAvg.toFixed(0)} on average. Every start`);
+    console.log("and every jump opens a new connection, so each would begin like that. ARAN+ 0.8.6 and newer gather");
+    console.log("5 seconds before starting a film like this, which should carry it through; it just takes a few");
+    console.log("seconds longer to begin. Run this again on the same film: if it starts fast the second time, the");
+    console.log("provider was fetching the film for the first time, and only first plays start slowly:");
+    console.log(`  npm run speed -- "${title.replace(/ - \d{4}.*$/, "")}"`);
   } else if (result.verdict === "dips") {
     console.log("Enough on average, but it dips below what the film needs now and then. ARAN+ 0.8.6 and newer");
     console.log("give the TV a bigger buffer for films like this, which should carry it over dips like these.");

@@ -10,7 +10,10 @@ export function videoPlan(codec: string): "copy" | "try" | "convert";
 export function hlsVideoPlan(codec: string): "copy" | "convert";
 export function audioPlan(stream: { codec: string; channels: number }): "copy" | "ac3" | "aac";
 export function ac3Args(channels: number, n?: number): string[];
-export function speedVerdict(needKbps: number, samples: number[]): { avg: number; low: number; need: number; verdict: "fast" | "dips" | "slow" | "" };
+export function speedVerdict(
+  needKbps: number,
+  samples: number[],
+): { avg: number; low: number; need: number; verdict: "fast" | "slowstart" | "dips" | "slow" | ""; slowSecs: number; startLow: number; startHigh: number; afterAvg: number };
 export const ENCODERS: { [name: string]: string[] };
 export function x264Args(preset: string): string[];
 export const X264_PRESETS: string[];

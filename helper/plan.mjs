@@ -464,22 +464,36 @@ export function fetchAllowed(raw) {
   return /(^|\.)opensubtitles\.(com|org)$/i.test(url.hostname);
 }
 
-// Hides the login and the helper's key in anything printed or sent back.
 // What the speed test found (helper/speed.mjs): `samples` are the bytes received in
 // each second, `needKbps` the film's average rate (0 when unknown). Megabits per second
 // on average and at the slowest five seconds in a row (a dip the TV's buffer has to ride
-// over), and the verdict: "fast" (never below the film's rate), "dips" (enough on
-// average, not always), "slow" (less than the film needs) or "" (no rate to compare).
+// over), and the verdict: "fast" (never below the film's rate), "slowstart" (under it
+// for the first seconds, `slowSecs` of them between `startLow` and `startHigh`, then above
+// it: every start and jump opens a new connection, so each begins like that), "dips"
+// (enough on average, not always), "slow" (less than the film needs) or "" (no rate to
+// compare).
 export function speedVerdict(needKbps, samples) {
   const per = samples.map((bytes) => (bytes * 8) / 1e6);
-  const avg = per.reduce((a, b) => a + b, 0) / Math.max(1, per.length);
+  const mean = (list) => list.reduce((a, b) => a + b, 0) / Math.max(1, list.length);
+  const avg = mean(per);
   let low = per.length >= 5 ? Infinity : avg;
-  for (let i = 0; i + 5 <= per.length; i++) low = Math.min(low, per.slice(i, i + 5).reduce((a, b) => a + b, 0) / 5);
+  for (let i = 0; i + 5 <= per.length; i++) low = Math.min(low, mean(per.slice(i, i + 5)));
   const need = needKbps / 1000;
-  const verdict = need <= 0 ? "" : avg < need ? "slow" : low < need ? "dips" : "fast";
-  return { avg, low, need, verdict };
+  let slowSecs = 0;
+  while (need > 0 && slowSecs < per.length && per[slowSecs] < need) slowSecs++;
+  const start = per.slice(0, slowSecs);
+  const after = per.slice(slowSecs);
+  const startLow = start.length ? Math.min(...start) : 0;
+  const startHigh = start.length ? Math.max(...start) : 0;
+  let verdict = "";
+  if (need > 0) {
+    if (slowSecs >= 3 && after.length >= 3 && mean(after) >= need) verdict = "slowstart";
+    else verdict = avg < need ? "slow" : low < need ? "dips" : "fast";
+  }
+  return { avg, low, need, verdict, slowSecs, startLow, startHigh, afterAvg: mean(after) };
 }
 
+// Hides the login and the helper's key in anything printed or sent back.
 export function redactor(login, key) {
   const secrets = [];
   const add = (value, label) => {

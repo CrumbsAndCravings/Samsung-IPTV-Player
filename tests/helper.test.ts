@@ -162,12 +162,19 @@ describe("the helper", () => {
   it("judges the provider's speed against what the film needs", () => {
     const mb = (mbit: number) => (mbit * 1e6) / 8; // bytes in a second at `mbit`
     const steady = Array(20).fill(mb(60));
-    expect(speedVerdict(26000, steady)).toEqual({ avg: 60, low: 60, need: 26, verdict: "fast" });
+    expect(speedVerdict(26000, steady)).toMatchObject({ avg: 60, low: 60, need: 26, verdict: "fast", slowSecs: 0 });
     // Plenty on average, but five slow seconds in a row.
     const dipping = Array(15).fill(mb(60)).concat(Array(5).fill(mb(10)));
     expect(speedVerdict(26000, dipping).verdict).toBe("dips");
     expect(Math.round(speedVerdict(26000, dipping).low)).toBe(10);
     expect(speedVerdict(26000, Array(20).fill(mb(18))).verdict).toBe("slow");
+    // A slow start (the test at home: 13 seconds at 12 to 24, then 250 to 330).
+    const slowStart = [12, 15, 18, 20, 24, 16, 14, 22, 19, 23, 17, 21, 13, 250, 300, 330, 320, 310, 290, 300].map(mb);
+    const found = speedVerdict(25000, slowStart);
+    expect(found.verdict).toBe("slowstart");
+    expect(found.slowSecs).toBe(13);
+    expect([found.startLow, found.startHigh]).toEqual([12, 24]);
+    expect(Math.round(found.afterAvg)).toBe(300);
     expect(speedVerdict(0, steady).verdict).toBe("");
   });
 
