@@ -100,7 +100,12 @@ export const ENCODERS = {
 // With `previews` ({ dir, atomic }), FFmpeg also writes a small picture every six seconds
 // of the film into `dir` (p<n>.jpg, n being the film's own time over six, as the whole
 // film's playlists name theirs), for the TV to show while choosing a jump.
-export function ffmpegArgs({ url, start, video, encoder, probe, previews = null }) {
+//
+// A kept picture can only start on a keyframe, so a stream from `start` really begins
+// at the keyframe before it, up to a few seconds earlier, and the TV counts from there.
+// With `startFile`, FFmpeg writes the first frame's time into it (framemd5, read by
+// firstFrameSecs), so the helper can tell the TV where its stream begins.
+export function ffmpegArgs({ url, start, video, encoder, probe, previews = null, startFile = "" }) {
   const args = ["-hide_banner", "-nostdin", "-loglevel", "error"];
   // Picks up again if the provider's connection drops for a moment.
   args.push("-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5");
@@ -134,6 +139,9 @@ export function ffmpegArgs({ url, start, video, encoder, probe, previews = null 
   });
   if (audio.length === 0) args.push("-c:a", "aac", "-b:a", "192k");
   args.push("-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0", "pipe:1");
+  if (startFile && video !== "convert" && start > 0 && probe && probe.video) {
+    args.push("-map", "0:V:0", "-c:v", "copy", "-frames:v", "1", "-f", "framemd5", startFile);
+  }
   if (previews && probe && probe.video) {
     // The stream starts at `start`, so its frames are moved on by that much first: the
     // pictures are named by the film's own time wherever the stream began.
@@ -142,6 +150,22 @@ export function ffmpegArgs({ url, start, video, encoder, probe, previews = null 
     args.push("-f", "image2", "-frame_pts", "1", ...(previews.atomic ? ["-atomic_writing", "1"] : []), path.join(previews.dir, "p%05d.jpg"));
   }
   return args;
+}
+
+// The first frame's time from FFmpeg's framemd5 lines, in seconds from where the stream
+// was asked to start (0 or less: a kept picture starts on the keyframe before), or null
+// before FFmpeg has written it.
+export function firstFrameSecs(text) {
+  const base = /^#tb 0: (\d+)\/(\d+)/m.exec(String(text || ""));
+  if (!base) return null;
+  for (const line of String(text).split("\n")) {
+    if (line.charAt(0) === "#" || line.trim() === "") continue;
+    const parts = line.split(",").map((part) => part.trim());
+    const pts = Number(parts[2]);
+    if (parts[0] !== "0" || !isFinite(pts)) return null;
+    return (pts * Number(base[1])) / Number(base[2]);
+  }
+  return null;
 }
 
 // --- HLS, for the iPhone ---------------------------------------------------------------

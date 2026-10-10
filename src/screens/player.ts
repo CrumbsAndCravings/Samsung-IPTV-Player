@@ -1,33 +1,55 @@
 // The player (plan 7.5; the Roku app's PlayerScreen): Samsung's AVPlay underneath our
 // own controls. Back and the title on top; play/pause, the bar and the times at the
-// bottom; then Audio & subtitles, Episodes, Next episode and Restart. Left/Right preview
-// a jump before it happens. Progress is saved for Continue Watching, episodes roll into
-// the next one with Up Next, and a failure is retried once before the error screen
-// explains it.
+// bottom; then Audio & subtitles, Subtitle settings, Episodes, Next episode and Restart.
+// Left/Right preview a jump before it happens. Progress is saved for Continue Watching,
+// episodes roll into the next one with Up Next, and a failure is retried once before
+// the error screen explains it.
 //
 // Subtitles (plan 7.5 and 7.6): AVPlay never draws them, so ARAN+ does. A file's own
 // tracks arrive cue by cue through onSubtitle; online ones are fetched from OpenSubtitles
-// once and timed against the player's position, so nudging them costs no download.
+// once and timed against the player's position. Subtitle settings (core/substyle.ts)
+// move them earlier or later a tenth of a second at a time, which costs no download,
+// and choose their font, size, colour, background, edge and place.
 
 import type { App, Screen } from "../app";
 import { FileFacts, learnResult, playCheck, PlayCheck } from "../core/compat";
 import type { Item } from "../core/items";
 import { log, logError } from "../core/log";
 import type { FindRequest } from "../core/opensubtitles";
-import { barFraction, providerServerTrouble, SERVER_TROUBLE_TEXT } from "../core/playback";
+import { barFraction, helperStartMs, providerServerTrouble, SERVER_TROUBLE_TEXT } from "../core/playback";
 import { progressPut, progressRemove } from "../core/progress";
 import { redact } from "../core/redact";
 import { httpDetail, isRefusalCode } from "../core/refusals";
 import { COMMIT_AFTER_MS, JumpResult, SeekPreview, SeekRunner, TICK_MS } from "../core/seek";
 import { cleanCueText, CueTrack, parseSubtitles } from "../core/srt";
 import { loadOsAccount, loadPrefs, savePref } from "../core/storage";
-import { activeSubtitle, audioPlan, freshOnline, NUDGE_MS, OLD_SYNC_TEXT, OnlineStatus, SavedSubtitle, savedCandidate, showsSaved, SubtitleSource, subtitleMenu, subtitlePlan, subtitleSaveText, tracksNote } from "../core/subtitles";
+import { activeSubtitle, audioPlan, freshOnline, OLD_SYNC_TEXT, OnlineStatus, SavedSubtitle, savedCandidate, SETTINGS_ID, showsSaved, SubtitleSource, subtitleMenu, subtitlePlan, subtitleSaveText, tracksNote } from "../core/subtitles";
+import {
+  bottomPx,
+  choiceLabel,
+  colorCss,
+  DEFAULT_SUB_STYLE,
+  fontOf,
+  loadSubStyle,
+  rememberedTiming,
+  rememberTiming,
+  saveSubStyle,
+  sizePx,
+  stepChoice,
+  stepTiming,
+  SUB_BACKGROUNDS,
+  SUB_COLORS,
+  SUB_EDGES,
+  SUB_FONTS,
+  SubStyle,
+  timingLabel,
+} from "../core/substyle";
 import { audioNowText, audioOptions, audioRescue, fromAvplay, optionIndex, subtitleOptions, TrackOption } from "../core/tracks";
 import { tasteEpisodeDone, tasteFinished, tasteWatched, tasteWeightFor } from "../core/taste";
 import { codecLabel, describeCodecs, episodeCode, formatClock, streamUrl } from "../core/utils";
 import { currentOf, dueForSave, entryFor, finishedChange, hasNext, resumeFrom, saveAction, Watching } from "../core/watch";
 import { knownHash, rememberHash } from "../data/moviehash";
-import { HELPER_NO_ANSWER, helperAddress, helperInfo, HelperInfo, helperLastError, helperPreviewUrl, helperStreamUrl, learnedMode, learnMode, needsHelper, rememberNeedsHelper, VideoMode } from "../data/transcoder";
+import { HELPER_NO_ANSWER, helperAddress, helperInfo, HelperInfo, helperLastError, helperPreviewUrl, helperStarted, helperStreamUrl, learnedMode, learnMode, needsHelper, rememberNeedsHelper, VideoMode } from "../data/transcoder";
 import { helperOn } from "../core/personal";
 import { OsClient } from "../data/opensubtitles";
 import { send } from "../platform/http";
@@ -39,9 +61,10 @@ import { append, clear, h, setText, toggle } from "../ui/dom";
 import { SubtitleSetupScreen } from "./subtitle-setup";
 
 type Row = "top" | "bar" | "buttons";
-type ButtonAction = "tracks" | "episodes" | "next" | "restart";
+type ButtonAction = "tracks" | "style" | "episodes" | "next" | "restart";
 type Mode = "playing" | "error" | "upnext";
-type Panel = "" | "tracks" | "episodes";
+type Panel = "" | "tracks" | "episodes" | "style";
+type StyleRow = "timing" | keyof SubStyle | "reset";
 
 const BAR_X = 342;
 const BAR_W = 1344;
@@ -54,11 +77,20 @@ const TRACK_ROWS = 7;
 const AUTO_SUBTITLES_AFTER_MS = 2500; // Roku's autoSubTimer
 const DELAY_SAVE_MS = 3000; // nudges reach other devices once they stop for this long
 const SUBTITLE_TICK_MS = 100;
+const STYLE_ROWS: StyleRow[] = ["timing", "font", "size", "color", "background", "edge", "position", "reset"];
+const STYLE_LABELS: { [row in StyleRow]: string } = { timing: "Timing", font: "Font", size: "Size", color: "Colour", background: "Background", edge: "Edge", position: "Position", reset: "Back to the usual look" };
+const SAMPLE_TEXT = "This is how your subtitles will look.";
+// Left or Right held down (the remote repeats it faster than anyone taps) moves the
+// timing in bigger steps after a while; taps always move 0.1 s.
+const HELD_GAP_MS = 160;
+const HELD_FAST_AFTER = 10;
+const TIMING_KEEP_MS = 1000; // timing is remembered once it stops changing
 const RESCUE_NOTE_MS = 9000;
 const SYNC_EVERY_MS = 5 * 60000;
 const CHECK_STREAM_MS = 10000;
 const HELPER_NEVER_STARTED_MS = 45000; // the provider, then FFmpeg, then the TV
 const REOPEN_AFTER_MS = 300;
+const STREAM_START_AGAIN_MS = 1500;
 const SERVER_RETRY_MS = 5000; // the provider's server failing is often over in a moment
 const THUMB_W = 384; // the picture while choosing a jump (the Roku's 256 x 144 at 720p)
 const THUMB_WAIT_MS = 4000;
@@ -126,6 +158,10 @@ export class PlayerScreen implements Screen {
   private audioList: HTMLElement;
   private subsList: HTMLElement;
   private tracksNoteEl: HTMLElement;
+  // Subtitle settings: a card at the side, so the video and its subtitles stay in view.
+  private styleEl: HTMLElement;
+  private styleList: HTMLElement;
+  private styleNoteEl: HTMLElement;
 
   private mode: Mode = "playing";
   private streamToken = 0;
@@ -147,7 +183,8 @@ export class PlayerScreen implements Screen {
   private seeker: SeekRunner | null = null;
   private pendingSeekSecs = 0; // a resume the player refused before playing
   // Through the helper on a computer at home (data/transcoder.ts): its stream starts
-  // where asked, so the TV's time is added to offsetMs, and a jump reopens the stream.
+  // where asked (or on the keyframe before, askStreamStart), so the TV's time is added
+  // to offsetMs, and a jump reopens the stream.
   private route: "direct" | "helper" = "direct";
   private helper: HelperInfo | null = null;
   private helperVideo: VideoMode = "copy";
@@ -202,6 +239,18 @@ export class PlayerScreen implements Screen {
   private delaySaveTimer = 0;
   private hash = "";
   private timeAt = 0; // when positionMs last arrived
+  private subStyle: SubStyle = loadSubStyle();
+  private styleCursor = 0;
+  private styleFrom: "controls" | "tracks" = "controls";
+  private cueText = ""; // the subtitle showing now
+  private drawnText = "\u0000"; // what's drawn, so it's only drawn again when it changes
+  private embeddedDelayMs = 0; // the file's own subtitles, shown this much later
+  private embeddedTimers: number[] = [];
+  private heldDir = 0; // Left or Right held down on Timing: which way, how long, when last
+  private heldCount = 0;
+  private heldAt = 0;
+  private timingKeep: { key: string; delayMs: number } | null = null;
+  private timingKeepTimer = 0;
 
   private preview = new SeekPreview();
   private holdTimer = 0;
@@ -299,7 +348,11 @@ export class PlayerScreen implements Screen {
       this.subsList,
       this.tracksNoteEl,
     ]);
-    this.el = h("div", { class: "screen player" }, [this.coverEl, this.restEl, this.subtitleEl, this.controlsEl, this.spinnerEl, this.upNextEl, this.errorEl, this.panelEl, this.tracksEl]);
+    this.styleList = h("div", { class: "substyle-list" });
+    this.styleNoteEl = h("div", { class: "substyle-note" });
+    this.styleEl = h("div", { class: "player-substyle" }, [h("div", { class: "substyle-title", text: "Subtitle settings" }), this.styleList, this.styleNoteEl]);
+    this.el = h("div", { class: "screen player" }, [this.coverEl, this.restEl, this.subtitleEl, this.controlsEl, this.spinnerEl, this.upNextEl, this.errorEl, this.panelEl, this.tracksEl, this.styleEl]);
+    this.applySubStyle();
   }
 
   private get item(): Item {
@@ -484,10 +537,30 @@ export class PlayerScreen implements Screen {
           if (token === this.streamToken && !this.started) this.handleError("NO_PROGRESS (it opened but never started)");
         }, HELPER_NEVER_STARTED_MS);
         this.resume();
+        if (from > 0 && this.helperVideo === "copy") this.askStreamStart(token, from, true);
       })
       .catch((err: Error) => {
         if (token === this.streamToken) this.handleError(errorLabel(err.name, err.message));
       });
+  }
+
+  // A kept picture starts on the keyframe before `from`, up to a few seconds earlier, and
+  // the TV counts from there: the helper says where (helper 1.5), so the time, the
+  // subtitles and the place saved for Continue Watching match the picture. Asked once
+  // more a moment later when FFmpeg hasn't noted it yet.
+  private askStreamStart(token: number, from: number, again: boolean): void {
+    helperStarted(this.item).then((startsAt) => {
+      if (token !== this.streamToken || this.closing) return;
+      if (startsAt < 0 && again) {
+        window.setTimeout(() => token === this.streamToken && this.askStreamStart(token, from, false), STREAM_START_AGAIN_MS);
+        return;
+      }
+      const offset = helperStartMs(from, startsAt);
+      if (offset === this.offsetMs) return;
+      log("helper: the stream began at", offset / 1000, "s, not", from);
+      this.positionMs += offset - this.offsetMs;
+      this.offsetMs = offset;
+    });
   }
 
   // Moves this title to the helper, from where it got to.
@@ -829,7 +902,10 @@ export class PlayerScreen implements Screen {
   // --- Controls ---------------------------------------------------------------------
 
   private buildButtons(): void {
-    this.buttons = [{ label: "Audio & subtitles", action: "tracks" }];
+    this.buttons = [
+      { label: "Audio & subtitles", action: "tracks" },
+      { label: "Subtitle settings", action: "style" },
+    ];
     if (this.watching.kind === "episode") {
       this.buttons.push({ label: "Episodes", action: "episodes" });
       if (hasNext(this.watching, this.index)) this.buttons.push({ label: "Next episode", action: "next" });
@@ -1121,6 +1197,8 @@ export class PlayerScreen implements Screen {
 
   private applySeek(targetSecs: number): void {
     this.cancelSeek();
+    // The file's own cues still waiting to show (timed later) belong to the old place.
+    if (this.source.kind === "embedded") this.clearSubtitle();
     this.lastSavedSecs = Math.floor(targetSecs);
     this.positionMs = targetSecs * 1000;
     this.timeAt = Date.now();
@@ -1163,6 +1241,7 @@ export class PlayerScreen implements Screen {
     const button = this.buttons[this.buttonIndex];
     if (!button) return;
     if (button.action === "tracks") this.openTracks();
+    else if (button.action === "style") this.openStyle("controls");
     else if (button.action === "episodes") this.openEpisodes();
     else if (button.action === "next") this.goToEpisode(this.index + 1);
     else if (button.action === "restart") {
@@ -1193,10 +1272,16 @@ export class PlayerScreen implements Screen {
   }
 
   private closePanel(backToControls: boolean): void {
+    const wasStyle = this.panel === "style";
     this.panel = "";
     this.show(this.panelEl, false);
     this.show(this.tracksEl, false);
+    this.show(this.styleEl, false);
     toggle(this.subtitleEl, "is-above", false);
+    if (wasStyle) {
+      this.keepTimingNow();
+      this.drawSubtitle(this.cueText);
+    }
     if (backToControls) this.showControls("buttons");
   }
 
@@ -1305,6 +1390,7 @@ export class PlayerScreen implements Screen {
   onKey(key: Key): void {
     if (this.panel === "episodes") return this.onEpisodesKey(key);
     if (this.panel === "tracks") return this.onTracksKey(key);
+    if (this.panel === "style") return this.onStyleKey(key);
     if (this.mode === "error") {
       if (key === "ok") {
         if (this.check && this.check.verdict === "blocked") this.tryAnyway = true;
@@ -1426,6 +1512,7 @@ export class PlayerScreen implements Screen {
   destroy(): void {
     this.closing = true;
     this.saveDelayNow();
+    this.keepTimingNow();
     this.clearTimers();
     window.clearInterval(this.syncTimer);
     this.stopStream();
@@ -1438,6 +1525,8 @@ export class PlayerScreen implements Screen {
 
   private resetSubtitles(): void {
     this.saveDelayNow();
+    this.keepTimingNow();
+    this.embeddedDelayMs = 0;
     this.osToken++;
     this.online = freshOnline(loadOsAccount() !== null);
     this.lookUpSaved();
@@ -1524,6 +1613,7 @@ export class PlayerScreen implements Screen {
       this.player.selectTrack("TEXT", Number(id));
       this.player.setSubtitlesHidden(false);
       this.source = { kind: "embedded", id };
+      this.embeddedDelayMs = Math.max(0, rememberedTiming(this.timingKey()) || 0);
     } catch (err) {
       logError("subtitle switch failed:", err);
       this.note("Couldn't switch the subtitles.");
@@ -1553,26 +1643,72 @@ export class PlayerScreen implements Screen {
 
   private clearSubtitle(): void {
     window.clearTimeout(this.subtitleTimer);
-    setText(this.subtitleEl, "");
+    for (const timer of this.embeddedTimers) window.clearTimeout(timer);
+    this.embeddedTimers = [];
+    this.setCue("");
   }
 
-  // A cue from the file's own track; AVPlay says how long it stays.
+  // A cue from the file's own track; AVPlay says how long it stays. Timed later, it waits
+  // that long first (the player only says what to show now, so it can't come earlier).
   private onEmbeddedCue(text: string, durationMs: number): void {
     if (this.source.kind !== "embedded") return;
-    setText(this.subtitleEl, cleanCueText(text));
-    window.clearTimeout(this.subtitleTimer);
-    if (durationMs > 0) this.subtitleTimer = window.setTimeout(() => setText(this.subtitleEl, ""), durationMs);
+    const show = () => {
+      this.setCue(cleanCueText(text));
+      window.clearTimeout(this.subtitleTimer);
+      if (durationMs > 0) this.subtitleTimer = window.setTimeout(() => this.setCue(""), durationMs);
+    };
+    if (this.embeddedDelayMs <= 0) return show();
+    const timer = window.setTimeout(() => {
+      this.embeddedTimers = this.embeddedTimers.filter((t) => t !== timer);
+      if (this.source.kind === "embedded") show();
+    }, this.embeddedDelayMs);
+    this.embeddedTimers.push(timer);
+  }
+
+  private setCue(text: string): void {
+    this.cueText = text;
+    this.drawSubtitle(text);
+  }
+
+  // Each line in its own box (for the background choices), drawn only when it changes:
+  // online subtitles are looked up ten times a second. In Subtitle settings, a sample
+  // shows while choosing the look and nothing else is on screen (never while timing).
+  private drawSubtitle(text: string): void {
+    const sample = text === "" && this.panel === "style" && STYLE_ROWS[this.styleCursor] !== "timing";
+    const shown = sample ? SAMPLE_TEXT : text;
+    if (shown === this.drawnText) return;
+    this.drawnText = shown;
+    clear(this.subtitleEl);
+    toggle(this.subtitleEl, "is-sample", sample);
+    if (shown === "") return;
+    shown.split("\n").forEach((line, i) => {
+      if (i > 0) this.subtitleEl.appendChild(h("br"));
+      this.subtitleEl.appendChild(h("span", { class: "sub-line", text: line }));
+    });
+  }
+
+  private applySubStyle(): void {
+    const style = this.subStyle;
+    const font = fontOf(style);
+    const css = this.subtitleEl.style;
+    css.fontFamily = font.family;
+    css.fontWeight = String(font.weight);
+    css.fontSize = sizePx(style) + "px";
+    css.color = colorCss(style);
+    css.bottom = bottomPx(style) + "px";
+    for (const bg of SUB_BACKGROUNDS) toggle(this.subtitleEl, "sub-bg-" + bg.id, bg.id === style.background);
+    for (const edge of SUB_EDGES) toggle(this.subtitleEl, "sub-edge-" + edge.id, edge.id === style.edge);
   }
 
   // The player reports its position every so often; in between, count on from there.
   private drawOnlineCue(): void {
     if (!this.cues || !this.started) {
-      setText(this.subtitleEl, "");
+      this.setCue("");
       return;
     }
     let ms = this.positionMs;
     if (!this.paused && this.timeAt > 0) ms += Math.min(Date.now() - this.timeAt, 1000);
-    setText(this.subtitleEl, this.cues.textAt(ms, this.online.delayMs));
+    this.setCue(this.cues.textAt(ms, this.online.delayMs));
   }
 
   private startOnlineSearch(auto: boolean): void {
@@ -1622,7 +1758,7 @@ export class PlayerScreen implements Screen {
       this.online.state = "results";
       this.online.remaining = result.remaining;
       this.online.loadedFileId = fileId;
-      this.online.delayMs = 0;
+      this.online.delayMs = rememberedTiming(factsOf(this.item).key + "|os:" + fileId) || 0;
       this.cues = new CueTrack(cues);
       // Later videos without English subtitles of their own fetch the best match.
       savePref("subtitles", "online");
@@ -1678,7 +1814,8 @@ export class PlayerScreen implements Screen {
     this.osToken++; // a search or download still out is overtaken
     if (this.online.state === "searching" || this.online.state === "downloading") this.online.state = this.online.candidates.some((c) => !c.saved) ? "results" : "idle";
     this.online.loadedFileId = saved.fileId;
-    this.online.delayMs = saved.delayMs;
+    // As saved for every device, else as timed on this TV.
+    this.online.delayMs = saved.delayMs || rememberedTiming(factsOf(this.item).key + "|os:" + saved.fileId) || 0;
     this.cues = new CueTrack(cues);
     this.showOnline();
     log("saved subtitles:", cues.length, "cues");
@@ -1739,10 +1876,14 @@ export class PlayerScreen implements Screen {
     this.renderTracks();
   }
 
+  // The list can change under the cursor (a search ends, a download is saved): the
+  // cursor stays on the same choice, so OK never lands on another one (a download).
   private refreshTracks(): void {
     if (this.panel !== "tracks") return;
+    const was = this.subMenu[this.subCursor];
     this.subMenu = subtitleMenu(this.embeddedOpts, this.online);
-    this.subCursor = Math.min(this.subCursor, this.subMenu.length - 1);
+    const same = was ? optionIndex(this.subMenu, "id", was.id) : -1;
+    this.subCursor = same >= 0 ? same : Math.min(this.subCursor, this.subMenu.length - 1);
     this.renderTracks();
   }
 
@@ -1769,13 +1910,12 @@ export class PlayerScreen implements Screen {
     const id = option.id;
     if (id === "os:busy") return;
     if (id === "os:setup") return this.openSetup();
+    if (id === SETTINGS_ID) return this.openStyle("tracks");
     if (id === "os:search") this.startOnlineSearch(false);
-    else if (id === "os:earlier" || id === "os:later") {
-      this.online.delayMs += id === "os:later" ? NUDGE_MS : -NUDGE_MS;
-      if (this.source.kind !== "online") this.showOnline();
-      this.saveDelaySoon();
-    } else if (id.indexOf("os:file:") === 0) {
+    else if (id.indexOf("os:file:") === 0) {
       const fileId = id.slice(8);
+      // One download at a time: pressing OK again doesn't start another.
+      if (this.online.state === "downloading") return;
       if (fileId === this.online.loadedFileId && this.cues) {
         this.showOnline();
         savePref("subtitles", "online");
@@ -1816,5 +1956,157 @@ export class PlayerScreen implements Screen {
       if (this.column === 1 && this.subCursor < this.subMenu.length - 1) this.subCursor++;
     } else return;
     this.renderTracks();
+  }
+
+  // --- Subtitle settings ------------------------------------------------------------
+
+  private openStyle(from: "controls" | "tracks"): void {
+    this.cancelSeek();
+    this.hideControls();
+    this.show(this.tracksEl, false);
+    // In front of the card, so what's being changed is always in full view.
+    toggle(this.subtitleEl, "is-above", true);
+    this.panel = "style";
+    this.styleFrom = from;
+    this.styleCursor = 0;
+    this.heldDir = 0;
+    this.show(this.styleEl, true);
+    this.renderStyle();
+    this.drawSubtitle(this.cueText);
+  }
+
+  // Back where it was opened from: the controls, or the Audio & subtitles list on
+  // Subtitle settings.
+  private closeStyle(): void {
+    if (this.styleFrom === "controls") return this.closePanel(true);
+    this.closePanel(false);
+    this.openTracks();
+    this.subCursor = Math.max(0, optionIndex(this.subMenu, "id", SETTINGS_ID));
+    this.renderTracks();
+  }
+
+  private renderStyle(): void {
+    clear(this.styleList);
+    const timingOff = this.source.kind === "off";
+    STYLE_ROWS.forEach((row, i) => {
+      const focused = i === this.styleCursor;
+      const classes = "substyle-row" + (focused ? " is-focused" : "") + (row === "timing" && timingOff ? " is-off" : "") + (row === "reset" ? " is-action" : "");
+      const children: HTMLElement[] = [h("span", { class: "substyle-label", text: STYLE_LABELS[row] })];
+      if (row !== "reset") children.push(h("span", { class: "substyle-value" }, [h("span", { class: "substyle-arrow", text: "‹" }), this.styleValue(row), h("span", { class: "substyle-arrow", text: "›" })]));
+      this.styleList.appendChild(h("div", { class: classes }, children));
+    });
+    setText(this.styleNoteEl, this.styleNote());
+  }
+
+  private styleValue(row: StyleRow): HTMLElement {
+    if (row === "timing") return h("span", { class: "substyle-text", text: this.source.kind === "off" ? "Subtitles off" : timingLabel(this.timingMs()) });
+    if (row === "reset") return h("span");
+    const label = choiceLabel(row, this.subStyle[row]);
+    // The colour beside its name, and the font in itself.
+    if (row === "color") {
+      const swatch = h("span", { class: "substyle-swatch" });
+      swatch.style.background = (SUB_COLORS.filter((c) => c.id === this.subStyle.color)[0] || SUB_COLORS[0]).css;
+      return h("span", { class: "substyle-text" }, [swatch, h("span", { text: label })]);
+    }
+    const text = h("span", { class: "substyle-text", text: label });
+    if (row === "font") {
+      const font = SUB_FONTS.filter((f) => f.id === this.subStyle.font)[0] || SUB_FONTS[0];
+      text.style.fontFamily = font.family;
+      text.style.fontWeight = String(font.weight);
+    }
+    return text;
+  }
+
+  private styleNote(): string {
+    const row = STYLE_ROWS[this.styleCursor];
+    if (row === "reset") return "OK puts the look back as it was. The timing stays.";
+    if (row !== "timing") return "Left and Right change it. Kept for every video.";
+    if (this.source.kind === "off") return "Subtitles are off: turn some on in Audio & subtitles first.";
+    if (this.source.kind === "embedded") return "Right: later, 0.1 s a step (hold for more). OK: on time. The file's own subtitles can only move later.";
+    const everywhere = this.online.loadedFileId !== "" && this.online.loadedFileId === this.online.savedFileId;
+    return "Left: earlier, Right: later, 0.1 s a step (hold for more). OK: on time. Kept for this title" + (everywhere ? " on all your devices." : ".");
+  }
+
+  private onStyleKey(key: Key): void {
+    const row = STYLE_ROWS[this.styleCursor];
+    if (key === "back") return this.closeStyle();
+    if (key === "up" || key === "down") {
+      const next = this.styleCursor + (key === "up" ? -1 : 1);
+      if (next < 0 || next >= STYLE_ROWS.length) return;
+      this.styleCursor = next;
+      this.heldDir = 0;
+      this.renderStyle();
+      // The sample shows while choosing the look, never while timing.
+      this.drawSubtitle(this.cueText);
+      return;
+    }
+    if (key !== "left" && key !== "right" && key !== "ok") return;
+    if (row === "timing") {
+      if (this.source.kind === "off") return;
+      if (key === "ok") this.setTiming(0);
+      else this.setTiming(stepTiming(this.timingMs(), key === "left" ? -1 : 1, this.held(key === "left" ? -1 : 1)));
+    } else if (row === "reset") {
+      if (key !== "ok") return;
+      this.subStyle = { ...DEFAULT_SUB_STYLE };
+      saveSubStyle(this.subStyle);
+      this.applySubStyle();
+    } else {
+      const next = stepChoice(row, this.subStyle[row], key === "left" ? -1 : 1, key === "ok");
+      if (next === this.subStyle[row]) return;
+      this.subStyle = { ...this.subStyle, [row]: next };
+      saveSubStyle(this.subStyle);
+      this.applySubStyle();
+    }
+    this.renderStyle();
+  }
+
+  // Whether Left or Right (`dir`) is being held down, for bigger timing steps.
+  private held(dir: number): boolean {
+    const now = Date.now();
+    this.heldCount = dir === this.heldDir && now - this.heldAt < HELD_GAP_MS ? this.heldCount + 1 : 1;
+    this.heldDir = dir;
+    this.heldAt = now;
+    return this.heldCount > HELD_FAST_AFTER;
+  }
+
+  // The timing of the subtitles showing: positive shows them later.
+  private timingMs(): number {
+    if (this.source.kind === "online") return this.online.delayMs;
+    if (this.source.kind === "embedded") return this.embeddedDelayMs;
+    return 0;
+  }
+
+  // Where it's remembered on this TV: per title, and per online file or track language.
+  private timingKey(): string {
+    const title = factsOf(this.item).key;
+    if (this.source.kind === "online") return title + "|os:" + this.source.fileId;
+    if (this.source.kind === "embedded") {
+      const id = this.source.id;
+      const track = this.embeddedOpts.filter((o) => o.id === id)[0];
+      return title + "|track:" + ((track && track.language) || id);
+    }
+    return "";
+  }
+
+  // Moves the subtitles on screen at once; nothing is downloaded. Saved subtitles carry
+  // it to the other devices (saveDelaySoon), and this TV remembers it per title.
+  private setTiming(delayMs: number): void {
+    if (this.source.kind === "online") {
+      this.online.delayMs = delayMs;
+      this.saveDelaySoon();
+      this.drawOnlineCue();
+    } else if (this.source.kind === "embedded") {
+      this.embeddedDelayMs = Math.max(0, delayMs);
+    } else return;
+    this.timingKeep = { key: this.timingKey(), delayMs: this.timingMs() };
+    window.clearTimeout(this.timingKeepTimer);
+    this.timingKeepTimer = window.setTimeout(() => this.keepTimingNow(), TIMING_KEEP_MS);
+  }
+
+  private keepTimingNow(): void {
+    window.clearTimeout(this.timingKeepTimer);
+    const pending = this.timingKeep;
+    this.timingKeep = null;
+    if (pending && pending.key) rememberTiming(pending.key, pending.delayMs);
   }
 }

@@ -1,6 +1,6 @@
 // Ported from the Roku app's tests/utils_test.brs (seeking).
 import { describe, expect, it } from "vitest";
-import { barFraction, clampSeek, holdStep, providerServerTrouble } from "../src/core/playback";
+import { barFraction, clampSeek, helperStartMs, holdStep, providerServerTrouble } from "../src/core/playback";
 
 describe("hold to seek", () => {
   it("steps 10 s, then 30 s, then doubles every 1.5 s up to 10 min", () => {
@@ -35,5 +35,17 @@ describe("the provider's server failing", () => {
     expect(providerServerTrouble("HTTP 404 from nginx")).toBe(false);
     expect(providerServerTrouble("PLAYER_ERROR_CONNECTION_FAILED")).toBe(false);
     expect(providerServerTrouble("")).toBe(false);
+  });
+});
+
+describe("a helper stream's real start", () => {
+  it("counts from the keyframe the helper started on", () => {
+    expect(helperStartMs(754, 751.5)).toBe(751500);
+    expect(helperStartMs(754, 754)).toBe(754000);
+    // Unknown, later than asked or far too early: the time asked for stands.
+    expect(helperStartMs(754, -1)).toBe(754000);
+    expect(helperStartMs(754, 760)).toBe(754000);
+    expect(helperStartMs(754, 600)).toBe(754000);
+    expect(helperStartMs(0, 0)).toBe(0);
   });
 });

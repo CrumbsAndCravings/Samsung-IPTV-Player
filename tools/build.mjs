@@ -44,7 +44,7 @@ export function esbuildOptions({ dev = false } = {}) {
     format: "iife",
     // The TV's engine: a 2020 Q60T runs Tizen 5.5 with Chromium 69.
     target: ["es2018", "chrome69"],
-    loader: { ".ttf": "file", ".png": "file", ".wav": "file" },
+    loader: { ".ttf": "file", ".woff2": "file", ".png": "file", ".wav": "file" },
     assetNames: "assets/[name]",
     define: { __APP_VERSION__: JSON.stringify(pkg.version), __DEV__: String(dev), __PERSONAL__: JSON.stringify(readPersonal({ dev })) },
     minify: !dev,

@@ -37,3 +37,11 @@ export function providerServerTrouble(text: string): boolean {
 }
 
 export const SERVER_TROUBLE_TEXT = "Your provider's server had a problem sending this video. That's on their side, not your internet or this TV. Wait a minute and try again.";
+
+// Where a helper stream asked for at `askedSecs` really begins, in ms, from what the
+// helper says (`startsAt`, seconds; -1 unknown): a kept picture starts on the keyframe
+// before the time asked for. Anything odd (later, or over a minute earlier) is ignored.
+export function helperStartMs(askedSecs: number, startsAt: number): number {
+  if (!(startsAt >= 0) || startsAt > askedSecs || askedSecs - startsAt > 60) return askedSecs * 1000;
+  return Math.round(startsAt * 1000);
+}

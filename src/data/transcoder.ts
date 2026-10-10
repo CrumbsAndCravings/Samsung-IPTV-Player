@@ -105,6 +105,25 @@ export function helperPreviewUrl(previews: { every: number; prefix: string }, se
   return config.url + previews.prefix + "00000".slice(n.length) + n + ".jpg?key=" + encodeURIComponent(config.key);
 }
 
+// Where the helper's stream of `item` really began, in seconds into the film (helper 1.5
+// and newer): with the picture kept it starts on the keyframe before the time asked for,
+// up to a few seconds earlier. -1 when the helper doesn't know (yet), or is older.
+export function helperStarted(item: Item): Promise<number> {
+  const config = base();
+  return send({ url: config.url + "/v1/started?key=" + encodeURIComponent(config.key) + "&" + params(item), timeoutMs: 5000 }).promise.then(
+    (res) => {
+      if (res.code !== 200) return -1;
+      try {
+        const at = Number(field(JSON.parse(res.text), "startsAt"));
+        return isFinite(at) ? at : -1;
+      } catch {
+        return -1;
+      }
+    },
+    () => -1,
+  );
+}
+
 // Why the helper's last stream failed ("" when it doesn't say).
 export function helperLastError(): Promise<string> {
   const config = base();

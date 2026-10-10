@@ -474,8 +474,9 @@
   text-overflow: ellipsis;
 }
 
-/* Subtitles, drawn by ARAN+ (AVPlay never draws them): white with a dark outline,
-   bottom centre, lifted clear of the controls while they show. */
+/* Subtitles, drawn by ARAN+ (AVPlay never draws them): bottom centre, lifted clear of
+   the controls while they show. Font, size, colour and place come from Subtitle
+   settings (set on the element); each line is its own box for the backgrounds. */
 .player-subtitle {
   position: absolute;
   left: 160px;
@@ -486,17 +487,141 @@
   font-size: 44px;
   line-height: 1.3;
   color: #fff;
-  white-space: pre-line;
+  transition: transform 200ms var(--ease-out);
+}
+.sub-line {
+  padding: 0.04em 0.3em;
+  border-radius: 4px;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+.sub-bg-shade .sub-line {
+  background: rgba(0, 0, 0, 0.55);
+}
+.sub-bg-black .sub-line {
+  background: rgba(0, 0, 0, 0.92);
+}
+.sub-edge-outline {
   text-shadow: 0 0 8px rgba(0, 0, 0, 0.8), 2px 2px 0 #000, -2px 2px 0 #000, 2px -2px 0 #000, -2px -2px 0 #000, 0 3px 0 #000, 0 -3px 0 #000, 3px 0 0 #000,
     -3px 0 0 #000;
-  transition: transform 200ms var(--ease-out);
+}
+.sub-edge-shadow {
+  text-shadow: 3px 4px 6px rgba(0, 0, 0, 0.9), 0 0 3px rgba(0, 0, 0, 0.7);
+}
+.sub-edge-none {
+  text-shadow: none;
+}
+/* The sample shown while choosing the look, when nothing else is on screen. */
+.player-subtitle.is-sample {
+  opacity: 0.9;
 }
 .player-subtitle.is-lifted {
   transform: translateY(-210px);
 }
-/* Over the Audio & subtitles panel, so a timing nudge can be judged by eye. */
+/* Over the Audio & subtitles panel and the Subtitle settings card, so changes can be
+   judged by eye. */
 .player-subtitle.is-above {
   z-index: 2;
+}
+
+/* Subtitle settings: a card at the top right, so the video and its subtitles stay in
+   view while the timing and the look change. Left and Right change the focused row. */
+.player-substyle {
+  display: none;
+  position: absolute;
+  right: 72px;
+  top: 48px;
+  width: 780px;
+  padding: 24px 0 18px;
+  border-radius: var(--radius-card);
+  background: rgba(21, 16, 40, 0.94);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+}
+.player-substyle.is-visible {
+  display: block;
+}
+.substyle-title {
+  padding: 0 42px 10px;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 36px;
+  color: var(--text);
+}
+.substyle-list {
+  padding: 0 21px;
+}
+.substyle-row {
+  position: relative;
+  height: 52px;
+  margin-bottom: 3px;
+  border-radius: var(--radius-button);
+  color: #a195cc;
+}
+.substyle-row.is-focused {
+  background: var(--focus);
+  color: var(--on-focus);
+}
+.substyle-label {
+  position: absolute;
+  left: 21px;
+  top: 0;
+  line-height: 52px;
+  font-weight: 800;
+  font-size: 26px;
+}
+.substyle-row.is-action .substyle-label {
+  color: var(--pink);
+}
+.substyle-row.is-action.is-focused .substyle-label {
+  color: var(--on-focus);
+}
+.substyle-value {
+  position: absolute;
+  right: 12px;
+  top: 0;
+  line-height: 52px;
+  font-weight: 800;
+  font-size: 26px;
+  color: var(--text);
+  white-space: nowrap;
+}
+.substyle-row.is-focused .substyle-value {
+  color: var(--on-focus);
+}
+.substyle-row.is-off .substyle-value {
+  color: #8579b0;
+}
+.substyle-arrow {
+  display: inline-block;
+  width: 30px;
+  text-align: center;
+  font-size: 33px;
+  opacity: 0;
+}
+.substyle-row.is-focused .substyle-arrow {
+  opacity: 1;
+}
+.substyle-text {
+  display: inline-block;
+  min-width: 300px;
+  text-align: center;
+}
+.substyle-swatch {
+  display: inline-block;
+  width: 21px;
+  height: 21px;
+  margin-right: 12px;
+  border-radius: 50%;
+  vertical-align: -2px;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.35);
+}
+.substyle-note {
+  height: 76px;
+  padding: 12px 42px 0;
+  overflow: hidden;
+  font-size: 23px;
+  line-height: 1.4;
+  color: #a195cc;
 }
 
 /* Audio & subtitles: two columns over the dimmed video, the note under the title and

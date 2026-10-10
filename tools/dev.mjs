@@ -19,6 +19,7 @@ const types = {
   ".png": "image/png",
   ".svg": "image/svg+xml",
   ".ttf": "font/ttf",
+  ".woff2": "font/woff2",
   ".xml": "application/xml",
   ".txt": "text/plain; charset=utf-8",
 };

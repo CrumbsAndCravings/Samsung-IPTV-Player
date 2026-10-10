@@ -24,5 +24,9 @@ THE SOFTWARE.
 
 The word "QR Code" is a registered trademark of DENSO WAVE INCORPORATED.
 
-Fredoka and Nunito fonts: SIL Open Font License 1.1, see assets/OFL-Fredoka.txt
-and assets/OFL-Nunito.txt.
+Fredoka and Nunito fonts: SIL Open Font License 1.1, see assets/fonts/OFL-Fredoka.txt
+and assets/fonts/OFL-Nunito.txt.
+
+Subtitle fonts, Latin subsets from Fontsource: Inter, Roboto, Courier Prime and Comic
+Neue, SIL Open Font License 1.1, see assets/fonts/OFL-Inter.txt, OFL-Roboto.txt,
+OFL-CourierPrime.txt and OFL-ComicNeue.txt.

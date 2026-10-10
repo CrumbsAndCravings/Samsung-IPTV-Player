@@ -25,6 +25,10 @@
 //   GET /v1/preview/<kind>/<id>/p<n>.jpg?key
 //                                 the picture for n x 6 seconds into the film, or a quick
 //                                 404 when FFmpeg hasn't made it
+//   GET /v1/started?key&kind&id&ext
+//                                 where the stream playing now really began, in the film's
+//                                 seconds: a kept picture starts on the keyframe before the
+//                                 time asked for, and the TV counts from there (-1 unknown)
 //   GET /v1/last-error?key        why the last stream failed (and how long ago), for the TVs
 //
 // For the iPhone:
@@ -67,6 +71,7 @@ import {
   audioPlan,
   compressible,
   ffmpegArgs,
+  firstFrameSecs,
   hashedAsset,
   hlsArgs,
   hlsVideoPlan,
@@ -94,7 +99,7 @@ import { httpGet } from "./http-get.mjs";
 import { parseRange, SourceFiles } from "./source.mjs";
 import { lanAddress, smallComputer, tailscaleAddress } from "./where.mjs";
 
-const VERSION = "1.4";
+const VERSION = "1.5";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const personalPath = process.env.ARANPLUS_PERSONAL || path.join(root, "personal.json");
 const DEFAULT_PORT = 8090;
@@ -470,6 +475,20 @@ function previewsFor(q) {
   return { every: VOD_SECONDS, prefix: "/v1/preview/" + q.kind + "/" + encodeURIComponent(q.id) + "/p" };
 }
 
+let streamRuns = 0;
+let lastStream = null; // { kind, id, start, file } of the TV's latest stream
+
+// Where the TV's latest stream of this title really began (see ffmpegArgs), in the
+// film's seconds; -1 when it's another title, or FFmpeg hasn't noted it yet.
+function streamStart(q) {
+  const run = lastStream;
+  if (!run || run.kind !== q.kind || run.id !== q.id) return -1;
+  // A stream from the start, or a converted picture: it begins where asked.
+  if (!existsSync(run.file)) return run.start === 0 ? 0 : -1;
+  const secs = firstFrameSecs(readFileSync(run.file, "utf8"));
+  return secs === null || secs > 0 ? -1 : Math.max(0, run.start + secs);
+}
+
 async function stream(req, res, q) {
   let described;
   try {
@@ -483,7 +502,12 @@ async function stream(req, res, q) {
   const video = q.video === "convert" || described.videoPlan === "convert" ? "convert" : "copy";
   const previews = q.previews && described.video ? { dir: previewDir(q), atomic: atomicPictures } : null;
   if (previews) keepPreviews(previews.dir);
-  const args = ffmpegArgs({ url: sourceUrl(q), start: q.start, video, encoder, probe: described, previews });
+  // Where FFmpeg notes the first frame's time (/v1/started): a new file each run, the
+  // last run's kept until then.
+  if (lastStream) rmSync(lastStream.file, { force: true });
+  const startFile = path.join(HLS_ROOT, "start-" + ++streamRuns + ".txt");
+  lastStream = { kind: q.kind, id: q.id, start: q.start, file: startFile };
+  const args = ffmpegArgs({ url: sourceUrl(q), start: q.start, video, encoder, probe: described, previews, startFile });
   await takeSlot();
   if (res.destroyed) return;
   say(`Playing ${q.kind} ${q.id}.${q.ext} from ${clock(q.start)}: ${describePlan(described, video)}`);
@@ -1440,6 +1464,7 @@ const server = http.createServer((req, res) => {
     );
   }
   if (pathname === "/v1/hash") return fileHash(q).then((result) => sendJson(res, 200, result), (err) => failed(res, err));
+  if (pathname === "/v1/started") return sendJson(res, 200, { startsAt: streamStart(q) });
   if (pathname === "/v1/hls/start") {
     // The phone may give up before the first pieces are ready (it left the player): then
     // the session it never heard about is stopped, not left converting the whole film.

@@ -20,6 +20,29 @@
   src: url("../../assets/fonts/Nunito-ExtraBold.ttf") format("truetype");
   font-weight: 800;
 }
+/* Subtitle fonts (Subtitle settings, core/substyle.ts): free look-alikes for the
+   Netflix and Prime Video styles, a typewriter and a casual one. Latin only; anything
+   else falls back to the TV's own fonts. Loaded only when chosen. */
+@font-face {
+  font-family: "SubInter";
+  src: url("../../assets/fonts/Inter-SemiBold-latin.woff2") format("woff2");
+  font-weight: 600;
+}
+@font-face {
+  font-family: "SubRoboto";
+  src: url("../../assets/fonts/Roboto-Medium-latin.woff2") format("woff2");
+  font-weight: 500;
+}
+@font-face {
+  font-family: "SubCourier";
+  src: url("../../assets/fonts/CourierPrime-Bold-latin.woff2") format("woff2");
+  font-weight: 700;
+}
+@font-face {
+  font-family: "SubComic";
+  src: url("../../assets/fonts/ComicNeue-Bold-latin.woff2") format("woff2");
+  font-weight: 700;
+}
 
 :root {
   --bg: #151028;

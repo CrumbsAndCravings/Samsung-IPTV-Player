@@ -303,6 +303,31 @@ try {
     await page.keyboard.press("Backspace");
     await page.waitForTimeout(2000);
     await shot("player-subtitles");
+
+    // Subtitle settings: timing a tenth of a second a step, which never downloads the
+    // subtitles again, then the look.
+    let downloads = 0;
+    page.on("request", (req) => {
+      if (/\/download$/.test(req.url())) downloads++;
+    });
+    await page.keyboard.press("ArrowDown");
+    await page.waitForTimeout(300);
+    await page.keyboard.press("ArrowDown");
+    await page.keyboard.press("ArrowRight");
+    await page.keyboard.press("Enter"); // Subtitle settings
+    await page.waitForSelector(".player-substyle.is-visible");
+    for (let i = 0; i < 12; i++) {
+      await page.keyboard.press("ArrowRight");
+      await page.waitForTimeout(200);
+    }
+    await shot("player-subtitle-timing");
+    await page.keyboard.press("ArrowDown");
+    await page.keyboard.press("ArrowRight"); // Netflix style
+    for (let i = 0; i < 3; i++) await page.keyboard.press("ArrowDown");
+    await page.keyboard.press("ArrowRight"); // See-through box
+    await page.waitForTimeout(600);
+    await shot("player-subtitle-style");
+    if (downloads > 0) problems.push("Subtitle settings downloaded the subtitles " + downloads + " time(s)");
   }
 } finally {
   await browser.close();

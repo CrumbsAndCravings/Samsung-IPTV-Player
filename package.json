@@ -1,6 +1,6 @@
 {
   "name": "aranplus-samsung",
-  "version": "0.8.2",
+  "version": "0.8.3",
   "private": true,
   "description": "ARAN+ for Samsung Tizen TVs: a cosy, Netflix-style IPTV player built on the Xtream Codes API.",
   "type": "module",

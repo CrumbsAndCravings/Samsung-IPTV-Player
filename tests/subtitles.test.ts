@@ -39,19 +39,19 @@ const ids = (options: { id: string }[]) => options.map((o) => o.id);
 
 describe("the Subtitles column", () => {
   it("offers to connect OpenSubtitles when there's no account", () => {
-    expect(ids(subtitleMenu(embedded, freshOnline(false)))).toEqual(["", "2", "3", "os:setup"]);
+    expect(ids(subtitleMenu(embedded, freshOnline(false)))).toEqual(["", "2", "3", "os:setup", "sub:settings"]);
   });
   it("offers a search, then shows progress", () => {
-    expect(ids(subtitleMenu(embedded, online({})))).toEqual(["", "2", "3", "os:search"]);
+    expect(ids(subtitleMenu(embedded, online({})))).toEqual(["", "2", "3", "os:search", "sub:settings"]);
     expect(subtitleMenu(embedded, online({ state: "searching" }))[3].label).toBe("Searching online…");
     expect(subtitleMenu(embedded, online({ state: "downloading", candidates: [candidate("7")] })).map((o) => o.label)).toContain("Downloading subtitles…");
     expect(subtitleMenu(embedded, online({ state: "none" }))[3].label).toBe("Search online again");
   });
-  it("lists the results, and timing nudges once one is on", () => {
+  it("lists the results, then Subtitle settings", () => {
     const results = online({ state: "results", candidates: [candidate("7", true), candidate("8")] });
-    expect(ids(subtitleMenu(embedded, results))).toEqual(["", "2", "3", "os:file:7", "os:file:8"]);
+    expect(ids(subtitleMenu(embedded, results))).toEqual(["", "2", "3", "os:file:7", "os:file:8", "sub:settings"]);
     expect(subtitleMenu(embedded, results)[3].label).toBe("English · matches this file");
-    expect(ids(subtitleMenu(embedded, { ...results, loadedFileId: "8" }))).toEqual(["", "2", "3", "os:file:7", "os:file:8", "os:earlier", "os:later"]);
+    expect(ids(subtitleMenu(embedded, { ...results, loadedFileId: "8" }))).toEqual(["", "2", "3", "os:file:7", "os:file:8", "sub:settings"]);
   });
   it("marks what is showing", () => {
     const menu = subtitleMenu(embedded, online({ state: "results", candidates: [candidate("7")], loadedFileId: "7" }));
@@ -73,7 +73,7 @@ describe("the note under the columns", () => {
   });
   it("says how far the timing has moved", () => {
     expect(tracksNote(online({ state: "results", candidates: [candidate("7")], loadedFileId: "7", delayMs: -2000 }), 0)).toBe(
-      "Online subtitles on. Showing them 2s earlier. If they're out of sync, nudge them earlier or later.",
+      "Online subtitles on. Showing them 2s earlier. Out of sync? Fix the timing in Subtitle settings.",
     );
     expect(delayText(0)).toBe("");
     expect(delayText(1500)).toBe("Showing them 1.5s later.");
@@ -113,17 +113,17 @@ describe("subtitles saved for a title on the sync service", () => {
   });
   it("lists them first, even without an OpenSubtitles account", () => {
     const withSaved = (patch: Partial<OnlineStatus>) => ({ ...online(patch), candidates: [savedCandidate(saved)].concat(patch.candidates || []) });
-    expect(ids(subtitleMenu(embedded, { ...withSaved({}), configured: false }))).toEqual(["", "2", "3", "os:file:9", "os:setup"]);
-    expect(ids(subtitleMenu(embedded, withSaved({})))).toEqual(["", "2", "3", "os:file:9", "os:search"]);
+    expect(ids(subtitleMenu(embedded, { ...withSaved({}), configured: false }))).toEqual(["", "2", "3", "os:file:9", "os:setup", "sub:settings"]);
+    expect(ids(subtitleMenu(embedded, withSaved({})))).toEqual(["", "2", "3", "os:file:9", "os:search", "sub:settings"]);
     expect(subtitleMenu(embedded, withSaved({}))[3].label).toBe("English · saved for this title");
     // A search finding the same file lists it once.
     const searched = withSaved({ state: "results", candidates: [candidate("9", true), candidate("8")] });
-    expect(ids(subtitleMenu(embedded, searched))).toEqual(["", "2", "3", "os:file:9", "os:file:8"]);
-    expect(ids(subtitleMenu(embedded, { ...withSaved({}), configured: false, loadedFileId: "9" }))).toEqual(["", "2", "3", "os:file:9", "os:setup", "os:earlier", "os:later"]);
+    expect(ids(subtitleMenu(embedded, searched))).toEqual(["", "2", "3", "os:file:9", "os:file:8", "sub:settings"]);
+    expect(ids(subtitleMenu(embedded, { ...withSaved({}), configured: false, loadedFileId: "9" }))).toEqual(["", "2", "3", "os:file:9", "os:setup", "sub:settings"]);
   });
   it("says they're on every device", () => {
     const on = { ...online({ loadedFileId: "9", savedFileId: "9", delayMs: -1000 }), configured: false };
-    expect(tracksNote(on, 0)).toBe("Online subtitles on, saved for all your devices. Showing them 1s earlier. If they're out of sync, nudge them earlier or later.");
+    expect(tracksNote(on, 0)).toBe("Online subtitles on, saved for all your devices. Showing them 1s earlier. Out of sync? Fix the timing in Subtitle settings.");
     expect(tracksNote({ ...online({}), candidates: [savedCandidate(saved)] }, 1)).toBe("“Saved for this title” came from an earlier download, on this or another device.");
   });
   it("show by themselves where this device would look online or hasn't chosen", () => {

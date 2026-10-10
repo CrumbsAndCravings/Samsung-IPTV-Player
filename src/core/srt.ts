@@ -1,7 +1,7 @@
 // Subtitle files (SRT and WebVTT) for online subtitles. New for Samsung: AVPlay never
 // draws subtitles, so ARAN+ parses the file once and draws each cue itself, timed
-// against the player's position. Timing nudges ("1s earlier / later") are just a delay
-// applied at lookup, so they cost no new download (on Roku each nudge did).
+// against the player's position. Timing (Subtitle settings, 0.1 s a step) is just a
+// delay applied at lookup, so it costs no new download (on Roku each nudge did).
 
 export interface Cue {
   start: number; // ms

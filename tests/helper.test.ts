@@ -6,6 +6,7 @@ import {
   compressible,
   fetchAllowed,
   ffmpegArgs,
+  firstFrameSecs,
   hashedAsset,
   hlsArgs,
   hlsVideoPlan,
@@ -119,6 +120,21 @@ describe("the helper", () => {
     const avi = parseProbe(AVI);
     expect(ffmpegArgs({ url: "http://p/1.avi", start: 0, video: "convert", encoder: "libx264", probe: avi, previews: { dir: "/tmp/pv", atomic: true } }).join(" ")).not.toContain("skip_frame");
     expect(ffmpegArgs({ url: "http://p/1.mkv", start: 0, video: "copy", encoder: "libx264", probe: mkv }).join(" ")).not.toContain("skip_frame");
+  });
+
+  it("notes where a kept picture really starts, for the TV's clock", () => {
+    const mkv = parseProbe(MKV);
+    const kept = ffmpegArgs({ url: "http://p/1.mkv", start: 754, video: "copy", encoder: "libx264", probe: mkv, startFile: "/tmp/start-1.txt" }).join(" ");
+    expect(kept).toContain("pipe:1 -map 0:V:0 -c:v copy -frames:v 1 -f framemd5 /tmp/start-1.txt");
+    // From the start, or converted (which starts exactly where asked): nothing to note.
+    expect(ffmpegArgs({ url: "http://p/1.mkv", start: 0, video: "copy", encoder: "libx264", probe: mkv, startFile: "/tmp/s.txt" }).join(" ")).not.toContain("framemd5");
+    expect(ffmpegArgs({ url: "http://p/1.avi", start: 60, video: "convert", encoder: "libx264", probe: parseProbe(AVI), startFile: "/tmp/s.txt" }).join(" ")).not.toContain("framemd5");
+    // What FFmpeg 7 wrote for a stream asked for at 14.5 s, from a keyframe at 12 s.
+    const md5 = "#format: frame checksums\n#version: 2\n#hash: MD5\n#tb 0: 1/1000\n#media_type 0: video\n#codec_id 0: h264\n#dimensions 0: 640x360\n#sar 0: 1/1\n#stream#, dts,        pts, duration,     size, hash\n0,      -2500,      -2500,       41,    19788, 3aad364d6be07a438ca19bbf5ce90c57\n";
+    expect(firstFrameSecs(md5)).toBe(-2.5);
+    expect(firstFrameSecs("#tb 0: 1/90000\n0, -180000, -171000, 3750, 100, ab\n")).toBe(-1.9);
+    expect(firstFrameSecs("#tb 0: 1/1000\n")).toBeNull();
+    expect(firstFrameSecs("")).toBeNull();
   });
 
   it("converts on the processor with quicker settings on a small computer", () => {

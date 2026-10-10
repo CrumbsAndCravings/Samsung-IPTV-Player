@@ -2,7 +2,8 @@
 // one is on, the note underneath, and what a remembered choice means for a new video.
 // Ported from the Roku PlayerScreen (buildSubtitleOptions, updateTracksNote,
 // onTracksChanged, autoSubtitles). The Samsung difference: online subtitles are drawn
-// by ARAN+ from a file fetched once, so timing nudges are local and cost no download.
+// by ARAN+ from a file fetched once, so timing (in Subtitle settings, core/substyle.ts)
+// is local and costs no download.
 
 import { OsCandidate, subtitleLabel } from "./opensubtitles";
 import { optionIndex, TrackOption } from "./tracks";
@@ -51,11 +52,12 @@ export function savedCandidate(saved: SavedSubtitle): OsCandidate {
 // What is on screen: nothing, one of the file's own tracks, or an online subtitle.
 export type SubtitleSource = { kind: "off" } | { kind: "embedded"; id: string } | { kind: "online"; fileId: string };
 
-export const NUDGE_MS = 1000;
+// The last choice in the Subtitles column: timing and the look (core/substyle.ts).
+export const SETTINGS_ID = "sub:settings";
 
 // The Subtitles column: `embedded` is subtitleOptions() for the file (Off first, then
 // its own tracks), then subtitles saved for this title (which need no OpenSubtitles
-// account), followed by the online choices for the current state.
+// account), followed by the online choices for the current state, and Subtitle settings.
 export function subtitleMenu(embedded: TrackOption[], online: OnlineStatus): TrackOption[] {
   const options = embedded.slice();
   const file = (candidate: OsCandidate) => ({ id: "os:file:" + candidate.fileId, label: subtitleLabel(candidate), language: "eng" });
@@ -70,10 +72,7 @@ export function subtitleMenu(embedded: TrackOption[], online: OnlineStatus): Tra
     options.push({ id: "os:search", label: again ? "Search online again" : "Find English subtitles online", language: "" });
   }
   if (online.configured) for (const candidate of found) options.push(file(candidate));
-  if (online.loadedFileId) {
-    options.push({ id: "os:earlier", label: "Show subtitles 1s earlier", language: "" });
-    options.push({ id: "os:later", label: "Show subtitles 1s later", language: "" });
-  }
+  options.push({ id: SETTINGS_ID, label: "Subtitle settings: timing and look", language: "" });
   return options;
 }
 
@@ -105,7 +104,7 @@ export function tracksNote(online: OnlineStatus, embeddedCount: number): string 
   else if (online.loadedFileId) {
     const moved = delayText(online.delayMs);
     const on = online.loadedFileId === online.savedFileId ? "Online subtitles on, saved for all your devices." : "Online subtitles on.";
-    notes.push(on + (moved ? " " + moved : "") + " If they're out of sync, nudge them earlier or later.");
+    notes.push(on + (moved ? " " + moved : "") + " Out of sync? Fix the timing in Subtitle settings.");
   } else if (online.candidates.some((c) => !c.saved)) notes.push("“Matches this file” means timed for your exact video.");
   else if (online.candidates.length > 0) notes.push("“Saved for this title” came from an earlier download, on this or another device.");
   else if (embeddedCount === 0) notes.push("This file has no subtitles of its own.");
