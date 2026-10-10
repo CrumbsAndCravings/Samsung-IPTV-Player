@@ -127,7 +127,7 @@ describe("the helper", () => {
   it("notes where a kept picture really starts, for the TV's clock", () => {
     const mkv = parseProbe(MKV);
     const kept = ffmpegArgs({ url: "http://p/1.mkv", start: 754, video: "copy", encoder: "libx264", probe: mkv, startFile: "/tmp/start-1.txt" }).join(" ");
-    expect(kept).toContain("pipe:1 -map 0:V:0 -c:v copy -frames:v 1 -f framemd5 /tmp/start-1.txt");
+    expect(kept).toContain("pipe:1 -map 0:V:0 -c:v copy -frames:v 1 -flush_packets 1 -f framemd5 /tmp/start-1.txt");
     // From the start, or converted (which starts exactly where asked): nothing to note.
     expect(ffmpegArgs({ url: "http://p/1.mkv", start: 0, video: "copy", encoder: "libx264", probe: mkv, startFile: "/tmp/s.txt" }).join(" ")).not.toContain("framemd5");
     expect(ffmpegArgs({ url: "http://p/1.avi", start: 60, video: "convert", encoder: "libx264", probe: parseProbe(AVI), startFile: "/tmp/s.txt" }).join(" ")).not.toContain("framemd5");

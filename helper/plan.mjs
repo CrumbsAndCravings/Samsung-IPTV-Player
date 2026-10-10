@@ -152,7 +152,8 @@ export function ffmpegArgs({ url, start, video, encoder, probe, previews = null,
   if (audio.length === 0) args.push("-c:a", "aac", "-b:a", "192k");
   args.push("-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0", "pipe:1");
   if (startFile && video !== "convert" && start > 0 && probe && probe.video) {
-    args.push("-map", "0:V:0", "-c:v", "copy", "-frames:v", "1", "-f", "framemd5", startFile);
+    // Written out at once: FFmpeg would otherwise hold the line until the stream ends.
+    args.push("-map", "0:V:0", "-c:v", "copy", "-frames:v", "1", "-flush_packets", "1", "-f", "framemd5", startFile);
   }
   if (previews && probe && probe.video) {
     // The stream starts at `start`, so its frames are moved on by that much first: the

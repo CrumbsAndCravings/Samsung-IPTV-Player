@@ -99,7 +99,7 @@ import { httpGet } from "./http-get.mjs";
 import { parseRange, SourceFiles } from "./source.mjs";
 import { lanAddress, smallComputer, tailscaleAddress } from "./where.mjs";
 
-const VERSION = "1.6";
+const VERSION = "1.7";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const personalPath = process.env.ARANPLUS_PERSONAL || path.join(root, "personal.json");
 const DEFAULT_PORT = 8090;
@@ -183,12 +183,23 @@ const fetchAgent = ffmpegAgent || BROWSER_UA;
 
 const requestTally = { count: 0, slowest: 0 };
 
+// Read ahead of FFmpeg (helper/source.mjs): 768 MB (about four minutes of a rich 4K film),
+// less on a computer with little memory.
+const READ_AHEAD = Math.min(768 * 1024 * 1024, Math.floor(os.totalmem() / 8));
+
 const sources = new SourceFiles({
   fetch: httpGet,
   userAgent: fetchAgent,
   onRequest: ({ ms }) => {
     requestTally.count++;
     requestTally.slowest = Math.max(requestTally.slowest, ms);
+  },
+  ahead: READ_AHEAD,
+  onAhead: ({ key, held, received, ms, waited }) => {
+    const inHand = `Reading ahead of ${key.replace(":", " ")}: ${Math.round(held / 1048576)} MB in hand`;
+    // Holding all it keeps for most of the minute, it only took what the TV played.
+    if (waited > ms / 2) say(`${inHand}, all it keeps; the provider is well ahead of the TV.`);
+    else say(`${inHand}; the provider sent ${((received * 8) / ((ms - waited) / 1000) / 1e6).toFixed(0)} Mbit/s this last minute.`);
   },
 });
 
@@ -282,7 +293,11 @@ function stopRun(child) {
   child.kill();
 }
 
-async function takeSlot() {
+// Takes the provider's one connection: stops the FFmpeg run using it, and reading ahead
+// (helper/source.mjs) unless that's for `keep`, the file about to be read (a jump in the
+// same film reads on from what's held).
+async function takeSlot(keep = "") {
+  sources.stopReadAhead(keep);
   if (!active) return;
   const old = active;
   active = null;
@@ -332,7 +347,7 @@ async function info(q) {
   const cacheKey = q.kind + ":" + q.id;
   const cached = infoCache.get(cacheKey);
   if (cached && Date.now() - cached.at < INFO_TTL_MS) return cached.info;
-  await takeSlot();
+  await takeSlot(sourceFile(q).key);
   const tally = startTally();
   const result = await probe(sourceUrl(q));
   say(`Read what ${q.kind} ${q.id}.${q.ext} holds in ${((Date.now() - tally.at) / 1000).toFixed(1)} s (${tallySince(tally)}).`);
@@ -508,7 +523,7 @@ async function stream(req, res, q) {
   const startFile = path.join(HLS_ROOT, "start-" + ++streamRuns + ".txt");
   lastStream = { kind: q.kind, id: q.id, start: q.start, file: startFile };
   const args = ffmpegArgs({ url: sourceUrl(q), start: q.start, video, encoder, probe: described, previews, startFile });
-  await takeSlot();
+  await takeSlot(sourceFile(q).key);
   if (res.destroyed) return;
   say(`Playing ${q.kind} ${q.id}.${q.ext} from ${clock(q.start)}: ${describePlan(described, video)}`);
   const tally = startTally();
@@ -652,7 +667,7 @@ const fileRuns = new Set();
 async function passFile(req, res, q) {
   const title = q.kind + ":" + q.id;
   for (const run of fileRuns) if (run.title !== title) run.abort.abort();
-  await takeSlot();
+  await takeSlot(sourceFile(q).key);
   const abort = new AbortController();
   const run = { title, abort };
   fileRuns.add(run);
@@ -744,7 +759,7 @@ async function rangeOf(file, from, to) {
 async function fileHash(q) {
   const cacheKey = q.kind + ":" + q.id;
   if (hashes.has(cacheKey)) return hashes.get(cacheKey);
-  await takeSlot();
+  await takeSlot(sourceFile(q).key);
   const file = sourceFile(q);
   let result = { hash: "", size: 0 };
   try {
@@ -865,7 +880,7 @@ async function startHls(q) {
   const plan = q.format === "fmp4" ? described.hlsVideoPlan : described.videoPlan;
   const hevcRefused = !q.hevc && described.video && described.video.codec === "hevc";
   const video = q.video === "convert" || plan === "convert" || hevcRefused ? "convert" : "copy";
-  await takeSlot();
+  await takeSlot(sourceFile(q).key);
   const id = randomBytes(16).toString("hex");
   const dir = path.join(HLS_ROOT, id);
   mkdirSync(dir, { recursive: true });
@@ -1111,7 +1126,7 @@ async function startVodRun(session, n) {
   const run = { no: ++session.runs, first: n, next: n, child: null, ended: false, finished: false, failed: "", stderr: "", timer: 0 };
   run.dir = path.join(session.dir, "r" + run.no);
   session.run = run;
-  await takeSlot();
+  await takeSlot(sourceFile(session.q).key);
   // The last run's connection to the provider needs a moment to close, as in takeSlot.
   if (hadRun) await wait(FREE_SLOT_MS);
   if (session.run !== run || !sessions.has(session.id)) return;

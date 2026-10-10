@@ -178,6 +178,86 @@ describe("reading the provider's files", () => {
     }
   });
 
+  it("reads ahead of FFmpeg, keeping one connection busy, and answers jumps inside it", async () => {
+    const provider = fakeProvider();
+    const MB = 1024 * 1024;
+    const sources = new SourceFiles({ fetch: provider.fetch as unknown as SourceFetch, ahead: 4 * MB, letGoMs: 50 });
+    const file = sources.file("movie:6", "http://provider.example/movie/u/p/6.mkv");
+    await sources.size(file);
+    const asked = provider.log.length;
+    // FFmpeg reads 1 MB from 10 MB on, then holds back (the TV's buffer is full).
+    const reading = sources.bytes(file, 10 * MB, -1, undefined, { exclusive: true });
+    let got = 0;
+    while (got < MB) {
+      const next = await reading.next();
+      got += (next.value as Uint8Array).length;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    // The connection went on to 4 MB past where FFmpeg is, and no further.
+    const held = sources.reading!;
+    expect(held.end - (10 * MB + got)).toBeGreaterThanOrEqual(4 * MB);
+    expect(held.end - (10 * MB + got)).toBeLessThanOrEqual(4 * MB + 65536);
+    expect(provider.log.length).toBe(asked + 1);
+    await reading.return(undefined);
+    // A jump inside what's held is answered from it, with no new request.
+    const near = await read(sources, file, 12 * MB, -1, MB);
+    expect(right(near, 12 * MB)).toBe(true);
+    expect(provider.log.length).toBe(asked + 1);
+    // A jump a little further on is read on to, still with no new request.
+    const on = await read(sources, file, 25 * MB, -1, MB);
+    expect(right(on, 25 * MB)).toBe(true);
+    expect(provider.log.length).toBe(asked + 1);
+    // A jump back before what's held starts reading there.
+    const back = await read(sources, file, 9 * MB, -1, MB);
+    expect(right(back, 9 * MB)).toBe(true);
+    expect(provider.log.length).toBe(asked + 2);
+    expect(provider.log[provider.log.length - 1].range).toBe("bytes=" + 9 * MB + "-");
+    expect(provider.mostOpen()).toBeLessThanOrEqual(2);
+    // Nobody reading for a while: the connection is let go.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(sources.reading).toBeNull();
+  });
+
+  it("reads ahead on after the provider drops the connection", async () => {
+    const provider = fakeProvider({ cutAt: 3 * 1024 * 1024 });
+    const MB = 1024 * 1024;
+    const sources = new SourceFiles({ fetch: provider.fetch as unknown as SourceFetch, ahead: 8 * MB, letGoMs: 50 });
+    const file = sources.file("movie:7", "http://provider.example/movie/u/p/7.mkv");
+    // The size from the first answer (which is the one cut short).
+    const part = await read(sources, file, 0, 3 * MB - 1);
+    expect(part.length).toBe(3 * MB);
+    const ahead = await read(sources, file, 10 * MB, -1, 6 * MB);
+    expect(ahead.length).toBeGreaterThanOrEqual(6 * MB);
+    expect(right(ahead, 10 * MB)).toBe(true);
+    sources.stopReadAhead();
+    expect(sources.reading).toBeNull();
+  });
+
+  it("lets something else use the connection, keeping what's held, then reads on", async () => {
+    const provider = fakeProvider();
+    const MB = 1024 * 1024;
+    const sources = new SourceFiles({ fetch: provider.fetch as unknown as SourceFetch, ahead: 4 * MB, letGoMs: 2000 });
+    const file = sources.file("movie:8", "http://provider.example/movie/u/p/8.mkv");
+    await sources.size(file);
+    const first = await read(sources, file, 10 * MB, -1, MB);
+    expect(right(first, 10 * MB)).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const held = sources.reading!.end;
+    // FFmpeg looks at the index at the very end: the connection is the index's for now.
+    const tail = await read(sources, file, 40 * MB - 1000, -1);
+    expect(right(tail, 40 * MB - 1000)).toBe(true);
+    expect(sources.reading).not.toBeNull();
+    // Back where it was: what was held is still there, and reading goes on past it.
+    const asked = provider.log.length;
+    const again = await read(sources, file, 11 * MB, -1, held - 11 * MB + 2 * MB);
+    expect(again.length).toBeGreaterThanOrEqual(held - 11 * MB + 2 * MB);
+    expect(right(again, 11 * MB)).toBe(true);
+    // One more request, from where the held bytes end.
+    expect(provider.log.length).toBe(asked + 1);
+    expect(provider.log[provider.log.length - 1].range).toBe("bytes=" + held + "-");
+    sources.stopReadAhead();
+  });
+
   it("reads Range headers", () => {
     expect(parseRange("bytes=0-")).toEqual({ start: 0, end: -1 });
     expect(parseRange("bytes=100-199")).toEqual({ start: 100, end: 199 });

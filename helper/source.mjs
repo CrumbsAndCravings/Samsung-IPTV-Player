@@ -14,6 +14,16 @@
 // When the provider drops a connection partway, the reader asks again from where it got
 // to, so FFmpeg and Safari don't notice.
 //
+// Reading ahead (`ahead` bytes, for FFmpeg's reads through the file): a provider's server
+// starts a connection slowly and, once it has sat idle for a moment, starts it slowly
+// again; on a long path to it the slow part lasts many seconds (12 to 24 Mbit/s for 13
+// seconds, measured at home, then 300). A player reads in bursts, filling its buffer and
+// then pausing, so every burst began slowly and a 25 Mbit/s film played ten seconds and
+// buffered ten. So the helper reads on as fast as the provider sends, up to `ahead` bytes
+// past where FFmpeg has got to, keeping the connection busy and fast, and FFmpeg reads
+// from what's held; a jump inside it is answered at once. The connection is let go
+// 30 seconds after nobody reads.
+//
 // No I/O of its own: the caller passes `fetch` (helper/http-get.mjs), so tests can stand in
 // for the provider.
 
@@ -23,6 +33,9 @@ export const HEAD_BYTES = 8 * 1024 * 1024;
 export const TAIL_BYTES = 8 * 1024 * 1024;
 const MAX_FILES = 4;
 const REDIRECT_KEEP_MS = 10 * 60 * 1000;
+const BEHIND_BYTES = 16 * 1024 * 1024; // kept behind where FFmpeg is, for small jumps back
+const SKIP_BYTES = 16 * 1024 * 1024; // a read this far past what's held waits for it
+const LET_GO_MS = 30000; // the connection is let go this long after nobody reads (letGoMs)
 
 export class SourceError extends Error {
   constructor(message, status = 0) {
@@ -102,12 +115,27 @@ class SourceFile {
 export class SourceFiles {
   // fetch: httpGet from helper/http-get.mjs (or a stand-in); userAgent: how to introduce ourselves;
   // onRequest({ key, start, ms, status }): told about each request to the provider.
-  constructor({ fetch, userAgent = "", onRequest = () => undefined }) {
+  // ahead: bytes to read ahead of FFmpeg (0: none); onAhead({ key, held, received, ms,
+  // waited }): told how reading ahead goes, every minute or so (`received` bytes in `ms`,
+  // `waited` of them holding all it keeps).
+  constructor({ fetch, userAgent = "", onRequest = () => undefined, ahead = 0, onAhead = () => undefined, letGoMs = LET_GO_MS }) {
     this.fetchImpl = fetch;
     this.userAgent = userAgent;
     this.onRequest = onRequest;
+    this.ahead = ahead;
+    this.onAhead = onAhead;
+    this.letGoMs = letGoMs;
     this.files = new Map();
     this.exclusive = null; // the one request to the provider FFmpeg has open
+    this.reading = null; // the ReadAhead holding the provider's connection, if any
+  }
+
+  // Lets go of the connection read ahead on, unless it's for `keep` (a file's key).
+  stopReadAhead(keep = "") {
+    if (this.reading && this.reading.file.key !== keep) {
+      this.reading.stop();
+      this.reading = null;
+    }
   }
 
   file(key, url) {
@@ -181,6 +209,26 @@ export class SourceFiles {
         yield cached;
         continue;
       }
+      // FFmpeg reading through the file: from what's read ahead (see the top), which
+      // starts anywhere but the very end (where FFmpeg only looks at the index).
+      const held = this.reading && this.reading.file === file && this.reading.covers(pos);
+      if (exclusive && end < 0 && this.ahead > 0 && (held || (file.size > 0 && pos < file.size - TAIL_BYTES))) {
+        let reading = this.reading;
+        if (!held) {
+          this.stopReadAhead();
+          if (this.exclusive) this.exclusive.abort();
+          reading = this.reading = new ReadAhead(this, file, pos);
+        }
+        for await (const piece of reading.read(pos, signal)) {
+          pos += piece.length;
+          yield piece;
+        }
+        if (reading.error && !(signal && signal.aborted)) throw reading.error;
+        return;
+      }
+      // Anything else that needs the connection takes it from reading ahead, which keeps
+      // what it holds and goes on when it's read from again.
+      if (exclusive && this.reading) this.reading.pause();
       const abort = new AbortController();
       const stop = () => abort.abort();
       if (signal) {
@@ -243,5 +291,217 @@ function cancel(answer) {
     return answer.body ? answer.body.cancel().catch(() => undefined) : Promise.resolve();
   } catch {
     return Promise.resolve();
+  }
+}
+
+// Reading a file ahead of FFmpeg, from `start`, as fast as the provider sends, up to the
+// owner's `ahead` bytes past the furthest FFmpeg has read (see the top). The bytes held
+// run from `base` to `end`; FFmpeg reads them with read(), which waits for more.
+class ReadAhead {
+  constructor(owner, file, start) {
+    this.owner = owner;
+    this.file = file;
+    this.chunks = []; // from index `first` on; `offsets` holds where each starts
+    this.offsets = [];
+    this.first = 0;
+    this.end = start;
+    this.reader = start; // the furthest FFmpeg has read
+    this.readers = 0;
+    this.done = false;
+    this.error = null;
+    this.waiters = [];
+    this.room = null;
+    this.abort = new AbortController();
+    this.paused = false;
+    this.runs = 0; // which run of the connection is current (pause and resume start another)
+    this.letGo = 0;
+    this.received = 0;
+    this.waited = 0; // of the time since lastReport, how long it held all it keeps
+    this.lastReport = Date.now();
+    this.run(start);
+  }
+
+  // Lets go of the connection for something else, keeping what's held; reading from
+  // further on than that goes on with a new request (resume).
+  pause() {
+    if (this.paused || this.done) return;
+    this.paused = true;
+    this.abort.abort();
+    if (this.room) this.room();
+  }
+
+  resume() {
+    if (!this.paused || this.done) return;
+    this.paused = false;
+    this.abort = new AbortController();
+    this.run(this.end);
+  }
+
+  get base() {
+    return this.first < this.chunks.length ? this.offsets[this.first] : this.end;
+  }
+
+  get held() {
+    return this.end - this.reader;
+  }
+
+  // Whether a read from `pos` can come from here (now, or once reading has got there).
+  covers(pos) {
+    if (pos < this.base) return false;
+    if (pos < this.end) return true;
+    return !this.done && pos <= this.end + SKIP_BYTES;
+  }
+
+  async run(start) {
+    let pos = start;
+    let stalls = 0;
+    const signal = this.abort.signal;
+    const mine = ++this.runs;
+    // An earlier run still winding down after a pause adds nothing, and decides nothing.
+    const current = () => mine === this.runs && !signal.aborted;
+    try {
+      while (!signal.aborted && (this.file.size === 0 || pos < this.file.size)) {
+        const answer = await this.owner.request(this.file, pos, -1, signal);
+        const from = pos;
+        let skip = answer.status === 200 ? pos : 0;
+        try {
+          for await (const raw of answer.body) {
+            let chunk = Buffer.from(raw);
+            if (skip > 0) {
+              if (chunk.length <= skip) {
+                skip -= chunk.length;
+                continue;
+              }
+              chunk = chunk.subarray(skip);
+              skip = 0;
+            }
+            if (!current()) break;
+            // The start and the end of the file are kept for next time, as on other reads.
+            this.file.recorder(pos)(chunk);
+            this.push(chunk);
+            pos += chunk.length;
+            // Held enough: wait for FFmpeg to read on (the connection stays open).
+            if (this.held > this.owner.ahead) {
+              const since = Date.now();
+              while (this.held > this.owner.ahead && !signal.aborted) await new Promise((resolve) => (this.room = resolve));
+              this.waited += Date.now() - since;
+            }
+            if (signal.aborted) break;
+          }
+        } catch {
+          if (signal.aborted) break;
+          // The provider dropped the connection: asked again below.
+        }
+        await cancel(answer);
+        if (signal.aborted || this.file.size === 0 || pos >= this.file.size) break;
+        stalls = pos > from ? 0 : stalls + 1;
+        if (stalls >= 2) throw new SourceError("The provider stopped sending " + this.file.key + " at byte " + pos);
+      }
+    } catch (err) {
+      if (!signal.aborted) this.error = err;
+    }
+    // Paused for something else (not done: it goes on when read from again), or a newer
+    // run has taken over.
+    if (mine !== this.runs || (this.paused && signal.aborted && !this.error)) return;
+    this.done = true;
+    this.wake();
+  }
+
+  push(chunk) {
+    this.chunks.push(chunk);
+    this.offsets.push(this.end);
+    this.end += chunk.length;
+    this.received += chunk.length;
+    this.wake();
+    const now = Date.now();
+    if (now - this.lastReport >= 60000) {
+      this.owner.onAhead({ key: this.file.key, held: this.held, received: this.received, ms: now - this.lastReport, waited: Math.min(this.waited, now - this.lastReport) });
+      this.received = 0;
+      this.waited = 0;
+      this.lastReport = now;
+    }
+  }
+
+  wake() {
+    const waiters = this.waiters;
+    this.waiters = [];
+    for (const resolve of waiters) resolve();
+  }
+
+  // The held bytes from `pos` (inside what's held), up to the end of their chunk.
+  slice(pos) {
+    let lo = this.first;
+    let hi = this.chunks.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (this.offsets[mid] <= pos) lo = mid;
+      else hi = mid - 1;
+    }
+    return this.chunks[lo].subarray(pos - this.offsets[lo]);
+  }
+
+  // FFmpeg has read up to `pos`: what's well behind goes, and reading may go on.
+  advance(pos) {
+    if (pos > this.reader) this.reader = pos;
+    while (this.first < this.chunks.length - 1 && this.offsets[this.first + 1] <= this.reader - BEHIND_BYTES) {
+      this.chunks[this.first] = null;
+      this.first++;
+    }
+    if (this.first > 4096) {
+      this.chunks = this.chunks.slice(this.first);
+      this.offsets = this.offsets.slice(this.first);
+      this.first = 0;
+    }
+    if (this.room && this.held <= this.owner.ahead) {
+      const resolve = this.room;
+      this.room = null;
+      resolve();
+    }
+  }
+
+  async *read(pos, signal) {
+    this.readers++;
+    clearTimeout(this.letGo);
+    try {
+      for (;;) {
+        if (signal && signal.aborted) return;
+        if (pos < this.end && pos >= this.base) {
+          const piece = this.slice(pos);
+          pos += piece.length;
+          this.advance(pos);
+          yield piece;
+          continue;
+        }
+        if (this.done || pos < this.base) return;
+        // Waiting further on than FFmpeg had got to: reading goes on to there.
+        this.advance(pos);
+        this.resume();
+        await new Promise((resolve) => {
+          this.waiters.push(resolve);
+          if (signal) signal.addEventListener("abort", resolve, { once: true });
+        });
+      }
+    } finally {
+      this.readers--;
+      // Nobody reading for a while (the TV went back): let the connection go.
+      if (this.readers === 0) {
+        this.letGo = setTimeout(() => {
+          if (this.readers === 0 && this.owner.reading === this) this.owner.stopReadAhead();
+        }, this.owner.letGoMs);
+        if (this.letGo.unref) this.letGo.unref();
+      }
+    }
+  }
+
+  stop() {
+    clearTimeout(this.letGo);
+    this.paused = false;
+    this.abort.abort();
+    this.done = true;
+    this.chunks = [];
+    this.offsets = [];
+    this.first = 0;
+    if (this.room) this.room();
+    this.wake();
   }
 }
