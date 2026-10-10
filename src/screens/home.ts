@@ -14,6 +14,7 @@
 
 import type { App, Screen } from "../app";
 import { languageTurns, organizeCategories, OrganizedCategory, takeTurns } from "../core/categories";
+import { richThroughHelper } from "../core/playback";
 import { needsUhdDecoder, playCheck } from "../core/compat";
 import { applyInfo, backdropPictures, Item, makeItem, metaLine } from "../core/items";
 import { log } from "../core/log";
@@ -26,7 +27,7 @@ import { Json, sizedImage } from "../core/utils";
 import { Category, POSTER_SIZE } from "../core/xtream";
 import { ApiError } from "../data/api";
 import type { PickedRow } from "../data/library";
-import { savePref } from "../core/storage";
+import { loadPrefs, savePref } from "../core/storage";
 import { soundsOn } from "../platform/sound";
 import { introOn, introReady } from "../ui/intro";
 import type { Key } from "../platform/keys";
@@ -605,6 +606,19 @@ export class HomeScreen implements Screen {
     this.focusRows();
   }
 
+  // With the helper set up: whether rich 4K films come through the computer (faster)
+  // or straight from the provider.
+  private richFilmsChoice(): { label: string; action: () => void }[] {
+    if (!helperOn()) return [];
+    const through = richThroughHelper(loadPrefs().richFilms || "");
+    return [
+      {
+        label: through ? "Stream 4K directly" : "Stream 4K via computer",
+        action: () => savePref("richFilms", through ? "direct" : "helper"),
+      },
+    ];
+  }
+
   private accountMenu(): void {
     this.app.dialog({
       title: "Account",
@@ -614,6 +628,7 @@ export class HomeScreen implements Screen {
         { label: "Online subtitles", action: () => this.app.push(new SubtitleSetupScreen(this.app)) },
         { label: soundsOn() ? "Turn click sounds off" : "Turn click sounds on", action: () => savePref("sounds", soundsOn() ? "off" : "on") },
         { label: introOn() ? "Turn the intro off" : "Turn the intro on", action: () => savePref("intro", introOn() ? "off" : "on") },
+        ...this.richFilmsChoice(),
         { label: "Setup checks", action: () => this.app.push(new SetupChecksScreen(this.app)) },
         { label: "Change server address", action: () => this.app.push(new ServerScreen(this.app)) },
         { label: "Sign out", action: () => this.app.signOut() },

@@ -1,6 +1,6 @@
 // Ported from the Roku app's tests/utils_test.brs (seeking).
 import { describe, expect, it } from "vitest";
-import { barFraction, bufferPlan, clampSeek, helperStartMs, holdStep, providerServerTrouble } from "../src/core/playback";
+import { barFraction, bufferPlan, clampSeek, helperStartMs, holdStep, providerServerTrouble, richThroughHelper } from "../src/core/playback";
 
 describe("hold to seek", () => {
   it("steps 10 s, then 30 s, then doubles every 1.5 s up to 10 min", () => {
@@ -57,5 +57,13 @@ describe("buffering for heavy files", () => {
     expect(bufferPlan(15782, 1920)).toEqual({ play: 5, resume: 15 }); // a rich 1080p copy
     expect(bufferPlan(2797, 1920)).toBeNull();
     expect(bufferPlan(0, 0)).toBeNull();
+  });
+});
+
+describe("rich films through the helper", () => {
+  it("is on unless the account menu turned it off", () => {
+    expect(richThroughHelper("")).toBe(true);
+    expect(richThroughHelper("helper")).toBe(true);
+    expect(richThroughHelper("direct")).toBe(false);
   });
 });

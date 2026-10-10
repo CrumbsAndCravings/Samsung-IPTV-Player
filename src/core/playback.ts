@@ -56,3 +56,11 @@ export function bufferPlan(bitrateKbps: number, width: number): { play: number; 
   if (bitrateKbps < HEAVY_KBPS && width <= 1920) return null;
   return { play: 5, resume: 15 };
 }
+
+// Rich films (bufferPlan) go through the helper when there is one, unless the account
+// menu says otherwise ("richFilms": "direct"): the computer brings them in over one
+// connection that gets up to speed, and passes them on over the home network, where a
+// TV's own long-distance connection can stay too slow for them.
+export function richThroughHelper(pref: string): boolean {
+  return pref !== "direct";
+}

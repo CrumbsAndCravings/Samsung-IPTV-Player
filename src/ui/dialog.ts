@@ -34,12 +34,14 @@ export class Dialog implements KeyTarget {
     this.previous = previous;
     this.index = options.focus || 0;
     this.vertical = options.buttons.length > 3;
+    // A long list (the account menu with the helper set up) starts higher, closer set.
+    const long = options.buttons.length > 7;
     this.pills = options.buttons.map((b) => h("div", { class: "pill", text: b.label }));
     this.root = h("div", { class: "dialog-scrim" }, [
-      h("div", { class: "dialog" + (options.message ? " dialog-wide" : "") + (this.vertical ? " dialog-list" : "") }, [
+      h("div", { class: "dialog" + (options.message ? " dialog-wide" : "") + (this.vertical ? " dialog-list" : "") + (long ? " dialog-long" : "") }, [
         h("div", { class: "dialog-title", text: options.title }),
         options.message ? h("p", { class: "dialog-message", text: options.message }) : null,
-        h("div", { class: "dialog-buttons" + (this.vertical ? " is-vertical" : "") }, this.pills),
+        h("div", { class: "dialog-buttons" + (this.vertical ? " is-vertical" : "") + (long ? " is-long" : "") }, this.pills),
       ]),
     ]);
   }

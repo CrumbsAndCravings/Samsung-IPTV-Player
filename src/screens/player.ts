@@ -16,7 +16,7 @@ import { FileFacts, isFormatError, learnResult, needsUhdDecoder, playCheck, Play
 import type { Item } from "../core/items";
 import { log, logError } from "../core/log";
 import type { FindRequest } from "../core/opensubtitles";
-import { barFraction, bufferPlan, helperStartMs, providerServerTrouble, SERVER_TROUBLE_TEXT } from "../core/playback";
+import { barFraction, bufferPlan, helperStartMs, providerServerTrouble, richThroughHelper, SERVER_TROUBLE_TEXT } from "../core/playback";
 import { progressPut, progressRemove } from "../core/progress";
 import { redact } from "../core/redact";
 import { httpDetail, isRefusalCode } from "../core/refusals";
@@ -192,6 +192,7 @@ export class PlayerScreen implements Screen {
   private convertTried = false;
   private helperTried = false; // this title has already moved to the helper
   private helperFromStart = false; // it went to the helper without trying on its own
+  private helperByChoice = false; // a rich film the TV could play itself, for speed
   private helperPlayed = false; // its stream has played, so a failure gets two reopens
   private offsetMs = 0;
   private jumpTo = -1; // reopen the helper's stream here
@@ -393,6 +394,7 @@ export class PlayerScreen implements Screen {
     this.convertTried = false;
     this.helperTried = false;
     this.helperFromStart = false;
+    this.helperByChoice = false;
     this.helperPlayed = false;
     this.offsetMs = 0;
     this.jumpTo = -1;
@@ -417,6 +419,12 @@ export class PlayerScreen implements Screen {
       this.route = "helper";
       this.helperTried = true;
       this.helperFromStart = true;
+    } else if (helperOn() && this.check.verdict !== "blocked" && bufferPlan(item.bitrateKbps, item.width) && richThroughHelper(loadPrefs().richFilms || "")) {
+      // A rich film comes in faster through the computer than on the TV's own
+      // connection; straight from the provider again if the computer can't.
+      this.route = "helper";
+      this.helperByChoice = true;
+      log("helper: a rich film (" + (item.bitrateKbps > 0 ? Math.round(item.bitrateKbps / 1000) + " Mbit/s" : "4K") + "), through the computer");
     } else if (this.check.verdict === "blocked" && !this.tryAnyway) {
       this.showUnplayable(this.check);
       return;
@@ -516,6 +524,7 @@ export class PlayerScreen implements Screen {
           this.retryLater();
           return;
         }
+        if (this.helperByChoice && !this.started) return this.playDirectInstead("it didn't answer (" + err.message + ")");
         this.handleError("HELPER: " + err.message);
       },
     );
@@ -567,6 +576,31 @@ export class PlayerScreen implements Screen {
       this.positionMs += offset - this.offsetMs;
       this.offsetMs = offset;
     });
+  }
+
+  // A rich film sent to the helper by choice plays straight from the provider when the
+  // helper can't play it (the computer is off or went to sleep, say), from where it got
+  // to, as it would have without the helper.
+  private playDirectInstead(reason: string): void {
+    log("helper: " + reason + "; playing straight from the provider");
+    if (this.started) this.startSecs = Math.floor(this.positionMs / 1000);
+    this.helperByChoice = false;
+    this.helperTried = true; // a failure from here doesn't send it back
+    this.route = "direct";
+    this.helper = null;
+    this.attempt = 0;
+    this.errors = [];
+    this.started = false;
+    this.firstTimeMs = -1;
+    this.offsetMs = 0;
+    this.tracksApplied = false;
+    this.chosenAudio = "";
+    window.clearTimeout(this.stallTimer);
+    this.stopStream();
+    this.show(this.errorEl, false);
+    this.show(this.spinnerEl, true);
+    window.clearTimeout(this.retryTimer);
+    this.retryTimer = window.setTimeout(() => this.loadStream(), RETRY_AFTER_MS);
   }
 
   // Moves this title to the helper, from where it got to.
@@ -756,7 +790,10 @@ export class PlayerScreen implements Screen {
       this.retryTimer = window.setTimeout(() => this.loadStream(), RETRY_AFTER_MS);
       return;
     }
-    // Out of tries. First a word from whoever knows more than the TV's player.
+    // Out of tries. A rich film sent to the helper by choice plays straight from the
+    // provider instead (from where it got to); otherwise a word from whoever knows more
+    // than the TV's player.
+    if (this.route === "helper" && this.helperByChoice) return this.playDirectInstead(label);
     if (this.route === "direct") return this.afterDirectFailed();
     const last = this.errors[this.errors.length - 1] || "";
     if (last.indexOf("HELPER: ") === 0) return this.showError("");

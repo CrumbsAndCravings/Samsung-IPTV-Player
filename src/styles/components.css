@@ -428,3 +428,10 @@
 .dialog-buttons.is-vertical .pill:last-child {
   margin: 0 auto;
 }
+/* More than seven choices: higher up and closer set, so the last stays on screen. */
+.dialog-list.dialog-long {
+  top: 120px;
+}
+.dialog-buttons.is-vertical.is-long .pill:not(:last-child) {
+  margin-bottom: 9px;
+}
