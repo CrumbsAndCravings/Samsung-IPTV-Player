@@ -38,13 +38,17 @@
 //   GET /v1/xtream?key&action&... the provider's player_api.php, with the login added
 //   GET /v1/file/<kind>/<id>.<ext>?key
 //                                 the file as the provider sends it (MP4s play as they are)
-//   GET /v1/hash?key&kind&id&ext  the file's OpenSubtitles moviehash
+//   GET /v1/hash?key&kind&id&ext  the file's OpenSubtitles moviehash (with kept=1, only from
+//                                 the start and end the helper keeps: "" otherwise)
 //   GET|POST /v1/fetch?key&url    OpenSubtitles, which a web page can't call itself
 //   GET /v1/hls/start?key&kind&id&ext&start&video&hevc&a|alang&audio&height&format&subs&vod
 //                                 starts HLS from `start` seconds; answers once the first
 //                                 pieces are ready, with the playlist's address. With
 //                                 vod=1, the playlist is the whole film's (see "Whole
-//                                 films, for the phone" below)
+//                                 films, for the phone" below). The answer also says
+//                                 what the file holds (videoPlan, width, height, tracks
+//                                 with their plans) and its fingerprint (hash) when the
+//                                 start and end it read are kept (1.9 and newer)
 //   GET /v1/hls/index.m3u8?...    the same, answered with a redirect to the playlist
 //   GET /v1/hls/s/<session>/<file> the playlist, its pieces and subtitle files (the
 //                                 session's random name is its key); for a whole film,
@@ -53,8 +57,9 @@
 //                                 previews.bif?after&upto (those pictures in one file)
 //   GET /v1/stop?key&session      stops that session's FFmpeg (the phone left the player)
 //
-// The Roku uses /v1/info, /v1/hash, /v1/hls/start (vod=1, format=ts), the session's
-// previews.json and previews.bif, /v1/stop and /v1/last-error.
+// The Roku uses /v1/hls/start (vod=1, format=ts) alone to start (0.5.19 and newer; /v1/info
+// and /v1/hash before it, before), the session's previews.json and previews.bif, /v1/stop
+// and /v1/last-error.
 //
 // The provider allows one connection at a time, so a new request stops the one before.
 
@@ -80,6 +85,7 @@ import {
   hashedAsset,
   hlsArgs,
   hlsVideoPlan,
+  hwaccelFor,
   mergeVtt,
   movieHash,
   parseProbe,
@@ -105,7 +111,7 @@ import { httpGet } from "./http-get.mjs";
 import { parseRange, SourceFiles } from "./source.mjs";
 import { lanAddress, smallComputer, tailscaleAddress } from "./where.mjs";
 
-const VERSION = "1.8";
+const VERSION = "1.9";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const personalPath = process.env.ARANPLUS_PERSONAL || path.join(root, "personal.json");
 const DEFAULT_PORT = 8090;
@@ -128,6 +134,7 @@ const ENCODER_NAMES = {
   h264_amf: "the AMD graphics card",
   libx264: "the processor",
 };
+const HWACCEL_NAMES = { cuda: "the NVIDIA graphics card", d3d11va: "the graphics card (Direct3D 11)", qsv: "Intel Quick Sync", vaapi: "the graphics card (VA-API)", dxva2: "the graphics card (DXVA2)", vulkan: "the graphics card (Vulkan)" };
 
 function fail(message) {
   console.error("\n" + message + "\n");
@@ -283,6 +290,37 @@ const encoder = settings.encoder && ENCODERS[settings.encoder] ? settings.encode
 const small = smallComputer();
 const x264Preset = X264_PRESETS.indexOf(settings.x264Preset) >= 0 ? settings.x264Preset : small ? "superfast" : "veryfast";
 ENCODERS.libx264 = x264Args(x264Preset);
+
+// Reading (decoding) the file with the graphics card too, the one that encodes, so the
+// processor isn't the slow part of converting a 10-bit HEVC film. "hwaccel" under
+// "transcoder" in personal.json: "auto" (this), "none", or one of FFmpeg's methods.
+// Checked once here: a second of black, made with the encoder and read back with the
+// graphics card. A run that fails at once with it reads with the processor from then on
+// (startVodRun).
+function pickHwaccel() {
+  if (settings.hwaccel === "none") return "";
+  const wanted = typeof settings.hwaccel === "string" && settings.hwaccel && settings.hwaccel !== "auto" ? settings.hwaccel : hwaccelFor(encoder, process.platform);
+  if (!wanted) return "";
+  const methods = (spawnSync(ffmpeg.path, ["-hide_banner", "-hwaccels"], { encoding: "utf8", windowsHide: true }).stdout || "").split(/\s+/);
+  if (methods.indexOf(wanted) < 0) return "";
+  const sample = path.join(os.tmpdir(), "aranplus-hwaccel-check.mp4");
+  const made = spawnSync(
+    ffmpeg.path,
+    ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=640x360:r=25:d=1", ...ENCODERS[encoder], "-frames:v", "25", sample],
+    { windowsHide: true, timeout: 20000 },
+  );
+  if (made.status !== 0) return "";
+  const read = spawnSync(ffmpeg.path, ["-hide_banner", "-loglevel", "warning", "-hwaccel", wanted, "-i", sample, "-f", "null", "-"], {
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 20000,
+  });
+  rmSync(sample, { force: true });
+  // FFmpeg reads with the processor when the card can't, and says so.
+  return read.status === 0 && !/fail|error|fall/i.test(read.stderr || "") ? wanted : "";
+}
+
+let hwaccel = pickHwaccel();
 
 // Whether this FFmpeg writes pictures whole before they appear (5.1 and newer), so the
 // phone never gets half a preview picture.
@@ -762,6 +800,34 @@ async function rangeOf(file, from, to) {
   return bytes.length === to - from + 1 ? bytes : null;
 }
 
+// The fingerprint from what the helper already keeps of a file (the start and the end
+// FFmpeg read), so it asks the provider nothing; "" when the end isn't kept.
+function keptHash(q) {
+  const cacheKey = q.kind + ":" + q.id;
+  if (hashes.has(cacheKey)) return hashes.get(cacheKey).hash;
+  const file = sourceFile(q);
+  if (!(file.size >= CHUNK * 2)) return "";
+  const head = file.cachedAt(0, CHUNK - 1);
+  const tail = file.cachedAt(file.size - CHUNK, file.size - 1);
+  if (!head || head.length !== CHUNK || !tail || tail.length !== CHUNK) return "";
+  const result = { hash: movieHash(head, tail, file.size), size: file.size };
+  hashes.set(cacheKey, result);
+  return result.hash;
+}
+
+// What a TV needs to know about the file, in the start's answer (so /v1/info and
+// /v1/hash aren't needed before it): the plans, the picture's size, each sound track's
+// plan, and the fingerprint when it's kept.
+function forTv(q, described) {
+  return {
+    videoPlan: described.videoPlan,
+    width: described.video ? described.video.width : 0,
+    height: described.video ? described.video.height : 0,
+    tracks: described.audio.map((a) => ({ codec: a.codec, channels: a.channels, language: a.language, title: a.title || "", plan: a.plan })),
+    hash: keptHash(q),
+  };
+}
+
 async function fileHash(q) {
   const cacheKey = q.kind + ":" + q.id;
   if (hashes.has(cacheKey)) return hashes.get(cacheKey);
@@ -971,6 +1037,7 @@ async function startHls(q) {
     audioPlan: soundPlan,
     audio: described.audio.map((a) => ({ codec: a.codec, channels: a.channels, language: a.language, title: a.title || "" })),
     subtitles,
+    ...forTv(q, described),
   };
 }
 
@@ -1122,6 +1189,7 @@ async function startVod(q) {
     // A picture for every ten seconds once FFmpeg has made it: <prefix><5-digit n>.jpg,
     // or all the new ones at once (list, then bundle; see "Pictures in one file").
     previews: { every: PREVIEW_SECONDS, prefix: base + "p", list: base + "previews.json", bundle: base + "previews.bif" },
+    ...forTv(q, described),
   };
 }
 
@@ -1200,7 +1268,7 @@ function picturesBif(session, after, upto) {
 async function startVodRun(session, n) {
   const hadRun = stopVodRun(session);
   // ended: FFmpeg has stopped, for whatever reason; finished: it got to the film's end.
-  const run = { no: ++session.runs, first: n, next: n, child: null, ended: false, finished: false, failed: "", stderr: "", timer: 0 };
+  const run = { no: ++session.runs, first: n, next: n, child: null, ended: false, finished: false, failed: "", stderr: "", timer: 0, hwaccel, again: false };
   run.dir = path.join(session.dir, "r" + run.no);
   session.run = run;
   await takeSlot(sourceFile(session.q).key);
@@ -1220,6 +1288,7 @@ async function startVodRun(session, n) {
     previews: true,
     atomic: atomicPictures,
     userAgent: ffmpegAgent,
+    hwaccel: run.hwaccel,
   });
   const child = spawn(ffmpeg.path, args, { windowsHide: true });
   run.child = child;
@@ -1245,8 +1314,17 @@ async function startVodRun(session, n) {
     }
     run.ended = true;
     if (code !== 0 && !child.stoppedByHelper) {
-      run.failed = lastLines(run.stderr) || "FFmpeg stopped (" + code + ").";
-      noteError(run.failed + " (" + session.q.kind + " " + session.q.id + "." + session.q.ext + ")");
+      const why = lastLines(run.stderr) || "FFmpeg stopped (" + code + ").";
+      if (run.hwaccel && hwaccel === run.hwaccel && run.next === run.first) {
+        // The graphics card couldn't read this file at all: the processor reads from now
+        // on, and the piece waited for is made again that way (pieceFile).
+        say(`Reading with ${HWACCEL_NAMES[run.hwaccel] || run.hwaccel} failed (${why}), so the processor reads files from now on.`);
+        hwaccel = "";
+        run.again = true;
+      } else {
+        run.failed = why;
+        noteError(run.failed + " (" + session.q.kind + " " + session.q.id + "." + session.q.ext + ")");
+      }
     }
   });
   run.timer = setInterval(() => notePieces(session, run), 200);
@@ -1293,6 +1371,14 @@ async function pieceFile(session, n, { quiet = false } = {}) {
       if (run.finished) return null; // FFmpeg reached the end before this piece: the film is shorter
     }
     const coming = run && !run.ended && run.first <= n && n <= run.next + VOD_AHEAD;
+    if (!coming && mine && run === mine && run.again) {
+      // This run's graphics card failed: the same piece again, read by the processor.
+      const tally = mine.tally;
+      await startVodRun(session, n);
+      mine = session.run || { failed: "", tally };
+      mine.tally = tally;
+      continue;
+    }
     if (!coming) {
       // Asked for elsewhere since (the player moved on), or stopped (the TV took over).
       if (mine && run !== mine) throw new Error("Another part of the film was asked for.");
@@ -1515,7 +1601,7 @@ const server = http.createServer((req, res) => {
       res.writeHead(302, { Location: "/app/" + url.search });
       return res.end();
     }
-    return sendJson(res, 200, { ok: true, service: "aranplus-helper", version: VERSION, encoder });
+    return sendJson(res, 200, { ok: true, service: "aranplus-helper", version: VERSION, encoder, hwaccel });
   }
   if (pathname === "/app") {
     res.writeHead(301, { Location: "/app/" + url.search });
@@ -1561,6 +1647,9 @@ const server = http.createServer((req, res) => {
       },
     );
   }
+  // With kept=1, only from what the helper keeps, never asking the provider (a TV asks
+  // while its film plays, on the provider's one connection).
+  if (pathname === "/v1/hash" && url.searchParams.get("kept") === "1") return sendJson(res, 200, { hash: keptHash(q) });
   if (pathname === "/v1/hash") return fileHash(q).then((result) => sendJson(res, 200, result), (err) => failed(res, err));
   if (pathname === "/v1/started") return sendJson(res, 200, { startsAt: streamStart(q) });
   if (pathname === "/v1/hls/start") {
@@ -1664,6 +1753,7 @@ server.listen(port, "0.0.0.0", async () => {
   console.log(`  ${ffmpeg.version}`);
   if (small) console.log(`  Running on ${small}.`);
   console.log(`  Pictures are converted with ${ENCODER_NAMES[encoder]} (${encoder}${encoder === "libx264" ? ", " + x264Preset : ""}).`);
+  console.log(`  Files are read with ${hwaccel ? (HWACCEL_NAMES[hwaccel] || hwaccel) + " (" + hwaccel + ")" : "the processor"}.`);
   if (addedSettings) {
     console.log("");
     console.log("  Added the helper's address and key to personal.json. Run npm run install:tv once");

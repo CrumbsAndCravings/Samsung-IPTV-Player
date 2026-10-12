@@ -100,6 +100,16 @@ export function x264Args(preset) {
 
 export const X264_PRESETS = ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium"];
 
+// How the graphics card that encodes also reads (decodes) the file: NVIDIA through CUDA;
+// Intel and AMD through Direct3D 11 on Windows (Intel through Quick Sync elsewhere). None
+// for the processor's encoder.
+export function hwaccelFor(encoder, platform) {
+  if (encoder === "h264_nvenc") return "cuda";
+  if (encoder === "h264_qsv") return platform === "win32" ? "d3d11va" : "qsv";
+  if (encoder === "h264_amf") return "d3d11va";
+  return "";
+}
+
 export const ENCODERS = {
   h264_nvenc: ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "23", "-pix_fmt", "yuv420p"],
   h264_qsv: ["-c:v", "h264_qsv", "-preset", "veryfast", "-global_quality", "23", "-pix_fmt", "nv12"],
@@ -341,7 +351,10 @@ export const PREVIEW_SECONDS = 10;
 // every `every` seconds of the film (p<n>.jpg, n being the film's time over `every`),
 // shown above the bar while choosing a jump. `atomic`: this FFmpeg writes pictures whole
 // before they appear (image2's atomic_writing, FFmpeg 5.1 and newer).
-export function vodArgs({ url, piece, encoder, probe, dir, audioTrack = 0, height = 0, subtitles = false, previews = false, atomic = false, userAgent = "", seconds = VOD_SECONDS, every = PREVIEW_SECONDS }) {
+// `hwaccel`: how the graphics card reads (decodes) the file ("cuda", "d3d11va", ...; ""
+// for the processor). Frames come back to the computer's memory, so the filters and the
+// encoder work as before; a stream it can't read is read by the processor instead.
+export function vodArgs({ url, piece, encoder, probe, dir, audioTrack = 0, height = 0, subtitles = false, previews = false, atomic = false, userAgent = "", seconds = VOD_SECONDS, every = PREVIEW_SECONDS, hwaccel = "" }) {
   const args = ["-hide_banner", "-nostdin", "-loglevel", "error"];
   // The film's own timestamps (from 0 at its start), so every run's pieces fit together.
   args.push("-copyts", "-start_at_zero");
@@ -349,6 +362,7 @@ export function vodArgs({ url, piece, encoder, probe, dir, audioTrack = 0, heigh
   args.push("-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5");
   args.push("-fflags", "+genpts");
   if (piece > 0) args.push("-ss", String(piece * seconds));
+  if (hwaccel) args.push("-hwaccel", hwaccel);
   const tracks = probe ? probe.audio : [];
   const track = audioTrack >= 0 && audioTrack < tracks.length ? audioTrack : 0;
   args.push("-i", url, "-map", "0:V:0", "-map", "0:a:" + track + "?");
