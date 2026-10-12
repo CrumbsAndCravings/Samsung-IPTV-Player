@@ -260,10 +260,12 @@ A2 now exists. What's there, and how it differs from the plan below:
 - `audio=aac`: turn every sound track into AAC stereo, for devices without AC-3
   decoding.
 - `video=convert` stays as it is; the Roku sends it for every picture it can't decode.
-- When converting, add `-hwaccel auto` before `-i`, so a graphics card or Quick Sync
-  also decodes HEVC.
-  - Test that a failed hardware decode still falls back to the processor; if FFmpeg
-    errors instead, retry once without `-hwaccel`.
+- When converting, add `-hwaccel` before `-i`, so a graphics card or Quick Sync
+  also decodes HEVC. Done in helper 1.9 for the whole-film playlists (`vodArgs`), with
+  the method that goes with the encoder (`hwaccelFor`: `cuda` for NVIDIA, `d3d11va` for
+  Intel and AMD on Windows), checked at startup by reading back a second made with the
+  encoder; a run that fails before its first piece reads with the processor again, and
+  so does every run after.
 
 ### A3. The provider's view of the helper
 

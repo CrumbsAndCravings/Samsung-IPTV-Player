@@ -17,6 +17,7 @@ export function speedVerdict(
 export const ENCODERS: { [name: string]: string[] };
 export function x264Args(preset: string): string[];
 export const X264_PRESETS: string[];
+export function hwaccelFor(encoder: string, platform: string): string;
 export const TARGET_SECONDS: number;
 export const MAX_SUBTITLES: number;
 export const HLS_SECONDS: number;
@@ -55,6 +56,7 @@ export function vodArgs(options: {
   userAgent?: string;
   seconds?: number;
   every?: number;
+  hwaccel?: string;
 }): string[];
 export const PREVIEW_HEIGHT: number;
 export const PREVIEW_SECONDS: number;

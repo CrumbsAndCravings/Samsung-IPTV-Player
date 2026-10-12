@@ -13,6 +13,7 @@ import {
   hashedAsset,
   hlsArgs,
   hlsVideoPlan,
+  hwaccelFor,
   mergeVtt,
   movieHash,
   parseProbe,
@@ -293,6 +294,20 @@ describe("the helper", () => {
     expect(first).not.toContain("-ss");
     expect(first).not.toContain("-forced-idr");
     expect(first.join(" ")).not.toContain("webvtt");
+  });
+
+  it("reads the file with the graphics card that converts it", () => {
+    const probe = parseProbe(MKV);
+    const card = vodArgs({ url: "u", piece: 36, encoder: "h264_nvenc", probe, dir: "/d", hwaccel: "cuda" });
+    // An input option: after the jump, before the file.
+    expect(card.join(" ")).toContain("-ss 216 -hwaccel cuda -i u");
+    expect(vodArgs({ url: "u", piece: 0, encoder: "libx264", probe, dir: "/d" })).not.toContain("-hwaccel");
+    expect(hwaccelFor("h264_nvenc", "win32")).toBe("cuda");
+    expect(hwaccelFor("h264_nvenc", "linux")).toBe("cuda");
+    expect(hwaccelFor("h264_qsv", "win32")).toBe("d3d11va");
+    expect(hwaccelFor("h264_qsv", "linux")).toBe("qsv");
+    expect(hwaccelFor("h264_amf", "win32")).toBe("d3d11va");
+    expect(hwaccelFor("libx264", "win32")).toBe("");
   });
 
   it("packs pictures into one BIF the Roku reads", () => {
