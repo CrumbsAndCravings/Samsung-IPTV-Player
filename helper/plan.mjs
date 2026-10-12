@@ -273,13 +273,14 @@ export function playlistState(text) {
   return { segments: (text.match(/^#EXTINF:/gm) || []).length, ended: /^#EXT-X-ENDLIST/m.test(text) };
 }
 
-// Files a session may serve: the playlist, its pieces, and the subtitle files.
+// Files a session may serve: the playlist, its pieces, the subtitle files, and the
+// pictures (one at a time, or what's new of them in one file: previews.json, previews.bif).
 export function sessionFile(name) {
-  return /^(index\.m3u8|init\.mp4|seg\d{5}\.(?:m4s|ts)|sub\d\.vtt|p\d{5}\.jpg)$/.test(name);
+  return /^(index\.m3u8|init\.mp4|seg\d{5}\.(?:m4s|ts)|sub\d\.vtt|p\d{5}\.jpg|previews\.(?:json|bif))$/.test(name);
 }
 
 // fMP4 pieces as plain MP4, the type Apple's own tools serve them with.
-const CONTENT_TYPES = { m3u8: "application/vnd.apple.mpegurl", mp4: "video/mp4", m4s: "video/mp4", ts: "video/mp2t", vtt: "text/vtt; charset=utf-8", jpg: "image/jpeg" };
+const CONTENT_TYPES = { m3u8: "application/vnd.apple.mpegurl", mp4: "video/mp4", m4s: "video/mp4", ts: "video/mp2t", vtt: "text/vtt; charset=utf-8", jpg: "image/jpeg", json: "application/json; charset=utf-8", bif: "application/octet-stream" };
 
 export function sessionFileType(name) {
   return CONTENT_TYPES[name.slice(name.lastIndexOf(".") + 1)] || "application/octet-stream";
@@ -329,13 +330,18 @@ const IDR = { h264_nvenc: ["-forced-idr", "1"], h264_qsv: ["-forced_idr", "1"] }
 // point would be sharper but three times the bytes over 5G).
 export const PREVIEW_HEIGHT = 180;
 
+// A whole film's pictures for choosing a jump: one for every ten seconds of the film, as
+// Crunchyroll's are, so a two-hour film's pictures come to about 7 MB, little enough for
+// the Roku to keep them all.
+export const PREVIEW_SECONDS = 10;
+
 // The FFmpeg arguments for a run from piece `piece` on, into `dir`: the pieces
 // (seg<n>.ts, numbered as in the playlist); with `subtitles`, each text subtitle track
-// as WebVTT (sub<n>.vtt, with the film's own times); with `previews`, a small picture of
-// each piece (p<n>.jpg, numbered as the pieces), shown above the bar while dragging it.
-// `atomic`: this FFmpeg writes pictures whole before they appear (image2's
-// atomic_writing, FFmpeg 5.1 and newer).
-export function vodArgs({ url, piece, encoder, probe, dir, audioTrack = 0, height = 0, subtitles = false, previews = false, atomic = false, userAgent = "", seconds = VOD_SECONDS }) {
+// as WebVTT (sub<n>.vtt, with the film's own times); with `previews`, a small picture for
+// every `every` seconds of the film (p<n>.jpg, n being the film's time over `every`),
+// shown above the bar while choosing a jump. `atomic`: this FFmpeg writes pictures whole
+// before they appear (image2's atomic_writing, FFmpeg 5.1 and newer).
+export function vodArgs({ url, piece, encoder, probe, dir, audioTrack = 0, height = 0, subtitles = false, previews = false, atomic = false, userAgent = "", seconds = VOD_SECONDS, every = PREVIEW_SECONDS }) {
   const args = ["-hide_banner", "-nostdin", "-loglevel", "error"];
   // The film's own timestamps (from 0 at its start), so every run's pieces fit together.
   args.push("-copyts", "-start_at_zero");
@@ -363,13 +369,52 @@ export function vodArgs({ url, piece, encoder, probe, dir, audioTrack = 0, heigh
     });
   }
   if (previews) {
-    // One picture a piece: the run starts on a piece, so the pictures land on the same
-    // places whichever run makes them, each named by its time over `seconds` (the
-    // piece's number), from inside its piece.
-    args.push("-map", "0:V:0", "-an", "-sn", "-dn", "-vf", "fps=1/" + seconds + ",scale=-2:" + PREVIEW_HEIGHT, "-q:v", "5");
+    // On the film's own clock, the fps filter gives picture n the last frame before
+    // (n + 0.5) x `every` seconds, the middle of its stretch, so the pictures land on the
+    // same places whichever run makes them, wherever the run starts (measured with
+    // FFmpeg 6.1: runs from 0, 12, 18 and 36 s made the same pictures).
+    args.push("-map", "0:V:0", "-an", "-sn", "-dn", "-vf", "fps=1/" + every + ",scale=-2:" + PREVIEW_HEIGHT, "-q:v", "5");
     args.push("-f", "image2", "-frame_pts", "1", ...(atomic ? ["-atomic_writing", "1"] : []), path.join(dir, "p%05d.jpg"));
   }
   return args;
+}
+
+// Pictures as one BIF file (Roku's format for them, the one Crunchyroll's players use):
+// the magic, version 0, the count, a timestamp multiplier of 1000 (so timestamps are
+// seconds), reserved to byte 64; then (timestamp, offset) for each picture and a last
+// (0xffffffff, end) entry, all uint32 little-endian; then the JPEGs. `pictures` is
+// [{ seconds, data }], in order of time.
+export function bifFile(pictures) {
+  const indexEnd = 64 + (pictures.length + 1) * 8;
+  const size = pictures.reduce((total, picture) => total + picture.data.length, indexEnd);
+  const out = Buffer.alloc(size);
+  Buffer.from([0x89, 0x42, 0x49, 0x46, 0x0d, 0x0a, 0x1a, 0x0a]).copy(out, 0);
+  out.writeUInt32LE(0, 8);
+  out.writeUInt32LE(pictures.length, 12);
+  out.writeUInt32LE(1000, 16);
+  let offset = indexEnd;
+  pictures.forEach((picture, i) => {
+    out.writeUInt32LE(picture.seconds, 64 + i * 8);
+    out.writeUInt32LE(offset, 68 + i * 8);
+    out.set(picture.data, offset);
+    offset += picture.data.length;
+  });
+  out.writeUInt32LE(0xffffffff, 64 + pictures.length * 8);
+  out.writeUInt32LE(offset, 68 + pictures.length * 8);
+  return out;
+}
+
+// The stretches of the film converted so far, from the pieces made (their numbers), as
+// [from, to] in seconds, in order: what the TV can expect pictures for.
+export function convertedRanges(pieces, seconds = VOD_SECONDS) {
+  const sorted = [...pieces].sort((a, b) => a - b);
+  const ranges = [];
+  for (const n of sorted) {
+    const last = ranges[ranges.length - 1];
+    if (last && last[1] === n * seconds) last[1] = (n + 1) * seconds;
+    else ranges.push([n * seconds, (n + 1) * seconds]);
+  }
+  return ranges;
 }
 
 // WebVTT files from several runs as one: each line once, in order of time.

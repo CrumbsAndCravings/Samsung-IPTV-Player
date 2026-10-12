@@ -47,11 +47,14 @@
 //                                 films, for the phone" below)
 //   GET /v1/hls/index.m3u8?...    the same, answered with a redirect to the playlist
 //   GET /v1/hls/s/<session>/<file> the playlist, its pieces and subtitle files (the
-//                                 session's random name is its key)
+//                                 session's random name is its key); for a whole film,
+//                                 its pictures too: p<n>.jpg one at a time, or
+//                                 previews.json?after=<seq> (what's new since `seq`) and
+//                                 previews.bif?after&upto (those pictures in one file)
 //   GET /v1/stop?key&session      stops that session's FFmpeg (the phone left the player)
 //
-// The Roku uses /v1/info, /v1/hash, /v1/hls/start (vod=1, format=ts), /v1/stop and
-// /v1/last-error.
+// The Roku uses /v1/info, /v1/hash, /v1/hls/start (vod=1, format=ts), the session's
+// previews.json and previews.bif, /v1/stop and /v1/last-error.
 //
 // The provider allows one connection at a time, so a new request stops the one before.
 
@@ -69,7 +72,9 @@ import {
   MAX_SUBTITLES,
   X264_PRESETS,
   audioPlan,
+  bifFile,
   compressible,
+  convertedRanges,
   ffmpegArgs,
   firstFrameSecs,
   hashedAsset,
@@ -81,6 +86,7 @@ import {
   pieceName,
   playlistForPlayer,
   playlistState,
+  PREVIEW_SECONDS,
   providerUrl,
   redactor,
   sessionFile,
@@ -99,7 +105,7 @@ import { httpGet } from "./http-get.mjs";
 import { parseRange, SourceFiles } from "./source.mjs";
 import { lanAddress, smallComputer, tailscaleAddress } from "./where.mjs";
 
-const VERSION = "1.7";
+const VERSION = "1.8";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const personalPath = process.env.ARANPLUS_PERSONAL || path.join(root, "personal.json");
 const DEFAULT_PORT = 8090;
@@ -968,11 +974,11 @@ async function startHls(q) {
   };
 }
 
-async function serveSessionFile(res, id, name) {
+async function serveSessionFile(res, id, name, params) {
   const session = sessions.get(id);
   if (!session || !sessionFile(name)) return sendJson(res, 404, { error: "That stream has ended. Play it again." });
   session.lastUsed = Date.now();
-  if (session.vod) return serveVodFile(res, session, name);
+  if (session.vod) return serveVodFile(res, session, name, params);
   const file = path.join(session.dir, name);
   const type = sessionFileType(name);
   const headers = { "Content-Type": type, "Cache-Control": "no-store", ...CORS };
@@ -1113,9 +1119,80 @@ async function startVod(q) {
     audioPlan: "aac",
     audio: described.audio.map((a) => ({ codec: a.codec, channels: a.channels, language: a.language, title: a.title || "" })),
     subtitles,
-    // A picture of each piece once FFmpeg has made it: <prefix><5-digit piece>.jpg.
-    previews: { every: VOD_SECONDS, prefix: base + "p" },
+    // A picture for every ten seconds once FFmpeg has made it: <prefix><5-digit n>.jpg,
+    // or all the new ones at once (list, then bundle; see "Pictures in one file").
+    previews: { every: PREVIEW_SECONDS, prefix: base + "p", list: base + "previews.json", bundle: base + "previews.bif" },
   };
+}
+
+// --- Pictures in one file (the Roku) --------------------------------------------------
+//
+// The Roku keeps a whole film's pictures itself, so choosing a jump never waits on the
+// network: it asks previews.json?after=<seq> what's new, then previews.bif for those
+// pictures in one file, and does so again every few seconds while FFmpeg makes more.
+// Each picture gets the next number (seq) when it's first seen, from whichever run made
+// it. Without atomic writes, a run's newest picture may be half written, so it waits for
+// the next one (or the run's end).
+
+function notePictures(session) {
+  if (!session.pictures) {
+    session.pictures = new Map(); // n -> { file, seq }
+    session.pictureSeq = 0;
+  }
+  for (let r = 1; r <= session.runs; r++) {
+    const dir = path.join(session.dir, "r" + r);
+    let names;
+    try {
+      names = readdirSync(dir).filter((name) => /^p\d{5,}\.jpg$/.test(name));
+    } catch {
+      continue;
+    }
+    const numbers = names.map((name) => Number(name.slice(1, -4))).sort((a, b) => a - b);
+    const live = session.run && session.run.no === r && !session.run.ended;
+    if (live && !atomicPictures) numbers.pop();
+    for (const n of numbers) {
+      if (session.pictures.has(n)) continue;
+      session.pictures.set(n, { file: path.join(dir, "p" + String(n).padStart(5, "0") + ".jpg"), seq: ++session.pictureSeq });
+    }
+  }
+}
+
+function seqParam(params, name, fallback) {
+  const text = params ? params.get(name) : null;
+  const value = text ? Number(text) : NaN;
+  return Number.isInteger(value) && value >= 0 ? value : fallback;
+}
+
+// What's new since `after`: how many pictures and the latest seq, with what's converted
+// (pictures will come for it) and where FFmpeg is converting now, in the film's seconds.
+function picturesNews(session, after) {
+  notePictures(session);
+  let count = 0;
+  for (const picture of session.pictures.values()) if (picture.seq > after) count++;
+  const run = session.run && !session.run.ended ? session.run : null;
+  return {
+    seq: session.pictureSeq,
+    count,
+    every: PREVIEW_SECONDS,
+    converted: convertedRanges(session.done.keys()),
+    running: run ? [run.first * VOD_SECONDS, run.next * VOD_SECONDS] : null,
+  };
+}
+
+// The pictures numbered after `after` up to `upto`, as one BIF, in order of time.
+function picturesBif(session, after, upto) {
+  notePictures(session);
+  const pictures = [];
+  for (const [n, picture] of session.pictures) {
+    if (picture.seq <= after || picture.seq > upto) continue;
+    try {
+      pictures.push({ seconds: n * PREVIEW_SECONDS, data: readFileSync(picture.file) });
+    } catch {
+      // Gone with its run's folder; the TV does without it.
+    }
+  }
+  pictures.sort((a, b) => a.seconds - b.seconds);
+  return bifFile(pictures);
 }
 
 // FFmpeg from piece `n` on. Replaces this session's run (and stops anything else using
@@ -1233,8 +1310,14 @@ async function pieceFile(session, n, { quiet = false } = {}) {
   }
 }
 
-async function serveVodFile(res, session, name) {
+async function serveVodFile(res, session, name, params) {
   const headers = { "Content-Type": sessionFileType(name), "Cache-Control": "no-store", ...CORS };
+  if (name === "previews.json") return sendJson(res, 200, picturesNews(session, seqParam(params, "after", 0)));
+  if (name === "previews.bif") {
+    const data = picturesBif(session, seqParam(params, "after", 0), seqParam(params, "upto", Infinity));
+    res.writeHead(200, { ...headers, "Content-Length": data.length });
+    return res.end(data);
+  }
   if (name === "index.m3u8") {
     if (!session.opened) {
       session.opened = true;
@@ -1440,7 +1523,7 @@ const server = http.createServer((req, res) => {
   }
   if (pathname.startsWith("/app/")) return serveApp(req, res, pathname).catch((err) => failed(res, err));
   const piece = /^\/v1\/hls\/s\/([0-9a-f]{32})\/([^/]+)$/.exec(pathname);
-  if (piece) return serveSessionFile(res, piece[1], piece[2]).catch((err) => failed(res, err));
+  if (piece) return serveSessionFile(res, piece[1], piece[2], url.searchParams).catch((err) => failed(res, err));
   if (!keyMatches(url.searchParams.get("key"))) return sendHelperError(res, 401, "Wrong or missing key.");
   // "ago" (seconds) lets a TV tell a fresh reason from an old one.
   if (pathname === "/v1/last-error") return sendJson(res, 200, { ...lastError, ago: lastError.at ? Math.round((Date.now() - lastError.at) / 1000) : -1 });

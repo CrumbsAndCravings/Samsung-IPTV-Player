@@ -54,8 +54,12 @@ export function vodArgs(options: {
   atomic?: boolean;
   userAgent?: string;
   seconds?: number;
+  every?: number;
 }): string[];
 export const PREVIEW_HEIGHT: number;
+export const PREVIEW_SECONDS: number;
+export function bifFile(pictures: { seconds: number; data: Uint8Array }[]): Uint8Array;
+export function convertedRanges(pieces: Iterable<number>, seconds?: number): [number, number][];
 export function mergeVtt(texts: string[]): string;
 export function wantsGzip(header: string | undefined): boolean;
 export function compressible(type: string | undefined): boolean;

@@ -4,7 +4,9 @@ import { describe, expect, it } from "vitest";
 import {
   ac3Args,
   audioPlan,
+  bifFile,
   compressible,
+  convertedRanges,
   fetchAllowed,
   ffmpegArgs,
   firstFrameSecs,
@@ -275,17 +277,56 @@ describe("the helper", () => {
     expect(text).toContain("-map 0:s:0 -c:s webvtt -flush_packets 1 -f webvtt /tmp/s/r2/sub0.vtt");
     expect(text).toContain("/tmp/s/r2/sub2.vtt");
     expect(text).not.toContain("sub1.vtt");
-    // No pictures unless asked; with them, one a piece, named by the piece.
+    // No pictures unless asked; with them, one for every ten seconds of the film, named by
+    // the film's time over ten.
     expect(text).not.toContain("p%05d.jpg");
     const pictures = vodArgs({ url: "u", piece: 36, encoder: "libx264", probe, dir: "/d", previews: true, atomic: true }).join(" ");
-    expect(pictures).toContain("-map 0:V:0 -an -sn -dn -vf fps=1/6,scale=-2:180 -q:v 5 -f image2 -frame_pts 1 -atomic_writing 1 /d/p%05d.jpg");
+    expect(pictures).toContain("-map 0:V:0 -an -sn -dn -vf fps=1/10,scale=-2:180 -q:v 5 -f image2 -frame_pts 1 -atomic_writing 1 /d/p%05d.jpg");
     expect(vodArgs({ url: "u", piece: 0, encoder: "libx264", probe, dir: "/d", previews: true }).join(" ")).not.toContain("atomic_writing");
     expect(sessionFile("p00036.jpg")).toBe(true);
     expect(sessionFileType("p00036.jpg")).toBe("image/jpeg");
+    expect(sessionFile("previews.json")).toBe(true);
+    expect(sessionFile("previews.bif")).toBe(true);
+    expect(sessionFile("previews.txt")).toBe(false);
+    expect(sessionFileType("previews.json")).toBe("application/json; charset=utf-8");
     const first = vodArgs({ url: "u", piece: 0, encoder: "libx264", probe, dir: "/d" });
     expect(first).not.toContain("-ss");
     expect(first).not.toContain("-forced-idr");
     expect(first.join(" ")).not.toContain("webvtt");
+  });
+
+  it("packs pictures into one BIF the Roku reads", () => {
+    const one = new Uint8Array([0xff, 0xd8, 1, 2, 3]);
+    const two = new Uint8Array([0xff, 0xd8, 4, 5]);
+    const bif = bifFile([
+      { seconds: 30, data: one },
+      { seconds: 40, data: two },
+    ]);
+    const u32 = (at: number) => new DataView(bif.buffer, bif.byteOffset, bif.byteLength).getUint32(at, true);
+    expect([...bif.subarray(0, 8)]).toEqual([0x89, 0x42, 0x49, 0x46, 0x0d, 0x0a, 0x1a, 0x0a]);
+    expect([u32(8), u32(12), u32(16)]).toEqual([0, 2, 1000]);
+    expect([...bif.subarray(20, 64)].every((b) => b === 0)).toBe(true);
+    // The index: each picture's seconds and where it starts, then the end.
+    const start = 64 + 3 * 8;
+    expect([u32(64), u32(68)]).toEqual([30, start]);
+    expect([u32(72), u32(76)]).toEqual([40, start + 5]);
+    expect([u32(80), u32(84)]).toEqual([0xffffffff, start + 9]);
+    expect([...bif.subarray(start, start + 5)]).toEqual([...one]);
+    expect([...bif.subarray(start + 5)]).toEqual([...two]);
+    expect(bif.length).toBe(start + 9);
+    // None yet is a header and the end entry.
+    const none = bifFile([]);
+    expect(none.length).toBe(72);
+    expect(new DataView(none.buffer, none.byteOffset, none.byteLength).getUint32(68, true)).toBe(72);
+  });
+
+  it("tells the TV which stretches of the film are converted", () => {
+    expect(convertedRanges([])).toEqual([]);
+    expect(convertedRanges(new Set([3, 0, 1, 2, 10, 11]).values())).toEqual([
+      [0, 24],
+      [60, 72],
+    ]);
+    expect(convertedRanges([5], 10)).toEqual([[50, 60]]);
   });
 
   it("puts the subtitle lines of several runs together", () => {
