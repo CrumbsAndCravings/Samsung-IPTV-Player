@@ -1,7 +1,8 @@
 // Types for tests that call the helper's plan directly.
 export interface ProbeResult {
   duration: number;
-  video: { codec: string; width: number; height: number } | null;
+  start: number;
+  video: { codec: string; width: number; height: number; profile: string; pixels: string; dvOnly: boolean } | null;
   audio: { codec: string; channels: number; language: string; title?: string }[];
   subtitles: { codec: string; language: string; text: boolean; forced: boolean; title?: string }[];
 }
@@ -60,6 +61,28 @@ export function vodArgs(options: {
 }): string[];
 export const PREVIEW_HEIGHT: number;
 export const PREVIEW_SECONDS: number;
+export const SEEK_PAST: number;
+export const KEPT_OFFSET: number;
+export function phoneKeeps(video: ProbeResult["video"], hevc: boolean): boolean;
+export function keptPieces(keyframes: number[], duration: number, seconds?: number): number[];
+export function keptPreroll(keyframes: number[], starts: number[], n: number): number;
+export function keptPieceName(n: number): string;
+export function keptPlaylist(options: { starts: number[]; duration: number; start?: number }): string;
+export function keptArgs(options: {
+  url: string;
+  from?: number;
+  probe: ProbeResult | null;
+  dir: string;
+  audioTrack?: number;
+  subtitles?: boolean;
+  previews?: boolean;
+  atomic?: boolean;
+  userAgent?: string;
+  every?: number;
+}): string[];
+export function tailscaleIp(ip: string): boolean;
+export function homeAddress(ip: string, local?: string[]): boolean;
+export function tailscaleRoute(status: unknown, ip: string): string;
 export function bifFile(pictures: { seconds: number; data: Uint8Array }[]): Uint8Array;
 export function convertedRanges(pieces: Iterable<number>, seconds?: number): [number, number][];
 export function mergeVtt(texts: string[]): string;

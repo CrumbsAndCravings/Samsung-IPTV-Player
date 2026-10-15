@@ -13,10 +13,17 @@ import {
   hashedAsset,
   hlsArgs,
   hlsVideoPlan,
+  homeAddress,
   hwaccelFor,
+  keptArgs,
+  keptPieceName,
+  keptPieces,
+  keptPlaylist,
+  keptPreroll,
   mergeVtt,
   movieHash,
   parseProbe,
+  phoneKeeps,
   pieceName,
   playlistForPlayer,
   playlistState,
@@ -25,6 +32,8 @@ import {
   sessionFile,
   speedVerdict,
   sessionFileType,
+  tailscaleIp,
+  tailscaleRoute,
   videoPlan,
   vodArgs,
   vodPieces,
@@ -53,11 +62,26 @@ const MKV = `Input #0, matroska,webm, from 'x.mkv':
     Metadata:
       title           : Signs`;
 
+// A rich 4K film as FFmpeg 6 describes it: HDR10 with Dolby Vision on top (profile 8.1,
+// which has an HDR10 picture underneath), its clock starting a little before 0.
+const UHD = `Input #0, matroska,webm, from 'http://127.0.0.1:8090/v1/source/movie/9.mkv?key=k':
+  Duration: 03:00:22.85, start: -0.005000, bitrate: 25311 kb/s
+  Stream #0:0: Video: hevc (Main 10), yuv420p10le(tv, bt2020nc/bt2020/smpte2084), 3840x2160 [SAR 1:1 DAR 16:9], 23.98 fps, 23.98 tbr, 1k tbn (default)
+    Side data:
+      DOVI configuration record: version: 1.0, profile: 8, level: 6, rpu flag: 1, el flag: 0, bl flag: 1, compatibility id: 1
+  Stream #0:1(eng): Audio: eac3, 48000 Hz, 5.1(side), fltp, 768 kb/s (default)`;
+
 describe("the helper", () => {
   it("reads what a file holds", () => {
-    expect(parseProbe(AVI)).toEqual({ duration: 6133, video: { codec: "mpeg4", width: 640, height: 272 }, audio: [{ codec: "mp3", channels: 2, language: "" }], subtitles: [] });
+    expect(parseProbe(AVI)).toEqual({
+      duration: 6133,
+      start: 0,
+      video: { codec: "mpeg4", width: 640, height: 272, profile: "Advanced Simple Profile", pixels: "yuv420p", dvOnly: false },
+      audio: [{ codec: "mp3", channels: 2, language: "" }],
+      subtitles: [],
+    });
     const mkv = parseProbe(MKV);
-    expect(mkv.video).toEqual({ codec: "hevc", width: 1920, height: 1080 });
+    expect(mkv.video).toEqual({ codec: "hevc", width: 1920, height: 1080, profile: "Main 10", pixels: "yuv420p10le", dvOnly: false });
     expect(mkv.audio).toEqual([
       { codec: "dts", channels: 6, language: "eng" },
       { codec: "ac3", channels: 2, language: "hin", title: "DTS-HD MA 5.1" },
@@ -71,6 +95,118 @@ describe("the helper", () => {
     expect(parseProbe("Server returned 403 Forbidden").video).toBeNull();
     // Newer FFmpeg prints stream ids too.
     expect(parseProbe("  Stream #0:0[0x1](und): Video: h264 (High), yuv420p, 1280x720").video!.codec).toBe("h264");
+    // Where the clock starts, and Dolby Vision with an HDR10 picture underneath.
+    const uhd = parseProbe(UHD);
+    expect(uhd.start).toBe(-0.005);
+    expect(uhd.duration).toBe(10823);
+    expect(uhd.video).toEqual({ codec: "hevc", width: 3840, height: 2160, profile: "Main 10", pixels: "yuv420p10le", dvOnly: false });
+    // Profile 5 has nothing underneath.
+    expect(parseProbe(UHD.replace("profile: 8", "profile: 5").replace("compatibility id: 1", "compatibility id: 0")).video!.dvOnly).toBe(true);
+    // An MP4's picture says its tag after the profile.
+    expect(parseProbe("  Stream #0:0[0x1](und): Video: h264 (High 10) (avc1 / 0x31637661), yuv420p10le(tv, bt709, progressive), 1920x1080").video).toEqual({
+      codec: "h264",
+      width: 1920,
+      height: 1080,
+      profile: "High 10",
+      pixels: "yuv420p10le",
+      dvOnly: false,
+    });
+  });
+
+  it("keeps the picture the phone plays as it is, and converts the rest", () => {
+    const video = (codec: string, profile: string, pixels: string, dvOnly = false) => ({ codec, width: 3840, height: 2160, profile, pixels, dvOnly });
+    expect(phoneKeeps(video("hevc", "Main 10", "yuv420p10le"), true)).toBe(true);
+    expect(phoneKeeps(video("hevc", "Main", "yuv420p"), true)).toBe(true);
+    // Unless the phone says it doesn't play HEVC (a desktop browser, or learned).
+    expect(phoneKeeps(video("hevc", "Main 10", "yuv420p10le"), false)).toBe(false);
+    expect(phoneKeeps(video("hevc", "Main 10", "yuv420p10le", true), true)).toBe(false);
+    expect(phoneKeeps(video("hevc", "Rext", "yuv422p10le"), true)).toBe(false);
+    expect(phoneKeeps(video("h264", "High", "yuv420p"), false)).toBe(true);
+    expect(phoneKeeps(video("h264", "Constrained Baseline", "yuv420p"), false)).toBe(true);
+    // 10-bit H.264 is beyond the phone's decoder.
+    expect(phoneKeeps(video("h264", "High 10", "yuv420p10le"), true)).toBe(false);
+    expect(phoneKeeps(video("mpeg4", "Advanced Simple Profile", "yuv420p"), true)).toBe(false);
+    expect(phoneKeeps(null, true)).toBe(false);
+    // An unknown profile is tried (the app asks for a conversion if it doesn't play).
+    expect(phoneKeeps(video("h264", "", ""), true)).toBe(true);
+  });
+
+  it("cuts a kept picture at the file's own keyframes, about six seconds apart", () => {
+    // Keyframes every two seconds, one at 6.1 right after 6.011 (FFmpeg asked to start just
+    // past 6.011 could land on 6.1, so that one isn't a piece's start), one at 12.0 just
+    // short of 6 s after 6.1, then sparse ones.
+    const keyframes = [0.005, 2.007, 4.009, 6.011, 6.1, 8.013, 10.015, 12.0, 14.1, 20, 33, 39.8];
+    const starts = keptPieces(keyframes, 40);
+    expect(starts).toEqual([0, 6.1, 14.1, 33]);
+    expect(keptPieceName(3)).toBe("seg00003.m4s");
+    // A run that makes piece n starts on a keyframe at least a second before it.
+    expect(keptPreroll(keyframes, starts, 0)).toBe(0);
+    expect(keptPreroll(keyframes, starts, 1)).toBe(4.009);
+    expect(keptPreroll(keyframes, starts, 2)).toBe(12.0);
+    expect(keptPreroll(keyframes, starts, 3)).toBe(20);
+    const list = keptPlaylist({ starts, duration: 40, start: 15 }).split("\n");
+    expect(list.slice(0, 8)).toEqual([
+      "#EXTM3U",
+      "#EXT-X-VERSION:7",
+      "#EXT-X-TARGETDURATION:19",
+      "#EXT-X-MEDIA-SEQUENCE:0",
+      "#EXT-X-PLAYLIST-TYPE:VOD",
+      "#EXT-X-INDEPENDENT-SEGMENTS",
+      "#EXT-X-START:TIME-OFFSET=15,PRECISE=YES",
+      '#EXT-X-MAP:URI="init.mp4"',
+    ]);
+    expect(list.slice(8)).toEqual(["#EXTINF:6.100,", "seg00000.m4s", "#EXTINF:8.000,", "seg00001.m4s", "#EXTINF:18.900,", "seg00002.m4s", "#EXTINF:7.000,", "seg00003.m4s", "#EXT-X-ENDLIST", ""]);
+    expect(keptPlaylist({ starts, duration: 40 })).not.toContain("EXT-X-START");
+  });
+
+  it("copies a kept picture into fragmented MP4 on the film's own clock", () => {
+    const probe = parseProbe(UHD);
+    const first = keptArgs({ url: "http://127.0.0.1:8090/v1/source/movie/9.mkv?key=k", probe, dir: "/tmp/s/r1", subtitles: true, previews: true, atomic: true, userAgent: "Lavf" });
+    const text = first.join(" ");
+    expect(text).toContain("-copyts -start_at_zero -user_agent Lavf -reconnect 1");
+    expect(text).not.toContain("-ss");
+    expect(text).toContain("-skip_frame:v nokey -i http://127.0.0.1:8090/v1/source/movie/9.mkv?key=k -map 0:V:0 -map 0:a:0?");
+    expect(text).toContain("-c:v copy -tag:v hvc1");
+    // The sound on one grid of AAC frames for every run, converted to stereo.
+    expect(text).toContain("-af aresample=48000:first_pts=0 -c:a aac -b:a 192k -ac 2 -sn -dn");
+    expect(text).toContain("-avoid_negative_ts disabled -output_ts_offset 1");
+    expect(text).toContain("-f mp4 -movflags +frag_keyframe+empty_moov+default_base_moof+frag_discont+negative_cts_offsets+skip_trailer pipe:1");
+    // Pictures for choosing a jump, from keyframes, as for the TV.
+    expect(text).toContain("-vf fps=1/10,scale=-2:180 -q:v 5 -f image2 -frame_pts 1 -atomic_writing 1 /tmp/s/r1/p%05d.jpg");
+    // From a keyframe at 61.2 s: just past it, the sound from where FFmpeg lands, its
+    // frames on the grid from a little before.
+    const later = keptArgs({ url: "u", from: 61.2, probe: parseProbe(MKV), dir: "/d", audioTrack: 1 }).join(" ");
+    expect(later).toContain("-ss 61.400 -noaccurate_seek -i u -map 0:V:0 -map 0:a:1?");
+    expect(later).toContain("first_pts=" + (Math.floor((61.2 * 48000) / 1024) - 1) * 1024);
+    expect(later).not.toContain("skip_frame");
+    expect(keptArgs({ url: "u", probe: parseProbe("  Stream #0:0: Video: h264 (High), yuv420p, 1280x720"), dir: "/d" }).join(" ")).toContain("-tag:v avc1");
+  });
+
+  it("tells the phone at home from the phone away", () => {
+    for (const ip of ["192.168.1.23", "10.0.0.8", "172.20.1.1", "127.0.0.1", "::1", "::ffff:192.168.1.5", "fe80::1c2b:3aff:fe11:2233%en0", "fd12:3456::9"]) expect(homeAddress(ip)).toBe(true);
+    for (const ip of ["100.101.102.103", "fd7a:115c:a1e0::53", "8.8.8.8", "172.32.0.1", "2607:f8b0::1"]) expect(homeAddress(ip)).toBe(false);
+    // A public IPv6 address on this computer's own /64 is the home network.
+    expect(homeAddress("2600:1700:abcd:1230::77", ["192.168.1.10", "2600:1700:abcd:1230:5d2e::1"])).toBe(true);
+    expect(homeAddress("2600:1700:abcd:9999::77", ["2600:1700:abcd:1230:5d2e::1"])).toBe(false);
+    expect(tailscaleIp("100.64.0.1")).toBe(true);
+    expect(tailscaleIp("100.128.0.1")).toBe(false);
+    expect(tailscaleIp("fd7a:115c:a1e0:ab12::1")).toBe(true);
+    // What Tailscale says of the phone: straight over the home Wi-Fi, through the
+    // internet, or through its relays.
+    const status = {
+      Self: { TailscaleIPs: ["100.64.0.2"] },
+      Peer: {
+        "nodekey:a": { TailscaleIPs: ["100.101.1.2", "fd7a:115c:a1e0::1"], CurAddr: "192.168.1.23:41641", Relay: "tor" },
+        "nodekey:b": { TailscaleIPs: ["100.101.1.3"], CurAddr: "[2607:fb90::5]:41641", Relay: "tor" },
+        "nodekey:c": { TailscaleIPs: ["100.101.1.4"], CurAddr: "", Relay: "tor" },
+      },
+    };
+    expect(tailscaleRoute(status, "100.101.1.2")).toBe("192.168.1.23");
+    expect(tailscaleRoute(status, "fd7a:115c:a1e0::1")).toBe("192.168.1.23");
+    expect(tailscaleRoute(status, "100.101.1.3")).toBe("2607:fb90::5");
+    expect(tailscaleRoute(status, "100.101.1.4")).toBe("");
+    expect(tailscaleRoute(status, "100.101.1.9")).toBe("");
+    expect(tailscaleRoute(null, "100.101.1.2")).toBe("");
   });
 
   it("keeps what the TV plays and converts the rest", () => {
