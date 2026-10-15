@@ -45,16 +45,21 @@
 //                                 starts HLS from `start` seconds; answers once the first
 //                                 pieces are ready, with the playlist's address. With
 //                                 vod=1, the playlist is the whole film's (see "Whole
-//                                 films, for the phone" below). The answer also says
-//                                 what the file holds (videoPlan, width, height, tracks
-//                                 with their plans) and its fingerprint (hash) when the
-//                                 start and end it read are kept (1.9 and newer)
+//                                 films, for the phone" below); the phone at home that
+//                                 asks for video=copy gets the picture as it is (1.10
+//                                 and newer: "video": "copy" in the answer). The answer
+//                                 also says what the file holds (videoPlan, width,
+//                                 height, tracks with their plans) and its fingerprint
+//                                 (hash) when the start and end it read are kept (1.9
+//                                 and newer)
 //   GET /v1/hls/index.m3u8?...    the same, answered with a redirect to the playlist
-//   GET /v1/hls/s/<session>/<file> the playlist, its pieces and subtitle files (the
-//                                 session's random name is its key); for a whole film,
-//                                 its pictures too: p<n>.jpg one at a time, or
-//                                 previews.json?after=<seq> (what's new since `seq`) and
-//                                 previews.bif?after&upto (those pictures in one file)
+//   GET /v1/hls/s/<session>/<file> the playlist, its pieces (seg<n>.ts, or seg<n>.m4s and
+//                                 their header init.mp4 with the picture kept) and
+//                                 subtitle files (the session's random name is its key);
+//                                 for a whole film, its pictures too: p<n>.jpg one at a
+//                                 time, or previews.json?after=<seq> (what's new since
+//                                 `seq`) and previews.bif?after&upto (those pictures in
+//                                 one file)
 //   GET /v1/stop?key&session      stops that session's FFmpeg (the phone left the player)
 //
 // The Roku uses /v1/hls/start (vod=1, format=ts) alone to start (0.5.19 and newer; /v1/info
@@ -63,9 +68,9 @@
 //
 // The provider allows one connection at a time, so a new request stops the one before.
 
-import { spawn, spawnSync } from "node:child_process";
+import { execFile, spawn, spawnSync } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { closeSync, createReadStream, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -85,10 +90,18 @@ import {
   hashedAsset,
   hlsArgs,
   hlsVideoPlan,
+  homeAddress,
   hwaccelFor,
+  KEPT_OFFSET,
+  keptArgs,
+  keptPieceName,
+  keptPieces,
+  keptPlaylist,
+  keptPreroll,
   mergeVtt,
   movieHash,
   parseProbe,
+  phoneKeeps,
   pieceName,
   playlistForPlayer,
   playlistState,
@@ -97,6 +110,8 @@ import {
   redactor,
   sessionFile,
   sessionFileType,
+  tailscaleIp,
+  tailscaleRoute,
   videoPlan,
   vodArgs,
   vodPieces,
@@ -107,11 +122,13 @@ import {
   xtreamQuery,
   fetchAllowed,
 } from "./plan.mjs";
+import { fragmentStart, moovTracks, numberFragment, TopBoxes } from "./fmp4.mjs";
 import { httpGet } from "./http-get.mjs";
-import { parseRange, SourceFiles } from "./source.mjs";
+import { mkvCuesLength, mkvCueTimes, mkvSeekHeadCues, mkvStart } from "./mkv.mjs";
+import { HEAD_BYTES, parseRange, SourceFiles, TAIL_BYTES } from "./source.mjs";
 import { lanAddress, smallComputer, tailscaleAddress } from "./where.mjs";
 
-const VERSION = "1.9";
+const VERSION = "1.10";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const personalPath = process.env.ARANPLUS_PERSONAL || path.join(root, "personal.json");
 const DEFAULT_PORT = 8090;
@@ -397,6 +414,7 @@ async function info(q) {
   say(`Read what ${q.kind} ${q.id}.${q.ext} holds in ${((Date.now() - tally.at) / 1000).toFixed(1)} s (${tallySince(tally)}).`);
   const described = {
     duration: result.duration,
+    start: result.start,
     video: result.video,
     audio: result.audio.map((a) => ({ ...a, plan: audioPlan(a) })),
     subtitles: result.subtitles,
@@ -1099,13 +1117,151 @@ function stopFor(id) {
 // sent at once, one FFmpeg will reach shortly is waited for, and any other (a jump)
 // starts FFmpeg again from that piece. Every run cuts the film at the same places, so a
 // piece is good whichever run made it.
+//
+// The phone at home gets the picture as it is (plan.mjs, "Whole films, the picture
+// kept"): the pieces then start at the file's keyframes, from its index (keyframesOf),
+// and the helper cuts FFmpeg's MP4 into them itself ("Kept pieces" below).
 
 const VOD_AHEAD = 4; // pieces past FFmpeg's latest that are worth waiting for
 const PIECE_WAIT_MS = 60000; // the longest a piece is waited for
 
+// With the picture kept (plan.mjs, "Whole films, the picture kept"), FFmpeg copies many
+// times faster than the film plays, so a piece further on is still worth waiting for;
+// once it is this far ahead of the phone it waits (about three minutes of a rich 4K
+// film; less on a computer with little memory), and since a kept film takes as much room
+// as the provider's file, the pieces furthest from where the phone plays go once a
+// session holds this much.
+const KEPT_AHEAD = 15;
+const KEPT_AHEAD_BYTES = Math.min(512 * 1048576, Math.floor(os.totalmem() / 16));
+const KEPT_KEEP_BYTES = 3 * KEPT_AHEAD_BYTES;
+
+// The film's keyframes in its own seconds (FFmpeg's -copyts -start_at_zero clock), from
+// the MKV's index (helper/mkv.mjs). The file's start is kept from reading what it holds;
+// the index, usually in its last few megabytes, takes one request to the provider, and
+// is kept for FFmpeg's jumps too (helper/source.mjs keeps a file's end). Null when the
+// file doesn't say, or says something odd.
+const keyframeCache = new Map(); // kind:id -> { at, keyframes }
+
+async function keyframesOf(q, described) {
+  const cacheKey = q.kind + ":" + q.id;
+  const cached = keyframeCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < INFO_TTL_MS) return cached.keyframes;
+  const file = sourceFile(q);
+  await takeSlot(file.key);
+  // What comes before the film itself (the SeekHead, Info and Tracks) is in the first
+  // few kilobytes, unless the file carries big attachments (fonts) before it.
+  let head = file.cachedAt(0, HEAD_BYTES - 1);
+  if (!head || head.length < 262144) head = await rangeOf(file, 0, Math.min(1048576, file.size || 1048576) - 1);
+  const layout = head ? mkvStart(head) : null;
+  if (!layout || !layout.video || !(file.size > 0)) return null;
+  let at = layout.cues;
+  for (const seekHead of layout.seekHeads) {
+    if (at >= 0 || seekHead >= file.size) break;
+    const bytes = await rangeOf(file, seekHead, Math.min(file.size, seekHead + 65536) - 1);
+    if (bytes) at = mkvSeekHeadCues(bytes, layout.segment);
+  }
+  if (at < 0 || at >= file.size) return null;
+  // The usual place, the end: read to the end of the file, kept for FFmpeg.
+  const to = at >= file.size - TAIL_BYTES ? file.size - 1 : Math.min(file.size, at + 4 * 1048576) - 1;
+  let bytes = await rangeOf(file, at, to);
+  const length = bytes ? mkvCuesLength(bytes) : 0;
+  if (!length) return null;
+  if (length > bytes.length) {
+    const rest = await rangeOf(file, at + bytes.length, at + length - 1);
+    if (!rest) return null;
+    bytes = Buffer.concat([bytes, rest]);
+  }
+  const times = mkvCueTimes(bytes, layout.video, layout.scale);
+  if (!times || times.length < 2) return null;
+  const keyframes = times.map((t) => Math.round((t - described.start) * 1e6) / 1e6);
+  // An index that stops well short of the end, or keyframes half a minute apart, would
+  // make pieces too long to start quickly.
+  let gap = 0;
+  for (let i = 1; i < keyframes.length; i++) gap = Math.max(gap, keyframes[i] - keyframes[i - 1]);
+  if (gap > 30 || keyframes[keyframes.length - 1] < described.duration - 60) return null;
+  keyframeCache.set(cacheKey, { at: Date.now(), keyframes });
+  return keyframes;
+}
+
+// What Tailscale knows (`tailscale status --json`), asked at most every 20 seconds; null
+// when its command isn't there (on Windows and Macs it may not be on the PATH).
+const TAILSCALE_COMMANDS = ["tailscale", "C:\\Program Files\\Tailscale\\tailscale.exe", "/Applications/Tailscale.app/Contents/MacOS/Tailscale"];
+let tailscaleAsked = { at: 0, status: null };
+
+async function tailscaleStatus() {
+  if (Date.now() - tailscaleAsked.at < 20000) return tailscaleAsked.status;
+  let status = null;
+  for (const command of TAILSCALE_COMMANDS) {
+    status = await new Promise((resolve) => {
+      execFile(command, ["status", "--json"], { timeout: 5000, windowsHide: true, maxBuffer: 8 * 1048576 }, (err, stdout) => {
+        if (err) return resolve(null);
+        try {
+          resolve(JSON.parse(stdout));
+        } catch {
+          resolve(null);
+        }
+      });
+    });
+    if (status) break;
+  }
+  tailscaleAsked = { at: Date.now(), status };
+  return status;
+}
+
+function localAddresses() {
+  const out = [];
+  for (const list of Object.values(os.networkInterfaces())) for (const a of list || []) out.push(a.address);
+  return out;
+}
+
+// Whether the phone asking from `address` is at home (plan.mjs, "Where the phone is").
+async function phoneAtHome(address) {
+  const ip = String(address || "").replace(/^::ffff:/i, "");
+  if (homeAddress(ip, localAddresses())) return true;
+  if (!tailscaleIp(ip)) return false;
+  const route = tailscaleRoute(await tailscaleStatus(), ip);
+  return route !== "" && homeAddress(route, localAddresses());
+}
+
+// Whether the phone gets this film with the picture as it is: { keyframes, starts } (the
+// pieces' starts) when it does; otherwise { why }, in words for the window ("" when it
+// asked for the picture converted, or isn't the phone).
+async function keptPlan(q, described, address) {
+  if (q.format !== "fmp4" || q.video !== "copy" || !described.video) return { why: "" };
+  const video = described.video;
+  if (!phoneKeeps(video, q.hevc)) {
+    if (video.codec === "hevc" && !q.hevc) return { why: "the phone said it doesn't play HEVC" };
+    return { why: "the phone doesn't play " + video.codec + (video.profile ? " " + video.profile : "") + (video.dvOnly ? " Dolby Vision" : "") + " as it is" };
+  }
+  if (q.ext !== "mkv") return { why: "only MKV files list their keyframes" };
+  if (!(await phoneAtHome(address))) return { why: "the phone is away from home, so it gets a smaller picture" };
+  let keyframes = null;
+  try {
+    keyframes = await keyframesOf(q, described);
+  } catch (err) {
+    say("Couldn't read the keyframes' index of " + q.kind + " " + q.id + "." + q.ext + ": " + err.message);
+  }
+  if (!keyframes) return { why: "the file doesn't say where its keyframes are" };
+  return { keyframes, starts: keptPieces(keyframes, described.duration) };
+}
+
+// The piece holding `secs` of the film, and where piece `n` starts.
+function pieceAt(session, secs) {
+  if (!session.kept) return Math.min(session.count - 1, Math.floor(secs / VOD_SECONDS));
+  let n = 0;
+  while (n + 1 < session.count && session.starts[n + 1] <= secs) n++;
+  return n;
+}
+
+function pieceStart(session, n) {
+  if (n >= session.count) return session.described.duration;
+  return session.kept ? session.starts[n] : n * VOD_SECONDS;
+}
+
 // Starts a phone session: what the file holds, the first run from the piece holding
-// `start`, and an answer once that piece is ready.
-async function startVod(q) {
+// `start`, and an answer once that piece is ready. `address`: where the request came
+// from (the phone at home gets the picture as it is).
+async function startVod(q, address) {
   let described;
   try {
     described = await info(q);
@@ -1121,11 +1277,15 @@ async function startVod(q) {
     if (found >= 0) audioTrack = found;
   }
   const start = Math.min(q.start, Math.max(0, described.duration - 1));
+  const tally = startTally();
+  // The picture as it is, at home (plan.mjs, "Whole films, the picture kept").
+  const plan = await keptPlan(q, described, address);
+  const kept = !!plan.starts;
   // Back to a film played a moment ago (resuming after leaving the player, another sound
   // track and back): the pieces made then are still good, so its session carries on.
-  const same = [q.kind, q.id, q.ext, audioTrack, q.height, q.subs ? 1 : 0].join(":");
+  const same = [q.kind, q.id, q.ext, audioTrack, q.height, q.subs ? 1 : 0, kept ? "kept" : "converted"].join(":");
   let session = [...sessions.values()].find((s) => s.vod && s.same === same);
-  const kept = !!session;
+  const reused = !!session;
   if (session) {
     session.start = start;
     session.lastUsed = Date.now();
@@ -1142,8 +1302,15 @@ async function startVod(q) {
       described,
       audioTrack,
       start,
-      count: vodPieces(described.duration),
+      kept, // the picture as it is: pieces from the file's keyframes, in MP4
+      starts: plan.starts || null, // where each piece starts, when kept
+      keyframes: plan.keyframes || null,
+      count: kept ? plan.starts.length : vodPieces(described.duration),
       done: new Map(), // piece number -> the file holding it
+      sizes: new Map(), // piece number -> its bytes (kept pieces)
+      init: null, // the MP4 header kept pieces share (init.mp4)
+      asked: 0, // the piece the phone asked for last
+      waitedMs: 0, // how long the phone waited for pieces since the last pace line
       run: null,
       runs: 0,
       lastUsed: Date.now(),
@@ -1157,14 +1324,21 @@ async function startVod(q) {
   newestSession = id;
   const sound = described.audio[audioTrack];
   const soundText = !sound ? "no sound" : sound.codec === "aac" && sound.channels <= 2 ? "aac kept as AAC" : sound.codec + " to AAC";
-  const keptText = kept ? ` (${session.done.size} pieces kept from before)` : "";
-  say(`Playing ${q.kind} ${q.id}.${q.ext} for the phone from ${clock(start)}: picture ${described.video.codec} converted to H.264 with ${ENCODER_NAMES[encoder]}; sound ${soundText}${keptText}`);
-  const first = Math.floor(start / VOD_SECONDS);
-  const tally = startTally();
+  const keptText = reused ? ` (${session.done.size} pieces kept from before)` : "";
+  const picture = kept ? `picture ${described.video.codec} kept as it is, for the phone to decode` : `picture ${described.video.codec} converted to H.264 with ${ENCODER_NAMES[encoder]}${plan.why ? " (" + plan.why + ")" : ""}`;
+  say(`Playing ${q.kind} ${q.id}.${q.ext} for the phone from ${clock(start)}: ${picture}; sound ${soundText}${keptText}`);
+  const first = pieceAt(session, start);
+  session.asked = first;
   try {
     await pieceFile(session, first, { quiet: true });
   } catch (err) {
-    if (!kept) dropSession(session);
+    if (!reused) dropSession(session);
+    // Copying didn't work for this file (its picture wouldn't go into MP4, say): the phone
+    // gets it converted instead, as before.
+    if (kept && !reused) {
+      say("Keeping the picture as it is didn't work, so it's converted instead.");
+      return startVod({ ...q, video: "convert" }, address);
+    }
     throw err;
   }
   say(`Ready to play after ${((Date.now() - tally.at) / 1000).toFixed(1)} s (${tallySince(tally)}).`);
@@ -1180,7 +1354,7 @@ async function startVod(q) {
     start: 0, // the stream's clock is the film's
     from: start, // where the playlist starts playing
     duration: described.duration,
-    video: "convert",
+    video: kept ? "copy" : "convert",
     videoCodec: described.video.codec,
     audioTrack,
     audioPlan: "aac",
@@ -1268,7 +1442,12 @@ function picturesBif(session, after, upto) {
 async function startVodRun(session, n) {
   const hadRun = stopVodRun(session);
   // ended: FFmpeg has stopped, for whatever reason; finished: it got to the film's end.
-  const run = { no: ++session.runs, first: n, next: n, child: null, ended: false, finished: false, failed: "", stderr: "", timer: 0, hwaccel, again: false };
+  // A kept run reads the file itself (no graphics card), and writes its pieces as they
+  // come (piece: the one being written; out: its file).
+  const run = { no: ++session.runs, first: n, next: n, child: null, ended: false, finished: false, failed: "", stderr: "", timer: 0, hwaccel: session.kept ? "" : hwaccel, again: false };
+  Object.assign(run, { piece: -1, out: -1, file: "", bytes: 0, fragments: 0, tracks: null, paused: false, pausedAt: 0, pausedMs: 0 });
+  // For the pace line: when the run started, or was last reported on, and how far it had got then.
+  Object.assign(run, { reportAt: Date.now(), reportMade: pieceStart(session, n) });
   run.dir = path.join(session.dir, "r" + run.no);
   session.run = run;
   await takeSlot(sourceFile(session.q).key);
@@ -1276,26 +1455,40 @@ async function startVodRun(session, n) {
   if (hadRun) await wait(FREE_SLOT_MS);
   if (session.run !== run || !sessions.has(session.id)) return;
   mkdirSync(run.dir, { recursive: true });
-  const args = vodArgs({
-    url: sourceUrl(session.q),
-    piece: n,
-    encoder,
-    probe: session.described,
-    dir: run.dir,
-    audioTrack: session.audioTrack,
-    height: session.q.height,
-    subtitles: session.q.subs,
-    previews: true,
-    atomic: atomicPictures,
-    userAgent: ffmpegAgent,
-    hwaccel: run.hwaccel,
-  });
+  run.reportAt = Date.now();
+  const args = session.kept
+    ? keptArgs({
+        url: sourceUrl(session.q),
+        from: keptPreroll(session.keyframes, session.starts, n),
+        probe: session.described,
+        dir: run.dir,
+        audioTrack: session.audioTrack,
+        subtitles: session.q.subs,
+        previews: true,
+        atomic: atomicPictures,
+        userAgent: ffmpegAgent,
+      })
+    : vodArgs({
+        url: sourceUrl(session.q),
+        piece: n,
+        encoder,
+        probe: session.described,
+        dir: run.dir,
+        audioTrack: session.audioTrack,
+        height: session.q.height,
+        subtitles: session.q.subs,
+        previews: true,
+        atomic: atomicPictures,
+        userAgent: ffmpegAgent,
+        hwaccel: run.hwaccel,
+      });
   const child = spawn(ffmpeg.path, args, { windowsHide: true });
   run.child = child;
   active = child;
   child.stderr.on("data", (d) => {
     run.stderr = (run.stderr + d).slice(-20000);
   });
+  if (session.kept) child.stdout.on("data", keptReader(session, run));
   child.on("error", (err) => {
     run.failed = "FFmpeg didn't start: " + err.message;
     run.ended = true;
@@ -1303,14 +1496,22 @@ async function startVodRun(session, n) {
   child.on("close", (code) => {
     if (active === child) active = null;
     clearInterval(run.timer);
-    notePieces(session, run);
-    // Finished: the last piece is done too.
-    if (code === 0 && !child.stoppedByHelper) {
-      if (existsSync(path.join(run.dir, pieceName(run.next)))) {
-        session.done.set(run.next, path.join(run.dir, pieceName(run.next)));
-        run.next++;
+    const finished = code === 0 && !child.stoppedByHelper && !run.failed;
+    if (session.kept) {
+      // Finished: the piece being written is the film's last, and whole.
+      if (finished && run.piece >= 0) keptFinish(session, run);
+      else keptDrop(run);
+      if (finished) run.finished = true;
+    } else {
+      notePieces(session, run);
+      // Finished: the last piece is done too.
+      if (code === 0 && !child.stoppedByHelper) {
+        if (existsSync(path.join(run.dir, pieceName(run.next)))) {
+          session.done.set(run.next, path.join(run.dir, pieceName(run.next)));
+          run.next++;
+        }
+        run.finished = true;
       }
-      run.finished = true;
     }
     run.ended = true;
     if (code !== 0 && !child.stoppedByHelper) {
@@ -1322,13 +1523,190 @@ async function startVodRun(session, n) {
         hwaccel = "";
         run.again = true;
       } else {
-        run.failed = why;
+        run.failed = run.failed || why;
         noteError(run.failed + " (" + session.q.kind + " " + session.q.id + "." + session.q.ext + ")");
       }
-    }
+    } else if (run.failed && !child.stoppedByHelper) noteError(run.failed + " (" + session.q.kind + " " + session.q.id + "." + session.q.ext + ")");
   });
-  run.timer = setInterval(() => notePieces(session, run), 200);
+  if (!session.kept) run.timer = setInterval(() => notePieces(session, run), 200);
 }
+
+// --- Kept pieces ---------------------------------------------------------------------------
+
+// FFmpeg's fragmented MP4 from a kept run, into the playlist's pieces (helper/fmp4.mjs):
+// the header once for the session (init.mp4; every run writes the same one), then each
+// fragment, a keyframe and what follows it, into the piece it starts in. The fragments
+// before the run's first piece (its preroll, plan.mjs keptPreroll) are dropped.
+function keptReader(session, run) {
+  const boxes = new TopBoxes();
+  const header = [];
+  let dropping = false;
+  return (chunk) => {
+    if (run.failed) return;
+    try {
+      for (const box of boxes.push(chunk)) {
+        if (!run.tracks) {
+          header.push(Buffer.from(box.bytes));
+          if (box.type === "moov") {
+            run.tracks = moovTracks(box.bytes);
+            if (!session.init) session.init = Buffer.concat(header);
+          }
+          continue;
+        }
+        if (box.type === "moof") {
+          const at = fragmentStart(box.bytes, run.tracks);
+          if (at !== null) {
+            const film = at - KEPT_OFFSET;
+            dropping = run.piece < 0 && film < session.starts[run.first] - 0.01;
+            if (dropping) continue;
+            let n = Math.max(run.piece, run.first);
+            while (n + 1 < session.count && film >= session.starts[n + 1] - 0.01) n++;
+            if (n !== run.piece) {
+              keptFinish(session, run);
+              if (run.piece < 0 && n > 0 && Math.abs(film - session.starts[n]) > 0.05) say(`FFmpeg began piece ${n} at ${film.toFixed(3)} s rather than ${session.starts[n]} s.`);
+              keptOpen(run, n);
+            }
+          } else if (run.piece < 0) dropping = true;
+          if (dropping) continue;
+          numberFragment(box.bytes, run.piece * 1000 + ++run.fragments);
+          keptWrite(run, box.bytes);
+        } else if (box.type === "mdat" && !dropping && run.out >= 0) keptWrite(run, box.bytes);
+        // Anything else (an index at the end, when FFmpeg writes one) isn't needed.
+      }
+    } catch (err) {
+      // The temp folder full, or FFmpeg writing something odd: this run stops.
+      run.failed = "Couldn't put the film into pieces: " + err.message;
+      noteError(run.failed + " (" + session.q.kind + " " + session.q.id + "." + session.q.ext + ")");
+      stopRun(run.child);
+    }
+  };
+}
+
+function keptOpen(run, n) {
+  run.piece = n;
+  run.next = n;
+  run.fragments = 0;
+  run.bytes = 0;
+  run.file = path.join(run.dir, keptPieceName(n));
+  run.out = openSync(run.file, "w");
+}
+
+function keptWrite(run, bytes) {
+  writeSync(run.out, bytes);
+  run.bytes += bytes.length;
+}
+
+// The piece being written is whole: the phone can have it.
+function keptFinish(session, run) {
+  if (run.out < 0) return;
+  closeSync(run.out);
+  run.out = -1;
+  session.done.set(run.piece, run.file);
+  session.sizes.set(run.piece, run.bytes);
+  run.next = run.piece + 1;
+  keptFlow(session);
+  keptPrune(session);
+}
+
+// A piece cut short (the run stopped for a jump, or failed) isn't served.
+function keptDrop(run) {
+  if (run.out < 0) return;
+  try {
+    closeSync(run.out);
+  } catch {
+    // Already closed.
+  }
+  run.out = -1;
+}
+
+// A kept run waits once it has made enough ahead of the phone (KEPT_AHEAD_BYTES), by not
+// reading what FFmpeg writes (FFmpeg then waits too), and goes on as the phone catches up.
+function keptFlow(session) {
+  const run = session.run;
+  if (!session.kept || !run || !run.child || run.ended) return;
+  let ahead = 0;
+  for (const [n, size] of session.sizes) if (n > session.asked && n < run.next) ahead += size;
+  if (ahead > KEPT_AHEAD_BYTES && !run.paused) {
+    run.paused = true;
+    run.pausedAt = Date.now();
+    run.child.stdout.pause();
+  } else if (ahead <= KEPT_AHEAD_BYTES && run.paused) {
+    run.paused = false;
+    run.pausedMs += Date.now() - run.pausedAt;
+    run.child.stdout.resume();
+  }
+}
+
+// Past KEPT_KEEP_BYTES, the kept pieces furthest from where the phone plays are deleted
+// (made again if it goes back there), never the one it plays or those made ahead of it.
+function keptPrune(session) {
+  let total = 0;
+  for (const size of session.sizes.values()) total += size;
+  if (total <= KEPT_KEEP_BYTES) return;
+  const run = session.run;
+  const ahead = run && !run.ended ? run.next : session.asked + 1;
+  const far = [...session.sizes.keys()].filter((n) => n < session.asked - 1 || n >= ahead).sort((a, b) => Math.abs(b - session.asked) - Math.abs(a - session.asked));
+  for (const n of far) {
+    if (total <= KEPT_KEEP_BYTES) break;
+    try {
+      rmSync(session.done.get(n), { force: true });
+    } catch {
+      // Removed with the session's folder.
+    }
+    total -= session.sizes.get(n);
+    session.done.delete(n);
+    session.sizes.delete(n);
+  }
+}
+
+// --- How fast a whole film is made ----------------------------------------------------
+//
+// Once a minute, for each whole film being made for the phone or the Roku, how fast FFmpeg
+// makes it against the film's own speed. Under 1x the player catches up with it and
+// stops to wait, however fast the network is: the computer is what holds it back. The
+// line also says how long the player waited for pieces in that minute.
+
+const PACE_EVERY_MS = 60000;
+
+function paceLine(session, now) {
+  const run = session.run;
+  const who = session.q.format === "ts" ? "the Roku" : "the phone";
+  const waited = Math.round(session.waitedMs / 1000);
+  // Too soon after the run began to say, or a run that's done, or a film nobody plays now.
+  if (!run || run.ended || !run.child || now - session.lastUsed > 2 * 60000) {
+    session.waitedMs = 0;
+    return "";
+  }
+  const span = now - run.reportAt;
+  if (span < 20000) return "";
+  const paused = run.pausedMs + (run.paused ? now - run.pausedAt : 0);
+  const madeTo = pieceStart(session, run.next);
+  const made = madeTo - run.reportMade;
+  run.reportAt = now;
+  run.reportMade = madeTo;
+  run.pausedMs = 0;
+  if (run.paused) run.pausedAt = now;
+  session.waitedMs = 0;
+  const title = session.q.kind + " " + session.q.id + "." + session.q.ext;
+  const ahead = clock(Math.max(0, Math.floor(madeTo - pieceStart(session, session.asked))));
+  const waitedText = waited > 0 ? " " + who.charAt(0).toUpperCase() + who.slice(1) + " waited " + waited + " s for pieces this last minute." : "";
+  if (paused > span / 2) {
+    const line = `${title} is ready up to ${clock(Math.floor(madeTo))}, ${ahead} ahead of what ${who} has fetched, so copying waits for it.`;
+    return line.charAt(0).toUpperCase() + line.slice(1) + waitedText;
+  }
+  const pace = made / ((span - paused) / 1000);
+  const slow = pace < 1 ? `: slower than the film plays, so ${who} stops to wait` : "";
+  return `${session.kept ? "Copying" : "Converting"} ${title} for ${who} at ${pace.toFixed(1)}x the film's speed, ready up to ${clock(Math.floor(madeTo))} (${ahead} ahead of what it has fetched)${slow}.${waitedText}`;
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const session of sessions.values()) {
+    if (!session.vod) continue;
+    const line = paceLine(session, now);
+    if (line) say(line);
+  }
+}, PACE_EVERY_MS).unref();
 
 // A piece is finished once FFmpeg has started the next one.
 function notePieces(session, run) {
@@ -1357,20 +1735,27 @@ function stopVodRun(session) {
 // it shortly, otherwise FFmpeg starts again from it. Null past the end of the film.
 async function pieceFile(session, n, { quiet = false } = {}) {
   const deadline = Date.now() + PIECE_WAIT_MS;
+  const at = clock(Math.floor(pieceStart(session, n)));
   let restarted = 0;
+  let waitFrom = 0; // when this request began waiting for the run to make the piece
   let mine = null; // the run this request started
   for (;;) {
     const file = session.done.get(n);
     if (file) {
-      if (restarted && !quiet) say(`Jumped to ${clock(n * VOD_SECONDS)}: ready after ${((Date.now() - restarted) / 1000).toFixed(1)} s (${tallySince(mine.tally)}).`);
+      if (restarted && !quiet) say(`Jumped to ${at}: ready after ${((Date.now() - restarted) / 1000).toFixed(1)} s (${tallySince(mine.tally)}).`);
+      // Played up to what FFmpeg has made: the phone waited (the pace line says so).
+      else if (waitFrom && !quiet) session.waitedMs += Date.now() - waitFrom;
       return file;
     }
     const run = session.run;
-    if (run && run.first <= n && n <= run.next) {
+    // The piece the run was on when it failed, or after the last one it made (FFmpeg
+    // reached the end before this piece: the film is shorter). One it made earlier and
+    // isn't kept any more (keptPrune) is made again below.
+    if (run && n === run.next) {
       if (run.failed) throw new Error(run.failed);
-      if (run.finished) return null; // FFmpeg reached the end before this piece: the film is shorter
+      if (run.finished) return null;
     }
-    const coming = run && !run.ended && run.first <= n && n <= run.next + VOD_AHEAD;
+    const coming = run && !run.ended && run.first <= n && n <= run.next + (session.kept ? KEPT_AHEAD : VOD_AHEAD);
     if (!coming && mine && run === mine && run.again) {
       // This run's graphics card failed: the same piece again, read by the processor.
       const tally = mine.tally;
@@ -1382,16 +1767,17 @@ async function pieceFile(session, n, { quiet = false } = {}) {
     if (!coming) {
       // Asked for elsewhere since (the player moved on), or stopped (the TV took over).
       if (mine && run !== mine) throw new Error("Another part of the film was asked for.");
-      if (mine) throw new Error(mine.failed || "FFmpeg stopped before " + clock(n * VOD_SECONDS) + ".");
+      if (mine) throw new Error(mine.failed || "FFmpeg stopped before " + at + ".");
       restarted = Date.now();
-      if (!quiet) say(`Jumping to ${clock(n * VOD_SECONDS)} in ${session.q.kind} ${session.q.id}.${session.q.ext}.`);
+      if (!quiet) say(`Jumping to ${at} in ${session.q.kind} ${session.q.id}.${session.q.ext}.`);
       const tally = startTally();
       await startVodRun(session, n);
       mine = session.run || { failed: "", tally };
       mine.tally = tally;
       continue;
     }
-    if (Date.now() > deadline) throw new Error("The piece at " + clock(n * VOD_SECONDS) + " took over " + PIECE_WAIT_MS / 1000 + " seconds; the provider may be slow.");
+    if (Date.now() > deadline) throw new Error("The piece at " + at + " took over " + PIECE_WAIT_MS / 1000 + " seconds; the provider may be slow.");
+    if (!waitFrom) waitFrom = Date.now();
     await wait(150);
   }
 }
@@ -1410,7 +1796,17 @@ async function serveVodFile(res, session, name, params) {
       say("The phone opened the stream.");
     }
     res.writeHead(200, headers);
+    if (session.kept) return res.end(keptPlaylist({ starts: session.starts, duration: session.described.duration, start: session.start }));
     return res.end(vodPlaylist({ duration: session.described.duration, start: session.start }));
+  }
+  if (name === "init.mp4") {
+    // The MP4 header the kept pieces share: there once the first run has begun.
+    if (!session.kept) return sendJson(res, 404, { error: "No such file." });
+    const deadline = Date.now() + PIECE_WAIT_MS;
+    while (!session.init && Date.now() < deadline && sessions.has(session.id)) await wait(150);
+    if (!session.init) return sendHelperError(res, 502, "FFmpeg didn't start the film within " + PIECE_WAIT_MS / 1000 + " seconds.");
+    res.writeHead(200, { ...headers, "Content-Length": session.init.length });
+    return res.end(session.init);
   }
   const sub = /^sub(\d)\.vtt$/.exec(name);
   if (sub) {
@@ -1439,9 +1835,13 @@ async function serveVodFile(res, session, name, params) {
     }
     return sendJson(res, 404, { error: "Not converted yet." });
   }
-  const piece = /^seg(\d{5})\.ts$/.exec(name);
+  // Kept pieces are MP4 (.m4s), converted ones MPEG-TS.
+  const piece = (session.kept ? /^seg(\d{5})\.m4s$/ : /^seg(\d{5})\.ts$/).exec(name);
   const n = piece ? Number(piece[1]) : -1;
   if (n < 0 || n >= session.count) return sendJson(res, 404, { error: "No such piece." });
+  // Where the phone is now: a kept run waits once far enough ahead of it (keptFlow).
+  session.asked = n;
+  keptFlow(session);
   let file;
   try {
     file = await pieceFile(session, n);
@@ -1451,7 +1851,7 @@ async function serveVodFile(res, session, name, params) {
   if (!file) return sendJson(res, 404, { error: "The film ends before this." });
   if (!session.playing) {
     session.playing = true;
-    say(`The phone is playing (from ${clock(n * VOD_SECONDS)}).`);
+    say(`The phone is playing (from ${clock(Math.floor(pieceStart(session, n)))}).`);
   }
   let size;
   try {
@@ -1659,7 +2059,7 @@ const server = http.createServer((req, res) => {
     res.on("close", () => {
       if (!res.writableEnded) gone = true;
     });
-    return (q.vod ? startVod(q) : startHls(q)).then(
+    return (q.vod ? startVod(q, req.socket.remoteAddress) : startHls(q)).then(
       (started) => {
         const session = sessions.get(started.session);
         if (gone && session) {

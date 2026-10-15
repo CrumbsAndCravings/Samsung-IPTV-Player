@@ -21,29 +21,44 @@ export const MAX_SUBTITLES = 6;
 // every FFmpeg build has, unlike ffprobe. Sound and subtitle tracks keep their order in
 // the file, so track n of each is "0:a:n" or "0:s:n" to FFmpeg; a track's title (from
 // the Metadata lines under it) is kept when it has one.
+//
+// `start` is where the file's clock starts (a little before 0 when its sound has a codec
+// delay); FFmpeg's -copyts -start_at_zero counts the film's seconds from there. The
+// picture's profile ("Main 10", "High") and pixel format say whether the phone plays it
+// as it is (phoneKeeps), and `dvOnly` marks Dolby Vision with no HDR10 or SDR picture
+// underneath (profile 5), which shows the wrong colours on anything but a Dolby Vision
+// player.
 export function parseProbe(text) {
-  const out = { duration: 0, video: null, audio: [], subtitles: [] };
+  const out = { duration: 0, start: 0, video: null, audio: [], subtitles: [] };
   const duration = /Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/.exec(text);
   if (duration) out.duration = Math.round(Number(duration[1]) * 3600 + Number(duration[2]) * 60 + Number(duration[3]));
+  const start = /Duration:[^\n]*?,\s*start:\s*(-?\d+(?:\.\d+)?)/.exec(text);
+  if (start) out.start = Number(start[1]);
   const streamLine = /Stream #0:(\d+)(?:\[[^\]]*\])?(?:\(([a-z]{2,3})\))?[^:]*:\s*(Video|Audio|Subtitle):\s*([a-z0-9_]+)(.*)/i;
   let last = null; // the track the next "title" line belongs to
+  let picture = null; // the picture the next Dolby Vision line belongs to
   for (const line of text.split(/\r?\n/)) {
     const match = streamLine.exec(line);
     if (!match) {
       const title = /^\s+title\s*:\s*(.*\S)\s*$/.exec(line);
       if (title && last && !last.title) last.title = title[1];
-      if (/^\s*(Input|Output) #/.test(line)) last = null;
+      const dovi = /DOVI configuration record:.*\bprofile:\s*(\d+).*\bcompatibility id:\s*(\d+)/.exec(line);
+      if (dovi && picture) picture.dvOnly = dovi[2] === "0";
+      if (/^\s*(Input|Output) #/.test(line)) last = picture = null;
       continue;
     }
     const kind = match[3].toLowerCase();
     const codec = match[4].toLowerCase();
     const rest = match[5];
-    last = null;
+    last = picture = null;
     if (kind === "video") {
       // Cover pictures in MKV and MP4 files are "video" too; the first real one counts.
       if (out.video || /attached pic/.test(rest) || /^(mjpeg|png|bmp|gif|webp|tiff)$/.test(codec)) continue;
       const size = /,\s*(\d{2,5})x(\d{2,5})/.exec(rest);
-      out.video = { codec, width: size ? Number(size[1]) : 0, height: size ? Number(size[2]) : 0 };
+      const profile = /^\s*\(([^)]*)\)/.exec(rest);
+      const pixels = /^(?:\s*\([^)]*\))*\s*,\s*([a-z0-9_]+)/.exec(rest);
+      out.video = { codec, width: size ? Number(size[1]) : 0, height: size ? Number(size[2]) : 0, profile: profile ? profile[1] : "", pixels: pixels ? pixels[1] : "", dvOnly: false };
+      picture = out.video;
     } else if (kind === "audio") {
       last = { codec, channels: channelsOf(rest), language: match[2] || "" };
       out.audio.push(last);
@@ -393,6 +408,139 @@ export function vodArgs({ url, piece, encoder, probe, dir, audioTrack = 0, heigh
   return args;
 }
 
+// --- Whole films, the picture kept (the iPhone at home) -------------------------------
+//
+// Converting the picture costs a computer the most: a 4K HEVC film decoded, made smaller
+// and encoded again as H.264, as fast as it plays, which many computers can't keep up
+// with. The phone plays H.264 and HEVC pictures itself, as it does Netflix's, so at home
+// the picture goes to it as it is and only the sound is converted. A kept picture can
+// only be cut where the file has a keyframe, so the pieces follow the file's own
+// keyframes, which its index lists (helper/mkv.mjs): a piece starts on the first keyframe
+// at least six seconds after the last one started. FFmpeg copies the picture from a
+// piece's keyframe on, into fragmented MP4 (the HLS Safari plays HEVC in) on the film's
+// own clock, so pieces from different runs fit together, as converted ones do; the
+// helper puts its fragments into the pieces (helper/fmp4.mjs).
+
+// FFmpeg is asked to start this long after a piece's keyframe: it goes to the keyframe
+// before the time it's given, and with B-frames it first takes 3/23 s off that time, so
+// a time right on the keyframe would land on the keyframe before.
+export const SEEK_PAST = 0.2;
+
+// Every time in the kept pieces is moved on by this much: converted sound starts a
+// little before its first sample (the AAC encoder's priming), and MP4 can't hold a
+// time before zero. The phone counts from the first piece, so it doesn't see this.
+export const KEPT_OFFSET = 1;
+
+// The pictures the phone plays as they are: H.264 in 8 bits (Baseline, Main or High),
+// and HEVC Main or Main 10 when the phone says it plays HEVC, unless it's Dolby Vision
+// with nothing underneath (profile 5). An unknown profile is tried: if the phone can't
+// play it, the app asks for the picture converted, and remembers that.
+const PHONE_H264 = ["", "baseline", "constrained baseline", "main", "high"];
+const PHONE_HEVC = ["", "main", "main 10"];
+
+export function phoneKeeps(video, hevc) {
+  if (!video) return false;
+  const profile = String(video.profile || "").toLowerCase();
+  const pixels = String(video.pixels || "");
+  if (video.codec === "h264") return PHONE_H264.indexOf(profile) >= 0 && /^(yuvj?420p)?$/.test(pixels);
+  if (video.codec === "hevc") return !!hevc && PHONE_HEVC.indexOf(profile) >= 0 && /^(yuv420p|yuv420p10le)?$/.test(pixels) && !video.dvOnly;
+  return false;
+}
+
+// Where the pieces of a kept picture start, in the film's seconds (`keyframes` too, in
+// order): 0, then the first keyframe at least `seconds` after the last start. A keyframe
+// with another less than SEEK_PAST (and a little) after it is passed over, since FFmpeg
+// asked to start just past it might land on the next; so is one in the film's last half
+// second.
+export function keptPieces(keyframes, duration, seconds = VOD_SECONDS) {
+  const starts = [0];
+  for (let i = 0; i < keyframes.length; i++) {
+    const t = keyframes[i];
+    if (duration > 0 && t > duration - 0.5) break;
+    if (t < starts[starts.length - 1] + seconds) continue;
+    if (i + 1 < keyframes.length && keyframes[i + 1] - t < SEEK_PAST + 0.05) continue;
+    starts.push(t);
+  }
+  return starts;
+}
+
+// Where a run that makes piece `n` on starts: a keyframe at least a second before the
+// piece (one FFmpeg can land on), whose fragments the helper drops. A run that played
+// on through the piece before put the sound of the last moments before the keyframe in
+// this piece (MP4 interleaves by decoding order, and a keyframe decodes before the
+// pictures shown just ahead of it), so a run starting right on the keyframe would leave
+// a gap in the sound where its pieces meet the other run's. 0 for the first piece, or
+// when no keyframe comes early enough.
+export function keptPreroll(keyframes, starts, n) {
+  if (n <= 0) return 0;
+  let best = 0;
+  for (let i = 0; i < keyframes.length; i++) {
+    const t = keyframes[i];
+    if (t > starts[n] - 1) break;
+    if (i + 1 < keyframes.length && keyframes[i + 1] - t < SEEK_PAST + 0.05) continue;
+    best = t;
+  }
+  return best;
+}
+
+export function keptPieceName(n) {
+  return "seg" + String(n).padStart(5, "0") + ".m4s";
+}
+
+// The whole film's playlist with the picture kept: the pieces as `starts` says, the MP4
+// header (init.mp4) they all share, and, with `start`, where the player begins.
+export function keptPlaylist({ starts, duration, start = 0 }) {
+  const lengths = starts.map((t, n) => (n + 1 < starts.length ? starts[n + 1] : Math.max(duration, t + 0.1)) - t);
+  const longest = lengths.reduce((a, b) => Math.max(a, b), 0);
+  const lines = ["#EXTM3U", "#EXT-X-VERSION:7", "#EXT-X-TARGETDURATION:" + Math.max(1, Math.ceil(longest)), "#EXT-X-MEDIA-SEQUENCE:0", "#EXT-X-PLAYLIST-TYPE:VOD", "#EXT-X-INDEPENDENT-SEGMENTS"];
+  if (start > 0) lines.push("#EXT-X-START:TIME-OFFSET=" + start + ",PRECISE=YES");
+  lines.push('#EXT-X-MAP:URI="init.mp4"');
+  lengths.forEach((length, n) => lines.push("#EXTINF:" + length.toFixed(3) + ",", keptPieceName(n)));
+  lines.push("#EXT-X-ENDLIST");
+  return lines.join("\n") + "\n";
+}
+
+// The FFmpeg arguments for a kept run from `from` seconds (a piece's start; 0 for the
+// first): the picture copied and the sound converted to AAC stereo, as fragmented MP4 on
+// FFmpeg's output, a fragment for each keyframe, with the film's own times (moved on by
+// KEPT_OFFSET). Text subtitles and the pictures for choosing a jump go to `dir` as in
+// vodArgs, the pictures from keyframes only, as for the TV.
+export function keptArgs({ url, from = 0, probe, dir, audioTrack = 0, subtitles = false, previews = false, atomic = false, userAgent = "", every = PREVIEW_SECONDS }) {
+  const args = ["-hide_banner", "-nostdin", "-loglevel", "error"];
+  args.push("-copyts", "-start_at_zero");
+  if (userAgent) args.push("-user_agent", userAgent);
+  args.push("-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5");
+  // The sound from where FFmpeg lands (the keyframe), not cut to the time given.
+  if (from > 0) args.push("-ss", (from + SEEK_PAST).toFixed(3), "-noaccurate_seek");
+  if (previews) args.push("-skip_frame:v", "nokey");
+  const tracks = probe ? probe.audio : [];
+  const track = audioTrack >= 0 && audioTrack < tracks.length ? audioTrack : 0;
+  args.push("-i", url, "-map", "0:V:0", "-map", "0:a:" + track + "?");
+  // Apple's players only take HEVC labelled "hvc1".
+  const codec = probe && probe.video ? probe.video.codec : "";
+  args.push("-c:v", "copy", "-tag:v", codec === "hevc" ? "hvc1" : "avc1");
+  // AAC comes in frames of 1024 samples, from wherever the sound starts; every run's
+  // frames start on the same places of the film (silence before the first sample, which
+  // the dropped preroll holds), so the sound of pieces from different runs meets exactly.
+  const grid = from > 0 ? Math.max(0, Math.floor((from * 48000) / 1024) - 1) * 1024 : 0;
+  args.push("-af", "aresample=48000:first_pts=" + grid);
+  args.push("-c:a", "aac", "-b:a", "192k", "-ac", "2", "-sn", "-dn");
+  // Times as they are (negative composition offsets keep a keyframe's time its own, so
+  // the picture isn't moved against the sound), each fragment saying when it starts.
+  args.push("-avoid_negative_ts", "disabled", "-output_ts_offset", String(KEPT_OFFSET), "-max_muxing_queue_size", "2048");
+  args.push("-f", "mp4", "-movflags", "+frag_keyframe+empty_moov+default_base_moof+frag_discont+negative_cts_offsets+skip_trailer", "pipe:1");
+  if (subtitles && probe) {
+    probe.subtitles.slice(0, MAX_SUBTITLES).forEach((sub, n) => {
+      if (sub.text) args.push("-map", "0:s:" + n, "-c:s", "webvtt", "-flush_packets", "1", "-f", "webvtt", path.join(dir, "sub" + n + ".vtt"));
+    });
+  }
+  if (previews) {
+    args.push("-map", "0:V:0", "-an", "-sn", "-dn", "-vf", "fps=1/" + every + ",scale=-2:" + PREVIEW_HEIGHT, "-q:v", "5");
+    args.push("-f", "image2", "-frame_pts", "1", ...(atomic ? ["-atomic_writing", "1"] : []), path.join(dir, "p%05d.jpg"));
+  }
+  return args;
+}
+
 // Pictures as one BIF file (Roku's format for them, the one Crunchyroll's players use):
 // the magic, version 0, the count, a timestamp multiplier of 1000 (so timestamps are
 // seconds), reserved to byte 64; then (timestamp, offset) for each picture and a last
@@ -551,6 +699,79 @@ export function speedVerdict(needKbps, samples) {
     else verdict = avg < need ? "slow" : low < need ? "dips" : "fast";
   }
   return { avg, low, need, verdict, slowSecs, startLow, startHigh, afterAvg: mean(after) };
+}
+
+// --- Where the phone is -------------------------------------------------------------------
+//
+// A kept picture is as big as the provider's file (20 to 25 Mbit/s for a rich 4K film):
+// nothing for the home network, but more than many homes can send out, which the phone
+// away from home (through Tailscale) gets its films over. So away from home the picture
+// is converted, smaller, as before. The phone is at home when it asks from an address on
+// the home network, or through Tailscale when Tailscale reaches it over the home network
+// (Tailscale left on, on the home Wi-Fi), which `tailscale status --json` says.
+
+// The eight 16-bit groups of an IPv6 address, or null.
+function ipv6Groups(ip) {
+  const text = String(ip).toLowerCase().split("%")[0];
+  if (text.indexOf(":") < 0) return null;
+  const halves = text.split("::");
+  if (halves.length > 2) return null;
+  const part = (s) => (s === "" ? [] : s.split(":"));
+  const head = part(halves[0]);
+  const tail = halves.length === 2 ? part(halves[1]) : [];
+  // An IPv4 address at the end ("::ffff:192.168.1.5") is two groups.
+  const last = tail.length ? tail : head;
+  const v4 = last.length && /^\d+\.\d+\.\d+\.\d+$/.test(last[last.length - 1]) ? last.pop().split(".").map(Number) : null;
+  if (v4) last.push(((v4[0] << 8) | v4[1]).toString(16), ((v4[2] << 8) | v4[3]).toString(16));
+  const fill = halves.length === 2 ? 8 - head.length - tail.length : 0;
+  if (fill < 0 || (halves.length === 1 && head.length !== 8)) return null;
+  const groups = [...head, ...Array(fill).fill("0"), ...tail].map((g) => parseInt(g, 16));
+  return groups.length === 8 && groups.every((g) => g >= 0 && g <= 0xffff) ? groups : null;
+}
+
+function ipv4Parts(ip) {
+  const match = /^(?:::ffff:)?(\d+)\.(\d+)\.(\d+)\.(\d+)$/i.exec(String(ip));
+  return match ? match.slice(1).map(Number) : null;
+}
+
+// Tailscale's addresses: 100.64.0.0/10, and fd7a:115c:a1e0::/48.
+export function tailscaleIp(ip) {
+  const v4 = ipv4Parts(ip);
+  if (v4) return v4[0] === 100 && v4[1] >= 64 && v4[1] <= 127;
+  const v6 = ipv6Groups(ip);
+  return !!v6 && v6[0] === 0xfd7a && v6[1] === 0x115c && v6[2] === 0xa1e0;
+}
+
+// An address on the home network: private IPv4 (and this computer's own), or IPv6 that
+// is this computer's, link-local, unique local or in the /64 of one of `local` (this
+// computer's addresses). Tailscale's addresses aren't, though they look private.
+export function homeAddress(ip, local = []) {
+  if (tailscaleIp(ip)) return false;
+  const v4 = ipv4Parts(ip);
+  if (v4) return v4[0] === 10 || v4[0] === 127 || (v4[0] === 172 && v4[1] >= 16 && v4[1] <= 31) || (v4[0] === 192 && v4[1] === 168) || (v4[0] === 169 && v4[1] === 254);
+  const v6 = ipv6Groups(ip);
+  if (!v6) return false;
+  if (v6.slice(0, 7).every((g) => g === 0) && v6[7] === 1) return true;
+  if ((v6[0] & 0xffc0) === 0xfe80 || (v6[0] & 0xfe00) === 0xfc00) return true;
+  return local.some((other) => {
+    const groups = ipv6Groups(other);
+    return !!groups && !tailscaleIp(other) && groups.slice(0, 4).every((g, i) => g === v6[i]);
+  });
+}
+
+// Where Tailscale reaches the device at Tailscale address `ip` straight (its CurAddr,
+// without the port), from the JSON `tailscale status --json` prints; "" when it goes
+// through Tailscale's relays, or Tailscale doesn't know the device.
+export function tailscaleRoute(status, ip) {
+  const peers = status && typeof status === "object" && status.Peer && typeof status.Peer === "object" ? Object.values(status.Peer) : [];
+  for (const peer of peers) {
+    if (!peer || !Array.isArray(peer.TailscaleIPs) || peer.TailscaleIPs.indexOf(ip) < 0) continue;
+    const at = String(peer.CurAddr || "");
+    const bracketed = /^\[([^\]]+)\]:\d+$/.exec(at);
+    if (bracketed) return bracketed[1];
+    return at.replace(/:\d+$/, "");
+  }
+  return "";
 }
 
 // Hides the login and the helper's key in anything printed or sent back.
